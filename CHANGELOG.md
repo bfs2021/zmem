@@ -5,6 +5,7 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<<<<<<< HEAD
 ## [0.136.0] - 2026-11-01
 
 > Release surfaces (dsh host-gate evidence): the committed canary and
@@ -51,6 +52,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the suite runs non-interactively, the self-fixture assertion in
   `test_jsonl_sync` is removed, and the migration-fixture generator refuses
   tracked-fixture targets without an explicit `--allow-tracked`.
+=======
+## [0.137.0] - 2026-11-01
+
+### Fixed
+
+- **Hub installers no longer clobber an occupied serve :443 (issue #423).**
+  `install-hub.ps1 -HttpsPort <n>` / `install-hub.sh ... [PORT [HTTPS_PORT]]`
+  parameterize the tailscale serve HTTPS port (default 443), and an
+  installer targeting the default :443 when a live non-zmem handler already
+  occupies it REFUSES before re-pointing serve, naming the handler and the
+  port escape — instead of silently replacing an operator service or
+  half-configuring (boot task registered, serve failed). docs/FLEET.md
+  documents the parameter; a static contract test pins both installers.
+>>>>>>> 4c10b60 (fix(fleet): install-hub serve-port parameter + occupied-:443 refusal (issue #423, release 0.137.0))
 
 ## [0.134.0] - 2026-11-01
 
