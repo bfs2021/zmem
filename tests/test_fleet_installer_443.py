@@ -243,7 +243,7 @@ class FleetInstaller443ShTest(unittest.TestCase):
         self.assertRegex(
             src,
             r"REFUSED: tailscale serve already has a handler"
-            r"[\s\S]{0,600}?exit 2",
+            r"[\s\S]{0,450}?exit 2",
             "the occupancy refusal must terminate with exit 2 inside its "
             "own block")
         self.assertIn(
