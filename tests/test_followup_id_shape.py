@@ -140,6 +140,26 @@ class ImportStoreIdShapeTest(_HermeticTestCase):
         self._build_source_store(source)
 
         dest_dir = Path(self._tmpdir) / "dest"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        # Pre-seed the destination with a good row (review round): the
+        # refusal must leave a PRE-EXISTING destination byte-untouched, not
+        # merely write nothing to an empty one.
+        from storelib import schema as schema_mod
+        pre_conn = sqlite3.connect(str(dest_dir / "store.sqlite"))
+        try:
+            schema_mod.init_db(pre_conn)
+            schema_mod.migrate(pre_conn)
+            pre_conn.execute(
+                "INSERT INTO memory (id, namespace, type, content, "
+                "ingestion_ts, confidence, signal, taint, tags) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("a" * 8 + "-" + "a" * 4 + "-4" + "a" * 2 + "-8" + "a" * 2
+                 + "-" + "a" * 12, "project:import-shape", "fact",
+                 "pre-existing dest row", "2026-01-02T03:04:05Z", 0.5,
+                 "none", "trusted_internal", ""))
+            pre_conn.commit()
+        finally:
+            pre_conn.close()
 
         # import-store.py lives beside storelib, not inside it — load it by
         # path (its module body resolves the store path, so the hermetic
@@ -152,7 +172,8 @@ class ImportStoreIdShapeTest(_HermeticTestCase):
         raised: Exception | None = None
         result = None
         try:
-            result = mod.run_import(source, dest_dir)
+            result = mod.run_import(
+                source, dest_dir, force=True)  # pre-seeded dest is deliberate
         except Exception as exc:  # refusal shape is the fix's choice
             raised = exc
 
@@ -166,14 +187,32 @@ class ImportStoreIdShapeTest(_HermeticTestCase):
                 ).fetchone() is not None
             finally:
                 conn.close()
-        refused = raised is not None or (
+        # Refusal SHAPE (review round): the id-shape refusal is a
+        # ValueError naming the malformed id — ANY exception counting as
+        # refusal would let an unrelated crash read as a pass.
+        refused = (
+            isinstance(raised, ValueError) and "not UUID-shaped" in str(raised)
+        ) or (
             isinstance(result, dict)
             and (result.get("quarantined", 0) > 0
-                 or result.get("dest_total_rows", -1) == 0))
+                 and result.get("dest_total_rows", -1) == 0))
+        pre_row = None
+        if dest_store.exists():
+            conn = sqlite3.connect(str(dest_store))
+            try:
+                pre_row = conn.execute(
+                    "SELECT content FROM memory WHERE id=?",
+                    ("a" * 8 + "-" + "a" * 4 + "-4" + "a" * 2 + "-8" + "a" * 2
+                     + "-" + "a" * 12,)).fetchone()
+            finally:
+                conn.close()
         print(f"[C2] raised={raised!r} result={result!r} "
-              f"bad_present={bad_present}")
+              f"bad_present={bad_present} pre_row={pre_row!r}")
         if bad_present or not refused:
             raise AssertionError("the malformed id was copied at base")
+        if pre_row is None or pre_row[0] != "pre-existing dest row":
+            raise AssertionError(
+                "the refusal disturbed the pre-existing destination")
 
 
 class DatasetIdShapeTest(_HermeticTestCase):
@@ -194,24 +233,34 @@ class DatasetIdShapeTest(_HermeticTestCase):
             "last_retrieved": None, "last_surfaced": None,
             "taint": "trusted_internal", "trust_score": 1.0,
         }
-        families = {"memories": [row], "episodes": [],
+        # A KEPT (good) row rides along (review round): the all-bad fixture
+        # let a silent-drop mutant read as a SUCCESSFUL EMPTY import
+        # (memories=0). With a kept row present, a silent drop leaves
+        # memories=1 and the zero-kept heuristic can no longer mask it.
+        good_row = dict(row)
+        good_row["id"] = ("b" * 8 + "-" + "b" * 4 + "-4" + "b" * 2 + "-8"
+                          + "b" * 2 + "-" + "b" * 12)
+        good_row["content"] = "kept good row for the C3 falsifiability pin"
+        families = {"memories": [row, good_row], "episodes": [],
                     "episode_members": [], "links": []}
         source_hash = ds._compute_snapshot_hash(families, False)
-        row["export_snapshot_id"] = source_hash
-        row["generator_revision"] = ds.GENERATOR_REVISION
-        row["row_checksum"] = ds.row_checksum(row)
+        for r in (row, good_row):
+            r["export_snapshot_id"] = source_hash
+            r["generator_revision"] = ds.GENERATOR_REVISION
+            r["row_checksum"] = ds.row_checksum(r)
 
         dataset_dir = Path(self._tmpdir) / "dataset"
         (dataset_dir / "data").mkdir(parents=True)
         with open(dataset_dir / "data" / "memories-000.jsonl", "wb") as fh:
             fh.write(ds.canonical_row_bytes(row))
+            fh.write(ds.canonical_row_bytes(good_row))
         for stem in ("episodes-000", "episode_members-000", "links-000"):
             (dataset_dir / "data" / f"{stem}.jsonl").write_bytes(b"")
         manifest = {
             "schema_version": ds.DATASET_SCHEMA_VERSION,
             "source_snapshot_hash": source_hash,
             "namespaces": ["project:dataset-shape"],
-            "row_counts": {"memories": 1, "episodes": 0,
+            "row_counts": {"memories": 2, "episodes": 0,
                            "episode_members": 0, "links": 0},
             "format": ds.DATASET_FORMAT_JSONL,
         }
@@ -238,8 +287,12 @@ class DatasetIdShapeTest(_HermeticTestCase):
                 ).fetchone() is not None
             finally:
                 conn.close()
-        refused = raised is not None or (
-            isinstance(summary, dict) and summary.get("memories") == 0)
+        # Refusal SHAPE (review round): the dataset refusal is a
+        # DatasetError naming the offending id; a silent drop (no raise,
+        # kept row imported) is NOT a refusal.
+        refused = (
+            isinstance(raised, ds.DatasetError)
+            and BAD_ID in str(raised))
         print(f"[C3] raised={raised!r} summary={summary!r} "
               f"bad_present={bad_present}")
         if bad_present or not refused:

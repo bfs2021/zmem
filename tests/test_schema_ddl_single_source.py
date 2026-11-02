@@ -89,8 +89,16 @@ class SchemaDdlSingleSourceTest(unittest.TestCase):
         if cls._tmpdir is not None:
             shutil.rmtree(cls._tmpdir, ignore_errors=True)
             cls._tmpdir = None
+        # Purge cached storelib modules (cubic round, C10 pattern): the
+        # import that verified the helper froze storelib.schema.STORE_PATH
+        # at this class's (now deleted) temp store — a later in-process
+        # test must not inherit the stale binding.
+        for name in [k for k in sys.modules
+                     if k == "storelib" or k.startswith("storelib.")]:
+            del sys.modules[name]
 
     def test_entity_kind_check_literals_are_derived(self):
+        import schema_meta  # stdlib-only, base symbol
         from schema_meta import ENTITY_KINDS  # stdlib-only, base symbol
 
         source = SCHEMA_PY.read_text(encoding="utf-8")
@@ -123,6 +131,7 @@ class SchemaDdlSingleSourceTest(unittest.TestCase):
         except AttributeError:
             helper = None
         rendered_ok = False
+        authority_linked = False
         if callable(helper):
             rendered = helper()
             if isinstance(rendered, str):
@@ -132,11 +141,23 @@ class SchemaDdlSingleSourceTest(unittest.TestCase):
                 rendered_ok = (
                     set(tokens) == set(ENTITY_KINDS)
                     and len(tokens) == len(set(ENTITY_KINDS)))
+                # Authority linkage (cubic round): a hard-coded twelve-kind
+                # helper renders the right list but is not DERIVED — mutating
+                # the authority at call time must change the output.
+                try:
+                    saved = schema_meta.ENTITY_KINDS
+                    schema_meta.ENTITY_KINDS = tuple(saved) + (
+                        "zzz_probe_thirteenth",)
+                    linked = helper()
+                finally:
+                    schema_meta.ENTITY_KINDS = saved
+                authority_linked = (
+                    isinstance(linked, str) and "zzz_probe_thirteenth" in linked)
 
         print(f"[C4] hand_copied={hand_copied} "
               f"helper={'present' if callable(helper) else 'ABSENT'} "
               f"rendered_ok={rendered_ok}")
-        if hand_copied or not rendered_ok:
+        if hand_copied or not rendered_ok or not authority_linked:
             raise AssertionError(_FROZEN_MESSAGE)
 
     def test_entity_kind_vocabulary_has_twelve_kinds(self):

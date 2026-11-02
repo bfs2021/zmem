@@ -72,9 +72,6 @@ class SchemaLockSuppTest(unittest.TestCase):
 
     def test_S1_dead_holder_does_not_wedge_real_consumer(self):
         store = self.tmp / "store.sqlite"
-        dead = subprocess.run(
-            [sys.executable, "-c", "import sys"],
-            capture_output=True)  # any short-lived child; reuse its exit? no
         # Spawn and reap a REAL child to get a provably dead PID.
         child = subprocess.Popen(
             [sys.executable, "-c", "pass"],

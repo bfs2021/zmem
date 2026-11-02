@@ -60,6 +60,7 @@ _SUBPROC = {"run", "call", "check_call", "check_output", "Popen"}
 _PROMPT = "GIT_TERMINAL_PROMPT"
 _UNKNOWN = "?"  # key present, winning value not a provable '0' literal
 _NETWORK_SUBCMDS = {"fetch", "pull", "push", "clone", "ls-remote"}
+_UNRESOLVED_CONCAT = "@@git-argv-unresolved-concat@@"
 # git OPTIONS that consume the NEXT argv token (their value).
 _TAKES_VALUE = {"-c", "-C", "--git-dir", "--work-tree", "--namespace",
                 "--super-prefix", "--exec-path"}
@@ -109,7 +110,44 @@ def _resolve_argv(expr, binds) -> list | None:
                 return resolved
         return None
     if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
-        return _resolve_argv(expr.left, binds)
+        left = _resolve_argv(expr.left, binds)
+        if left is None:
+            return None
+        right = _resolve_fragment(expr.right, binds)
+        if right is None:
+            # Fail closed (cubic round): an unresolvable concat operand could
+            # carry a network subcommand, so the argv reads as an
+            # unclassifiable git invocation the ratchet must see, never as
+            # silently local.
+            return left + [ast.Constant(value=_UNRESOLVED_CONCAT)]
+        return left + right
+    return None
+
+
+def _resolve_fragment(expr, binds):
+    """Element list of an argv TAIL fragment (a concat right-hand side): a
+    literal list/tuple of string constants, a name bound to one, or another
+    concat. None when unresolvable (the caller's sentinel makes the site
+    fail closed)."""
+    if isinstance(expr, (ast.List, ast.Tuple)):
+        if any(isinstance(e, ast.Starred) for e in expr.elts):
+            return None
+        if all(isinstance(e, ast.Constant) and isinstance(e.value, str)
+               for e in expr.elts):
+            return list(expr.elts)
+        return None
+    if isinstance(expr, ast.Name):
+        for _ln, v in binds.get(expr.id, []):
+            resolved = _resolve_fragment(v, binds)
+            if resolved is not None:
+                return resolved
+        return None
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+        left = _resolve_fragment(expr.left, binds)
+        right = _resolve_fragment(expr.right, binds)
+        if left is None or right is None:
+            return None
+        return left + right
     return None
 
 
@@ -135,6 +173,8 @@ def _network_subcmd(elts) -> str | None:
     if not rest or rest[0] is None:
         return None
     sub = rest[0]
+    if sub == _UNRESOLVED_CONCAT:
+        return _UNRESOLVED_CONCAT
     if sub in _NETWORK_SUBCMDS:
         return sub
     if sub == "remote" and len(rest) > 1 and rest[1] == "update":
@@ -216,13 +256,26 @@ def _prompt_effective_value(expr, binds):
     return None
 
 
+def _own_scope_nodes(scope):
+    """Yield the scope's own nodes EXCLUDING nested FunctionDef/ClassDef
+    subtrees: a nested def's assignments are that def's ambient facts, not
+    this scope's (cubic round; ast.walk would attribute them here)."""
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop(0)
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef)):
+            stack.extend(ast.iter_child_nodes(node))
+
+
 def _ambient_effective_value_before(scope, line: int):
     """Effective ambient GIT_TERMINAL_PROMPT at `line`: the latest
     `os.environ[...] = <literal>` assignment before it (plan-critic round
     2 — an earlier '0' overridden by a later '1' must NOT read guarded)."""
     best_line = -1
     val = None
-    for node in ast.walk(scope):
+    for node in _own_scope_nodes(scope):
         if isinstance(node, ast.Assign) and getattr(node, "lineno", 0) < line:
             for t in node.targets:
                 if (isinstance(t, ast.Subscript)
@@ -248,7 +301,7 @@ def _scope_bindings(scope) -> dict[str, list]:
     UNKNOWN (plan-critic round 3, fail-closed)."""
     binds: dict[str, list] = {}
     mutated: set[str] = set()
-    for node in ast.walk(scope):
+    for node in _own_scope_nodes(scope):
         targets: list = []
         if isinstance(node, ast.Assign):
             targets = node.targets
@@ -372,7 +425,7 @@ class GitHygieneTest(unittest.TestCase):
         carries an EFFECTIVE GIT_TERMINAL_PROMPT='0' (override order
         evaluated; stdin=DEVNULL is NOT a guard)."""
         findings: list[str] = []
-        for path in sorted(TESTS_DIR.glob("*.py")):
+        for path in sorted(TESTS_DIR.rglob("*.py")):
             src = path.read_text(encoding="utf-8")
             try:
                 found = scan_unguarded_network(

@@ -584,13 +584,6 @@ MAINTENANCE_POLL_SECONDS = _env_float("ZMEM_MAINTENANCE_POLL_SECONDS", 0.05)
 
 MAINTENANCE_GRACE_DEFAULT_SECONDS = 10.0
 
-# Empty-token grace for the schema-lock phantom classifier (issue #357).
-# A valid "<pid>:<token>" holder is broken as soon as the PID is PROVABLY
-# dead, with no age delay; the grace window only governs stripped-empty
-# files (create-then-token-write races). The maintenance default is the
-# conservative bound reused here — the schema acquirer writes the token
-# with the same one-syscall shape.
-SCHEMA_LOCK_GRACE_SECONDS = MAINTENANCE_GRACE_DEFAULT_SECONDS
 
 
 def _clamped_maintenance_grace(raw: float) -> float:
@@ -613,6 +606,14 @@ def _clamped_maintenance_grace(raw: float) -> float:
 MAINTENANCE_LOCK_GRACE_SECONDS = _clamped_maintenance_grace(
     _env_float("ZMEM_MAINTENANCE_LOCK_GRACE_SECONDS", MAINTENANCE_GRACE_DEFAULT_SECONDS)
 )
+# Empty-token grace for the schema-lock phantom classifier (issue #357;
+# clamped-knob binding per the approved plan, PR-review round): a valid
+# "<pid>:<token>" holder is broken as soon as the PID is PROVABLY dead, with
+# no age delay; the grace window only governs stripped-empty files
+# (create-then-token-write races). It shares the maintenance lock's
+# clamped, env-knob-bound grace (ZMEM_MAINTENANCE_LOCK_GRACE_SECONDS with
+# its floor) so the two locks on the same store dir classify identically.
+SCHEMA_LOCK_GRACE_SECONDS = MAINTENANCE_LOCK_GRACE_SECONDS
 
 WRITER_LEASE_STALE_SECONDS = _env_float("ZMEM_WRITER_LEASE_STALE_SECONDS", 300.0)
 

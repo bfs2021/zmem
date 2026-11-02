@@ -390,6 +390,30 @@ def _sanitize_staged_store(staged: sqlite3.Connection,
             _rebuild_belief_heads(staged, mid, new_content)
             counters["redacted"] += 1
         counters["added"] += 1
+
+    # Issue #353 completeness (PR-review round): the closed id set covers
+    # every id-bearing column sync validates at ingest, not just memory.id —
+    # memory.update_of, memory_link.src_id/dst_id, episode_memory.memory_id,
+    # and episode.id. NULLs are legal (update_of/summary pointers); only
+    # present values must be UUID-shaped, or the WHOLE import refuses
+    # mid-transaction (staged rollback, prior destination untouched).
+    for table, col in (("memory", "update_of"),
+                       ("memory_link", "src_id"),
+                       ("memory_link", "dst_id"),
+                       ("episode_memory", "memory_id"),
+                       ("episode", "id")):
+        if not _table_exists(staged, table):
+            continue
+        for (val,) in source.execute(
+                f"SELECT DISTINCT {col} FROM {table} "
+                f"WHERE {col} IS NOT NULL"):
+            if not isinstance(val, str) or not _INGEST_ID_RE.fullmatch(val):
+                raise ValueError(
+                    f"import refused: source store column {table}.{col} "
+                    f"carries a non-UUID-shaped id (first offender "
+                    f"{val!r}); refusing the import rather than copying "
+                    "malformed ids")
+
     staged_count = source_count - counters["quarantined"]
     return {"source_count": source_count, "staged_count": staged_count,
             **counters}, pending

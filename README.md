@@ -1414,13 +1414,16 @@ that DIED mid-migration (crash, kill) is detected by PID liveness and its
 lock is broken automatically for the next writer: SQLite rolls back the
 uncommitted rebuild transaction, so the store is never half-migrated, and a
 dead process no longer blocks every command for the 300 s stale window.
-**Backup and restore:** `store.py backup` snapshots the store on a daily
-cadence to `ZMEM_BACKUP_DIR` (default `<store dir>/backups`, off-volume
-recommended); `store.py restore` is the inverse ladder. To recover from a
-bad migration, stop zmem sessions, restore the newest good snapshot, and
-re-run; `import-store.py` additionally builds a sanitized copy with the
-destination only replaced on success, so a failed import never touches the
-prior store.
+**Backup and restore:** `store.py backup` snapshots the store on demand
+(pass `--if-due` for the daily-gated form — a bare manual run ALWAYS takes
+a fresh snapshot) to `ZMEM_BACKUP_DIR` (default `<store dir>/backups`,
+off-volume recommended); `store.py restore` is the inverse ladder. To
+recover from a bad migration, stop zmem sessions, restore the newest good
+snapshot, and re-run; `import-store.py` additionally builds a sanitized
+copy with the destination replaced only after the store copy succeeds —
+a failure in the copy or its gates never touches the prior store, though a
+failure in the LATER `core.md` swap can leave the new store installed
+alongside an old core (re-running the import converges).
 
 This schema change is UPGRADE-REQUIRED, not additive: `SUPPORTED_SCHEMA_VERSION`
 becomes 16 while `FORWARD_COMPAT_SCHEMA_VERSION` stays 15, so every client

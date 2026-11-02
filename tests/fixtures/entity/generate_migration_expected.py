@@ -287,7 +287,8 @@ def main() -> int:
     # explicit unlock. The documented regeneration command carries it.
     fixtures_root = (REPO_ROOT / "tests" / "fixtures").resolve()
     if not args.allow_tracked:
-        for label, path in (("--input", in_path), ("--store", store_path)):
+        for label, path in (("--input", in_path), ("--store", store_path),
+                            ("--out", out_path)):
             if path is not None:
                 try:
                     path.relative_to(fixtures_root)

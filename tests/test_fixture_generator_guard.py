@@ -41,15 +41,37 @@ class GeneratorGuardTest(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("--allow-tracked", proc.stderr)
 
+    def test_tracked_out_refused_without_flag(self):
+        # --out is a guarded path too (review round): dumping over a tracked
+        # fixture without the unlock must refuse before any write.
+        proc = self._run(
+            "--input", "nonexistent-scratch-input.jsonl",
+            "--out", "tests/fixtures/entity/migration-expected.json",
+            "--phase", "dump")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--allow-tracked", proc.stderr)
+
     def test_tracked_paths_permitted_with_flag(self):
-        # With the flag the guard itself passes; the run may still fail on
-        # unrelated preconditions (e.g. the store already exists), but it
-        # must NOT be the guard refusing.
+        # With the flag the guard itself passes AND the permitted
+        # invocation must actually succeed end-to-end (an allowed run that
+        # fails later is a regression, not a guard pass): the seeded store
+        # is a scratch path so nothing lands in the tracked fixtures tree
+        # (copilot round).
+        scratch = Path(self.scratch_dir()) / "guard-store.sqlite"
         proc = self._run(
             "--input", "tests/fixtures/entity/migration-input.jsonl",
+            "--store", str(scratch),
             "--out", os.devnull, "--phase", "seed",
             "--allow-tracked")
         self.assertNotIn("--allow-tracked", proc.stderr)
+        self.assertEqual(
+            proc.returncode, 0,
+            f"the allowed invocation must succeed: {proc.stderr[-400:]}")
+
+    @staticmethod
+    def scratch_dir() -> str:
+        import tempfile
+        return tempfile.mkdtemp(prefix="zmem-guard-")
 
 
 if __name__ == "__main__":

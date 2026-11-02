@@ -63,6 +63,15 @@ class SchemaLockLivenessTest(unittest.TestCase):
         os.environ["ZMEM_MODELS_DIR"] = str(Path(cls._tmpdir) / "no-models")
         os.environ["ZMEM_MODEL_AUTODOWNLOAD"] = "0"
         os.environ.pop("ZMEM_ALLOW_NEWER_SCHEMA", None)
+        # Timing-knob hermeticity (cubic round): the liveness wrapper reads
+        # ZMEM_SCHEMA_LOCK_* from the AMBIENT env at call time; an ambient
+        # poll/stale setting would stretch this suite's own budgets.
+        for key in ("ZMEM_SCHEMA_LOCK_POLL_SECONDS",
+                    "ZMEM_SCHEMA_LOCK_STALE_SECONDS",
+                    "ZMEM_SCHEMA_LOCK_WAIT_SECONDS",
+                    "ZMEM_MAINTENANCE_LOCK_GRACE_SECONDS"):
+            cls._saved_env.setdefault(key, os.environ.get(key))
+            os.environ.pop(key, None)
         if str(SCRIPTS_DIR) not in sys.path:
             sys.path.insert(0, str(SCRIPTS_DIR))
 
