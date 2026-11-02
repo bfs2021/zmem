@@ -183,6 +183,13 @@ class FleetInstaller443PsTest(unittest.TestCase):
         self.assertRegex(
             src, r"Write-Error \(\"REFUSED: cannot verify tailscale serve occupancy",
             "the fail-closed status refusal must be a TERMINATING Write-Error")
+        self.assertIn(
+            "if ($cls.Occupier -and -not $cls.Ours) {", src,
+            "the ps1 occupancy guard condition is missing or altered "
+            "(review round 4)")
+        self.assertIn(
+            "-TargetPort $HttpsPort", src,
+            "the classification must be scoped to the target serve port")
         self.assertRegex(src, r"-HttpsPort <n>",
                          "the refusal must name the -HttpsPort escape")
         self.assertIn(
@@ -231,6 +238,11 @@ class FleetInstaller443ShTest(unittest.TestCase):
         self.assertIn("cannot verify tailscale serve occupancy", src)
         self.assertIn("exit 2", src,
                       "the sh refusals must exit nonzero (terminating)")
+        # Review round 4: the guard CONDITION itself is pinned - a mutant
+        # that no-ops the occupancy gate (`if false; then`) must go red.
+        self.assertIn(
+            'if [ "$OCCUPIER" = "1" ] && [ "$OURS" = "0" ]; then', src,
+            "the sh occupancy guard condition is missing or altered")
 
     def test_serve_call_uses_the_parameter(self):
         src = _src(SH)
