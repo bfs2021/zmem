@@ -490,7 +490,8 @@ class McpHttp:
                  lane: str = "hermes-provider",
                  client_protocol: int = CLIENT_PROTOCOL_MAJOR,
                  deadline_ms: int | None = None,
-                 reserve: bool = False) -> dict[str, Any]:
+                 reserve: bool = False,
+                 consume_tasktext: bool = False) -> dict[str, Any]:
         arguments: dict[str, Any] = {
             "query": query,
             "namespace": namespace,
@@ -502,6 +503,13 @@ class McpHttp:
             "deadline_ms": deadline_ms,
             "reserve": reserve,
         }
+        # Issue #339: the SubagentStart consume grant rides the prefetch
+        # arguments ONLY when the caller (the broker's SubagentStart lane)
+        # sets it; the hub tool appends --consume-tasktext to the store argv
+        # only then, so an ungranted remote prefetch never drains a parked
+        # delegation.
+        if consume_tasktext:
+            arguments["consume_tasktext"] = True
         return self._envelope_call("prefetch", arguments)
 
     def session_start(self, namespace: str, session_id: str,
@@ -787,13 +795,18 @@ class LocalSubprocess:
 
     def prefetch(self, query: str, *, namespace: str, session_id: str,
                  moment: str, ops_tokens: list[str],
-                 lane: str = "hermes-provider") -> dict[str, Any]:
+                 lane: str = "hermes-provider",
+                 consume_tasktext: bool = False) -> dict[str, Any]:
         argv = [sys.executable or "python", self._store_py, "prefetch"]
         argv.extend(_query_args(query))
         argv.extend(["--namespace", namespace, "--session-id", session_id,
                      "--moment", moment, "--lane", lane])
         for token in ops_tokens:
             argv.extend(["--ops-token", token])
+        # Issue #339: forward the SubagentStart consume grant to the local
+        # store argv (mirror of the hub-side MCP param).
+        if consume_tasktext:
+            argv.append("--consume-tasktext")
         argv.append("--json")
         try:
             child_env = os.environ.copy()

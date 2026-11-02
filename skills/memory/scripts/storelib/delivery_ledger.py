@@ -128,6 +128,11 @@ COMPACT_SUMMARY_MAX = 2000
 # child's SubagentStart.
 TASK_TEXT_MAX = 800
 TASK_TEXT_CAP = 16
+# Issue #329: consume_task_text skips a leading entry older than this band
+# ONLY while a strictly newer entry exists behind it. Conservative: above
+# plausible park->SubagentStart latency (incl. permission prompts), far
+# below the 6h delivery window.
+TASK_TEXT_ORPHAN_S = 300.0
 
 _DELIVERY_LOCK_TIMEOUT_S = 0.25
 _DELIVERY_LOCK_POLL_S = 0.005
@@ -890,7 +895,7 @@ def entry_text(row: Dict[str, Any]) -> str:
     return " ".join(" ".join(parts).lower().split())[:TEXT_MAX]
 
 
-def _atomic_write_json(path: str, obj: Any) -> None:
+def _atomic_write_json(path: str, obj: Any, *, fsync: bool = True) -> None:
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
@@ -905,7 +910,13 @@ def _atomic_write_json(path: str, obj: Any) -> None:
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(obj, f)
         f.flush()
-        os.fsync(f.fileno())
+        # Issue #340: fsync is OPT-IN-OFF for the two .tasktext sidecar
+        # writes only (park/consume pass fsync=False) — the same posture
+        # the segment writer documents at its write site: a regenerable
+        # prompt cache must not spend the caller's shared store budget on
+        # durable flushes. Every other caller keeps the durable default.
+        if fsync:
+            os.fsync(f.fileno())
     # Issue #252 review (P-004): a concurrent reader holding `path` open
     # (plain open() does not request FILE_SHARE_DELETE on Windows) fails
     # the replace with a sharing violation — the same transient class
@@ -1666,21 +1677,31 @@ def park_task_text(data_dir: str, session_id: str, text: str,
     swapped, as an earlier revision of this docstring claimed) — the next
     child finds no entry and falls through to the query-less recent lane.
     Degraded relevance, never a crash or store corruption; a file lock
-    would add a failure mode to a fail-open hot path for a rare,
-    non-corrupting race. The same race exists park-against-consume: a
-    concurrent child can rewrite the list between a park's read and its
-    replace, so a freshly parked delegation is lost outright.
+    was rejected for this sidecar (#330, recorded decision): the 0.25 s
+    fail-open lock family drops whole prompts under the same contention,
+    and the measured unlocked losses are bounded degradation —
+    synchronized N=4 and N=8 parks each left ONE survivor; 0-200 ms
+    jittered N=8 left 2, 7 and 5 survivors. The same race exists
+    park-against-consume in BOTH directions (#330): a consume completing
+    between a park's read and its replace re-delivers the already-
+    consumed head (resurrection), and a park completing between a
+    consume's read and its replace loses the freshly parked entry — the
+    consume's stale rewrite (or sole-entry unlink) overwrites it. All
+    four interleavings are unlocked read-modify-write races on a
+    regenerable prompt cache; torn writes are impossible (UUID tmp +
+    os.replace).
 
-    An ORPHANED park is the other unbounded case: a delegation whose child
-    never starts (permission denied, cancelled, tool errored) leaves its
-    entry at the FIFO head, and because no correlation id exists on the
-    park side there is nothing to expire it early — every later child in
-    the window then consumes the PREVIOUS delegation's text, an off-by-one
-    shift for the rest of the session. Accepted deliberately (issue #329):
-    the effect is degraded task relevance, never a wrong action, and the
-    alternative (age-expiring queued entries) would drop live entries
-    during a large fan-out. The 6h window / 16-entry cap bound how long
-    the shift persists, NOT how many children it affects."""
+    An ORPHANED park is the other case: a delegation whose child never
+    starts (permission denied, cancelled, tool errored) leaves its entry at
+    the FIFO head and shifts every later prompt-less child by one. Since no
+    host supplies a correlation id at park time, consume_task_text applies
+    an AGED-HEAD SKIP (issue #329): a leading entry older than
+    TASK_TEXT_ORPHAN_S is dropped in favor of a strictly newer one. Two
+    residuals are accepted and disclosed: an orphan YOUNGER than the band
+    still shifts by one until it ages out, and a legitimate child delayed
+    past the band (e.g. a long permission prompt) can lose its prompt once
+    a strictly newer delegation exists. The 6h window / 16-entry cap bound
+    how long any shift persists, NOT how many children it affects."""
     path = tasktext_path(data_dir, session_id)
     if not path or not text or not text.strip():
         return
@@ -1689,13 +1710,20 @@ def park_task_text(data_dir: str, session_id: str, text: str,
     # Issue #253 (restoring the #191 F-001 posture store-side): the parked
     # text is untrusted host prose. Route it through THE canonical
     # secret-redaction helper before it touches disk — advisory
-    # (token-shaped secrets only), fail-open. Lazy import: write.py pulls
-    # entity/links/schema at module load.
+    # (token-shaped secrets only). Issue #334 AC2: FAIL-CLOSED — a raising
+    # redactor parks NOTHING rather than persisting raw host prose (the
+    # sibling source.py posture); the park's caller (cli) keeps its own
+    # fail-open guard so the parent recall is never lost either way.
+    # Lazy import: write.py pulls entity/links/schema at module load.
     try:
         from storelib.write import redact_text
         text = redact_text(text)[0]
-    except Exception:
-        pass
+    except Exception as exc:
+        # Issue #334 AC2 (fail-closed) + 0.138.0 review PRR-014: the refusal
+        # must be auditable - one bounded stderr line, never a raise.
+        print("[zmem] task-text park refused: redaction failed (%s)"
+              % exc.__class__.__name__, file=sys.stderr)
+        return
     entries = _load_tasktext(path, now)
     entries.append({
         "agent_id": str(agent_id or ""),
@@ -1705,28 +1733,36 @@ def park_task_text(data_dir: str, session_id: str, text: str,
     if len(entries) > TASK_TEXT_CAP:
         entries = entries[-TASK_TEXT_CAP:]
     try:
-        _atomic_write_json(path, {"entries": entries})
+        # Issue #340: no fsync on this sidecar — a regenerable prompt
+        # cache must not spend the caller's shared store budget on a
+        # durable flush (the segment writer's documented posture).
+        _atomic_write_json(path, {"entries": entries}, fsync=False)
     except OSError:
         pass
 
 
 def consume_task_text(data_dir: str, session_id: str,
                       agent_id: str = "") -> str:
-    """Issue #119: the child's SubagentStart takes one task text — an
-    exact ``agent_id`` match wins when a host parks one; otherwise the
-    OLDEST unconsumed entry (host dispatch order: serially-spawned children
-    start in the order they were delegated; out-of-order arrival of truly
-    concurrent children is the documented FIFO limitation). Removes the
-    consumed entry; returns "" when nothing is stashed. Fail-open. An
-    orphaned earlier park shifts this by one (see park_task_text); there
-    is no rung after the stash but the query-less recent lane.
+    """Issue #119 + #329: the child's SubagentStart takes one task text —
+    an exact ``agent_id`` match wins when a host parks one (unreachable in
+    production today; contract for a future host); otherwise FIFO with an
+    AGED-HEAD SKIP: leading entries older than ``TASK_TEXT_ORPHAN_S`` are
+    dropped in favor of a strictly newer one, so an orphaned park stops
+    shifting later children once it ages past the band (residuals: a
+    younger orphan still shifts until it ages out, and a live child
+    delayed past the band can lose its prompt to a strictly newer
+    delegation — see park_task_text). The consume is CALLER-GATED since
+    0.138.0 (#339): the selector passes it only for granted SubagentStart
+    lanes. Removes the consumed entry (and any skipped aged heads);
+    returns "" when nothing is stashed. Fail-open. No rung after the
+    stash but the query-less recent lane.
 
     Accepted race (#253 review, mirror of the park-side F-002 posture):
     two children whose SubagentStarts fire concurrently can both load the
     same head entry before either rewrite lands, so both receive that
-    delegation and the other child's prompt is consumed by its sibling —
-    degraded relevance for one child, never a crash or store corruption; a
-    lock would add a failure mode to this fail-open hot path."""
+    same delegation (duplicated delivery — the text is served twice, not
+    lost); degraded relevance, never a crash or store corruption; a lock
+    would add a failure mode to this fail-open hot path."""
     path = tasktext_path(data_dir, session_id)
     if not path:
         return ""
@@ -1753,17 +1789,56 @@ def consume_task_text(data_dir: str, session_id: str,
                     break
                 time.sleep(0.01)
         return ""
-    idx = 0
+    idx = None
+    # Issue #119 contract first: an exact agent_id match outranks BOTH the
+    # aging heuristic and FIFO (the future-host correlation key is exact —
+    # it must never be aged away; pinned by OrphanAgingBandTest guards).
     if agent_id:
         for i, e in enumerate(entries):
             if e.get("agent_id") == agent_id:
                 idx = i
                 break
+    if idx is None:
+        # Issue #329 aged-head skip: drop leading entries with FINITE ts
+        # older than TASK_TEXT_ORPHAN_S, but ONLY while a strictly newer
+        # (finite-ts) entry exists behind them. Guards (issue #329
+        # review): entries with malformed/non-finite ts are never aged
+        # (conservative — treat as live; a MISSING ts reads as 0 at the
+        # loader's window check and is pruned there, never reaching this
+        # loop); a sole aged entry is served (no strictly newer
+        # successor); each skipped head is dropped from the write-back so
+        # the next child is not shifted by it either.
+        # Residuals (disclosed): a younger-than-band orphan still shifts by
+        # one; a live child delayed past the band can lose its prompt once
+        # a strictly newer delegation exists.
+        def _finite_ts(entry: Any) -> float | None:
+            try:
+                v = float(entry.get("ts"))
+            except (TypeError, ValueError, OverflowError):
+                # Issue #320 precedent (see _entry_ts): OverflowError is not a
+                # ValueError subclass; a huge numeric ts is malformed like any
+                # other — treat as live, never age it, never raise.
+                return None
+            return v if math.isfinite(v) else None
+
+        while len(entries) > 1:
+            head_ts = _finite_ts(entries[0])
+            if head_ts is None or (now - head_ts) <= TASK_TEXT_ORPHAN_S:
+                break
+            newer = any(
+                (lambda t: t is not None and t > head_ts)(_finite_ts(e))
+                for e in entries[1:]
+            )
+            if not newer:
+                break
+            del entries[0]
+        idx = 0
     text = str(entries[idx].get("text", ""))
     del entries[idx]
     try:
         if entries:
-            _atomic_write_json(path, {"entries": entries})
+            # Issue #340: no fsync on this sidecar (park-side rationale).
+            _atomic_write_json(path, {"entries": entries}, fsync=False)
         else:
             # Same transient class the replace path retries: on Windows a
             # concurrent reader holding the file open (plain open() does not

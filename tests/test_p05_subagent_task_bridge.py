@@ -85,6 +85,7 @@ FILLERS = (
 # keys every store-touching child env must shed.
 _STRIP_ENV = (
     "ZMEM_STORE", "ZMEM_DATA", "ZMEM_HOME", "ZMEM_NAMESPACE", "ZMEM_HOST",
+    "ZMEM_PROJECT", "CLAUDE_PROJECT_DIR", "ZCODE_PROJECT_DIR",
     "ZMEM_QUERY_CONTEXT", "ZMEM_INJECT", "ZMEM_INJECT_TOKEN_BUDGET",
     "ZMEM_INJECT_FLOOR_LEX", "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_MODELS_DIR",
     "ZMEM_SESSION", "CLAUDE_SESSION_ID", "ZCODE_SESSION_ID",
@@ -231,10 +232,20 @@ class TaskTextStrandedTest(unittest.TestCase):
         defined = 0
         callers = 0
         for root in (REPO_ROOT / "skills", REPO_ROOT / "hooks"):
+            # Issue #333 AC2: compare REPO-RELATIVE parts only. The frozen
+            # absolute-path-parts filter went vacuous on any checkout whose
+            # absolute path happens to contain a directory named "tests" or
+            # ".agents" (e.g. a sandbox under <tmp>/tests/probe-repo): every
+            # file was skipped and the scan passed without scanning anything.
+            # Relative parts still skip nested test/agent fixtures inside
+            # the walked trees, which is the filter's actual purpose.
             for path in sorted(root.rglob("*")):
                 if not path.is_file():
                     continue
-                parts = path.parts
+                try:
+                    parts = path.relative_to(root).parts
+                except ValueError:
+                    continue
                 if ("__pycache__" in parts or "tests" in parts
                         or ".agents" in parts):
                     continue

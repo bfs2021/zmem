@@ -3225,6 +3225,7 @@ def build_server(host: str, port: int, use_tls: bool = False) -> "FastMCP":  # t
         lane: Optional[str] = None,
         ops_tokens: list[str] = [],
         reserve: bool = False,
+        consume_tasktext: bool = False,
         client_protocol: object = None,
         deadline_ms: object = None,
     ) -> dict[str, Any]:
@@ -3318,6 +3319,16 @@ def build_server(host: str, port: int, use_tls: bool = False) -> "FastMCP":  # t
         ]
         if lane is not None:
             args += ["--lane", lane]
+        # Issue #339: the consume grant threading point for the fleet
+        # broker's SubagentStart lane (the broker sets consume_tasktext=True;
+        # the transport and remote_gate forward it here). Absent by default
+        # — an ordinary prefetch caller never drains a parked delegation.
+        # Fleet rollout policy: lockstep broker/hub upgrades (FLEET.md's
+        # disclosed boundary has the two-window truth: one window degrades,
+        # the other keeps the bridge with the old drain open until the
+        # paired upgrade).
+        if consume_tasktext:
+            args += ["--consume-tasktext"]
         if caller.scoped:
             for _ns in sorted(caller.namespaces or frozenset()):
                 args += ["--authorized-namespace", _ns]
@@ -3355,6 +3366,15 @@ def build_server(host: str, port: int, use_tls: bool = False) -> "FastMCP":  # t
                     "store.py at ZMEM_HOME predates this server "
                     "(no --authorized-namespace support): update the zmem "
                     "checkout ZMEM_HOME points at to >= 0.105.0")
+            if "--consume-tasktext" in stderr \
+                    and "unrecognized arguments" in stderr:
+                # 0.138.0 review (PRR-006): the grant flag postdates older
+                # store checkouts — same mixed-version actionability as the
+                # flags below.
+                return _error(
+                    "store.py at ZMEM_HOME predates this server "
+                    "(no --consume-tasktext support): update the zmem "
+                    "checkout ZMEM_HOME points at to >= 0.138.0")
             if "--reserve" in stderr and "unrecognized arguments" in stderr:
                 # PRR-011: same mixed-version actionability as the flag
                 # above. --reserve first shipped in 0.109.0 (verified by
