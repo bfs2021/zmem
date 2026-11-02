@@ -15,7 +15,7 @@
 #     success.
 #
 # Usage:
-#   sudo ./install-hub.sh /path/to/zmem /srv/zmem-data /srv/zmem-data/principal-map.json [port]
+#   sudo ./install-hub.sh /path/to/zmem /srv/zmem-data /srv/zmem-data/principal-map.json [port [https-port]]
 
 set -euo pipefail
 

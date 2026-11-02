@@ -196,6 +196,21 @@ class FleetInstaller443PsTest(unittest.TestCase):
             "REFUSED: cannot verify tailscale serve occupancy", src,
             "an unreadable status must FAIL CLOSED (FB-2)")
 
+    def test_ours_regex_digit_boundary_is_pinned(self):
+        """The ours-regex digit boundary is pinned at the PATTERN level: a
+        mutant that drops the sh digit class or inverts the ps1 boundary
+        changes this text and goes red (critic round)."""
+        sh_src = _src(CLS_SH)
+        self.assertIn(
+            'proxy http://127' + chr(92) + '.0' + chr(92) + '.0' + chr(92)
+            + '.1:$PORT([^0-9]|' + chr(92) + '$)', sh_src,
+            "the sh ours pattern lost its digit boundary")
+        lib_src = _src(LIB_PS1)
+        self.assertIn(
+            'proxy http://127' + chr(92) + '.0' + chr(92) + '.0' + chr(92)
+            + '.1:$OurPort(' + chr(92) + 'D|$)', lib_src,
+            "the ps1 ours pattern lost its digit boundary")
+
     def test_detection_is_line_scoped_and_port_aware(self):
         """BEHAVIORAL ORACLE — drives the shipped classifiers (sh via bash,\n        ps1 via powershell) through the shared status matrix."""
         found = _drivers()
