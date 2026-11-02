@@ -654,15 +654,20 @@ release, including the snapshot-age check.
 Surfaces shipped with the fleet-operations release (under
 `scripts/fleet/` and `skills/memory/scripts/`):
 
-- **Hub**: `install-hub.ps1 -HttpsPort <n>` / `install-hub.sh REPO_ROOT
-  DATA_DIR TOKENS_FILE [PORT [HTTPS_PORT]]` register the hub bound to
-  127.0.0.1 only, refuse a broad-ACL (SID-matched) / non-0600 principal
-  map, and configure `tailscale serve --bg --https=<https-port>
-  http://127.0.0.1:<port>` (issue #423: the serve HTTPS port defaults to
-  443 and is a parameter; an installer targeting the default :443 when a
-  live non-zmem handler already occupies it REFUSES before re-pointing
-  serve — name another port with `-HttpsPort`/`HTTPS_PORT` instead of
-  replacing an operator service). The Linux
+- **Hub**: `install-hub.ps1 -RepoRoot <repo> -DataDir <dir> -TokensFile
+  <principal-map.json> [-Port <p>] [-TaskName <n>] [-HttpsPort <n>]` /
+  `install-hub.sh REPO_ROOT DATA_DIR TOKENS_FILE [PORT [HTTPS_PORT]]`
+  register the hub bound to 127.0.0.1 only, refuse a broad-ACL
+  (SID-matched) / non-0600 principal map, and configure `tailscale serve
+  --bg --https=<https-port> http://127.0.0.1:<port>` (issue #423: the
+  serve HTTPS port defaults to 443 and is a parameter; an installer
+  targeting the default :443 runs an occupancy preflight BEFORE any host
+  mutation and REFUSES — leaving the host exactly as found — when the
+  serve status cannot be read, or when the default-port web handler set
+  is not entirely the hub's own localhost proxy, so a live operator
+  service is never replaced; an all-ours default-port handler is the
+  idempotent re-run. Name another port with `-HttpsPort <n>` /
+  `HTTPS_PORT` instead of replacing an operator service). The Linux
   unit runs as the invoking (sudo) user with NoNewPrivileges and verifies
   the service came up before reporting success.
 - **Per-machine principals**: `scripts/fleet/issue-principal.py --map

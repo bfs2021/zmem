@@ -43,6 +43,11 @@ case "$DATA_DIR$TOKENS_FILE$REPO_ROOT" in
         echo "install-hub: REFUSED: paths containing whitespace-quoting/metacharacters (\\ # \$ ' \") are not supported by the generated unit (got one in DATA_DIR/TOKENS_FILE/REPO_ROOT)" >&2
         exit 2 ;;
 esac
+# Numeric-normalize the ports AFTER validation so a leading-zero spelling
+# (e.g. HTTPS_PORT=0443) is compared against the :443 refusal by VALUE, not
+# text - tailscale itself would parse 0443 as 443 (review round 3).
+PORT=$((10#$PORT))
+HTTPS_PORT=$((10#$HTTPS_PORT))
 SERVICE_USER="${SUDO_USER:-$(id -un)}"
 if [ "$SERVICE_USER" = "root" ]; then
     echo "install-hub: REFUSED: run via sudo from an unprivileged account (the hub must not run as root; SUDO_USER names the service user)" >&2
@@ -60,9 +65,37 @@ if [ "$MODE" != "600" ]; then
     exit 2
 fi
 MAP_OWNER="$(stat -c %U "$TOKENS_FILE")"
-if [ "$MAP_OWNER" != "$SERVICE_USER" ] && [ "$MAP_OWNER" != "root" ]; then
+if [ "$MAP_OWNER" != "$SERVICE_USER" ] fi$ && [ "$MAP_OWNER" != "root" ]; then
     echo "install-hub: REFUSED: $TOKENS_FILE is owned by '$MAP_OWNER', not the service user ($SERVICE_USER) or root - a non-owner could append principals to a map the root-adjacent hub trusts" >&2
     exit 2
+fi
+
+# --- tailscale serve occupancy preflight (issue #423, review round 3) -------
+# The guard runs BEFORE ANY side effect (env file, unit, service restart):
+# a refusal must leave the host exactly as found, not in the half-configured
+# "service restarted, no ingress" state issue #423 complains about. The
+# status query is FAIL-CLOSED: an unreadable serve status refuses instead of
+# falling through to the serve call. Classification lives in the shipped
+# scripts/fleet/serve-status-classify.sh so the behavioral oracle in
+# tests/test_fleet_installer_443.py executes the SAME code.
+if command -v tailscale >/dev/null 2>&1; then
+    SERVE_STATUS="$(tailscale serve status 2>/dev/null)" && STATUS_RC=0 || STATUS_RC=$?
+    if [ "$STATUS_RC" -ne 0 ] || [ -z "$SERVE_STATUS" ]; then
+        echo "install-hub: REFUSED: cannot verify tailscale serve occupancy (status query failed, exit $STATUS_RC)" >&2
+        echo "Not publishing over an unverifiable :443 - check tailscaled, then re-run." >&2
+        exit 2
+    fi
+    CLASSIFICATION="$(printf '%s\n' "$SERVE_STATUS" | PORT="$PORT" bash "$REPO_ROOT/scripts/fleet/serve-status-classify.sh")"
+    OCCUPIER="${CLASSIFICATION%% *}"
+    OURS="${CLASSIFICATION##* }"
+    if [ "$HTTPS_PORT" = "443" ] && [ "$OCCUPIER" = "1" ] && [ "$OURS" = "0" ]; then
+        echo "install-hub: REFUSED: tailscale serve already has a handler on :443" >&2
+        echo "(an operator service is live there). Re-run with an explicit" >&2
+        echo "HTTPS_PORT=<n> (5th arg) to publish the hub on another port" >&2
+        echo "instead of replacing it. Current serve status:" >&2
+        printf '%s\n' "$SERVE_STATUS" >&2
+        exit 2
+    fi
 fi
 
 mkdir -p "$DATA_DIR"
@@ -110,36 +143,11 @@ if ! systemctl --no-pager --lines=5 status zmem-hub.service; then
 fi
 
 # --- tailscale serve: tailnet HTTPS -> localhost ONLY -----------------------
-# Issue #423: refuse an occupied :443 before re-pointing serve (a live
-# non-zmem handler there would be silently replaced); -HttpsPort/HTTPS_PORT
-# publishes the hub on another port instead.
+# Issue #423: the serve HTTPS port is a parameter. The OCCUPANCY PREFLIGHT
+# ran before any side effect (see above); this late block only EXECUTES the
+# serve re-point, after the hub service is verified up, so serve is never
+# configured against a dead hub.
 if command -v tailscale >/dev/null 2>&1; then
-    SERVE_STATUS="$(tailscale serve status 2>/dev/null || true)"
-    # Review round 1: line-scoped (herestring, not a pipe - no SIGPIPE under
-    # pipefail) and PORT-aware detection. An occupier is a web handler with
-    # no explicit port or :443 (tailscale suppresses the default) or a
-    # TLS-terminated TCP forward on 443; a handler on another port is NOT a
-    # :443 occupier, and a web handler already proxying OUR localhost port
-    # is the idempotent re-run.
-    OCCUPIER=0; OURS=0
-    while IFS= read -r line; do
-        case "$line" in
-            *"|"*"-- tcp://"*":443 "*) OCCUPIER=1 ;;
-        esac
-        printf '%s' "$line" | grep -Eq '^https?://[^/: ]+(:443)?([[:space:]]|$)' && OCCUPIER=1
-        printf '%s' "$line" | grep -Eq "proxy http://127\.0\.0\.1:$PORT([^0-9]|\$)" && OURS=1
-    done <<EOF_STATUS
-$SERVE_STATUS
-EOF_STATUS
-    if [ "$HTTPS_PORT" = "443" ] && [ "$OCCUPIER" = 1 ] && [ "$OURS" = 0 ]; then
-        echo "install-hub: REFUSED: tailscale serve already has a handler on :443" >&2
-        echo "(an operator service is live there). Re-run with an explicit" >&2
-        echo "HTTPS_PORT=<n> (5th arg) to publish the hub on another port" >&2
-        echo "instead of replacing it. Current serve status:" >&2
-        printf '%s
-' "$SERVE_STATUS" >&2
-        exit 2
-    fi
     tailscale serve --bg --https="$HTTPS_PORT" "http://127.0.0.1:$PORT"
     tailscale serve status
 else
