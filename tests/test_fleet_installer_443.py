@@ -130,7 +130,10 @@ class FleetInstaller443PsTest(unittest.TestCase):
 
     def test_httpsport_parameter_exists(self):
         src = _src(PS1)
-        self.assertRegex(src, r"\[int\]\$HttpsPort\s*=\s*443")
+        self.assertRegex(
+            src, r"\[int\]\$HttpsPort\s*=\s*443",
+            "the -HttpsPort parameter (default 443) is missing — the "
+            "installer cannot publish on any other port")
         self.assertRegex(
             src, r"\$HttpsPort -lt 1 -or \$HttpsPort -gt 65535",
             "the full 1-65535 validation must pin both bounds (FB-7)")
@@ -157,7 +160,9 @@ class FleetInstaller443PsTest(unittest.TestCase):
     def test_occupied_443_refusal_guard(self):
         src = _src(PS1)
         self.assertIn("serve status", src)
-        self.assertRegex(src, r"REFUSED: tailscale serve already has a handler")
+        self.assertRegex(
+            src, r"REFUSED: tailscale serve already has a handler",
+            "the occupied-:443 refusal is missing")
         self.assertRegex(src, r"-HttpsPort <n>",
                          "the refusal must name the -HttpsPort escape")
         self.assertIn(
@@ -186,8 +191,12 @@ class FleetInstaller443ShTest(unittest.TestCase):
 
     def test_https_port_arg_and_guard(self):
         src = _src(SH)
-        self.assertIn('HTTPS_PORT="${5:-443}"', src)
-        self.assertRegex(src, r"--https=\"\$HTTPS_PORT\"")
+        self.assertIn(
+            'HTTPS_PORT="${5:-443}"', src,
+            "the HTTPS_PORT positional parameter is missing")
+        self.assertRegex(
+            src, r"--https=\"\$HTTPS_PORT\"",
+            "the serve call still hardcodes 443")
         self.assertRegex(src, r"REFUSED: tailscale serve already has a handler")
         self.assertRegex(src, r"HTTPS_PORT=<n>")
         # FB-6: numeric normalization - a leading-zero port (0443) is
@@ -232,7 +241,9 @@ class HttpsPortParameterTest(unittest.TestCase):
 
     def test_docs_name_the_parameter(self):
         src = _src(FLEET)
-        self.assertRegex(src, r"`-HttpsPort <n>`|`install-hub\.ps1 -HttpsPort <n>`")
+        self.assertRegex(
+            src, r"`-HttpsPort <n>`|`install-hub\.ps1 -HttpsPort <n>`",
+            "FLEET.md does not document the -HttpsPort parameter")
         self.assertIn("HTTPS_PORT", src)
         self.assertNotIn(
             "`tailscale serve --bg --https=443 http://127.0.0.1:<port>`",
