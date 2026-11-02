@@ -292,6 +292,10 @@ class FleetInstaller443ShTest(unittest.TestCase):
         self.assertIn(
             'if [ "$OCCUPIER" = "1" ] && [ "$OURS" = "0" ]; then', src,
             "the sh occupancy guard condition is missing or altered")
+        self.assertIn(
+            '[01]" "[01]) : ;;', src,
+            "the sh classifier-output parse gate is missing (fail-open "
+            "round: a malformed-but-exit-0 result must refuse)")
 
     def test_serve_call_uses_the_parameter(self):
         src = _src(SH)
