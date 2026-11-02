@@ -222,7 +222,9 @@ class FleetInstaller443ShTest(unittest.TestCase):
         self.assertRegex(
             src, r"--https=\"\$HTTPS_PORT\"",
             "the serve call still hardcodes 443")
-        self.assertRegex(src, r"REFUSED: tailscale serve already has a handler")
+        self.assertRegex(
+            src, r"REFUSED: tailscale serve already has a handler",
+            "the occupied-:443 refusal is missing")
         self.assertRegex(
             src, r"HTTPS_PORT=<n>",
             "the refusal must name the HTTPS_PORT escape")
@@ -234,10 +236,19 @@ class FleetInstaller443ShTest(unittest.TestCase):
         self.assertIn('case "$HTTPS_PORT" in', src)
         self.assertIn('*[!0-9]*', src)
         self.assertIn('-le 65535', src)
-        # FB-2: the status read is fail-closed; the refusal exits nonzero.
+        # FB-2: the status read is fail-closed; the occupancy refusal block
+        # itself terminates with exit 2 (span-scoped - "exit 2" occurs
+        # elsewhere in the file, so an unscoped pin is vacuous; round 2).
         self.assertIn("cannot verify tailscale serve occupancy", src)
-        self.assertIn("exit 2", src,
-                      "the sh refusals must exit nonzero (terminating)")
+        self.assertRegex(
+            src,
+            r"REFUSED: tailscale serve already has a handler"
+            r"[\s\S]{0,600}?exit 2",
+            "the occupancy refusal must terminate with exit 2 inside its "
+            "own block")
+        self.assertIn(
+            "systemctl --no-pager --lines=5 status", src,
+            "the sh installer never verifies the hub service came up")
         # Review round 4: the guard CONDITION itself is pinned - a mutant
         # that no-ops the occupancy gate (`if false; then`) must go red.
         self.assertIn(
@@ -260,6 +271,10 @@ class FleetInstaller443ShTest(unittest.TestCase):
         self.assertLess(guard, src.index('cat > "$ENV_FILE"'))
         self.assertLess(guard, src.index('cat > "$UNIT"'))
         self.assertLess(guard, src.index("systemctl restart"))
+        self.assertGreater(
+            src.index("tailscale serve --bg"),
+            src.index("systemctl --no-pager --lines=5 status"),
+            "the serve re-point must run after the hub service is verified up")
 
     def test_detection_is_line_scoped_and_port_aware(self):
         """Same shipped-classifier behavioral oracle, sh-specific class (the\n        bash driver executes the shipped classifier file directly)."""
