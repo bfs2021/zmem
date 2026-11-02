@@ -53,7 +53,30 @@ CASES = [
      "https://host.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:32400", 1, 0),
     ("target-8443-ours-idempotent", 8765, 8443,
      "https://host.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8765", 1, 1),
+    # Critic round: ours is an AND across every target block - an
+    # operator or mixed target block is never masked by an all-ours
+    # sibling, in either order, and a tcp forward on the target
+    # suppresses ours at ANY position.
+    ("p1-operator443-then-ours443", 8765, 443,
+     "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:32400\\n\n\n"
+     "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8765", 1, 0),
+    ("p2-ours443-then-operator443", 8765, 443,
+     "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8765\\n\n\n"
+     "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:32400", 1, 0),
+    ("p3-tcp443-before-ours443", 8765, 443,
+     "|-- tcp://foo.ts.net:443 (TLS-terminated TCP, tailnet only)\n"
+     "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8765", 1, 0),
+    ("p5-tcp443-after-ours443", 8765, 443,
+     "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8765\n"
+     "|-- tcp://foo.ts.net:443 (TLS-terminated TCP, tailnet only)", 1, 0),
+    ("p4-boundary-our-ip-prefix-port", 8765, 443,
+     "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:87650", 1, 0),
+    ("p2b-mixed443-then-ours443", 8765, 443,
+     "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:32400\n"
+     "|-- /zmem proxy http://127.0.0.1:8765\\n\n\n"
+     "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8765", 1, 0),
 ]
+
 
 EXPECTED_RANGE = "1-65535"
 

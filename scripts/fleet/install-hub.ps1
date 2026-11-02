@@ -12,12 +12,12 @@
 #     Users, matched by well-known SID so localized Windows cannot defeat
 #     it) is REFUSED before anything is configured;
 #   * idempotent: re-running replaces the wrapper, the task, and re-points
-#     serve, and RESTARTS the task so the running hub converges onto the
-#     new configuration.
+#     serve (subject to the serve occupancy preflight below), and RESTARTS
+#     the task so the running hub converges onto the new configuration.
 #
 # Usage:
 #   .\install-hub.ps1 -RepoRoot C:\path\to\zmem -DataDir D:\zmem-data `
-#       -TokensFile D:\zmem-data\principal-map.json -Port 8765
+#       -TokensFile D:\zmem-data\principal-map.json -Port 8765 [-TaskName zmem-hub] [-HttpsPort 443]
 param(
     [Parameter(Mandatory = $true)][string]$RepoRoot,
     [Parameter(Mandatory = $true)][string]$DataDir,

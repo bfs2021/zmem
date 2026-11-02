@@ -31,9 +31,18 @@ function Get-ServeStatusClassification {
     $inTarget = $false
     $blockHas = $false
     $blockAllOurs = $true
+    # Ours is an AND across every target-port block (critic round): at
+    # least one target block must carry handlers AND every one of them
+    # must be entirely ours - a sticky per-block OR let an operator or
+    # mixed target block hide behind an all-ours sibling.
+    $sawTargetBlock = $false
+    $allTargetBlocksOurs = $true
     foreach ($line in $Lines) {
         if ($line -match '^https?://') {
-            if ($inTarget -and $blockHas -and $blockAllOurs) { $ours = $true }
+            if ($inTarget -and $blockHas) {
+                $sawTargetBlock = $true
+                if (-not $blockAllOurs) { $allTargetBlocksOurs = $false }
+            }
             if ($line -match '^(https://[^/: ]+(:443)?|http://[^/: ]+:443)(\s|$)') {
                 if ($TargetPort -eq 443) {
                     $occupier = $true
@@ -54,6 +63,8 @@ function Get-ServeStatusClassification {
         if ($line -notmatch '^\|--') { continue }
         if ($line -match ('\|-- tcp://[^ ]+:' + $TargetPort + ' ')) {
             $occupier = $true
+            # A tcp forward on the target port suppresses ours at ANY position.
+            $allTargetBlocksOurs = $false
             if ($inTarget) { $blockAllOurs = $false }
             continue
         }
@@ -63,6 +74,10 @@ function Get-ServeStatusClassification {
             $blockAllOurs = $false
         }
     }
-    if ($inTarget -and $blockHas -and $blockAllOurs) { $ours = $true }
+    if ($inTarget -and $blockHas) {
+        $sawTargetBlock = $true
+        if (-not $blockAllOurs) { $allTargetBlocksOurs = $false }
+    }
+    if ($sawTargetBlock -and $allTargetBlocksOurs) { $ours = $true }
     [pscustomobject]@{ Occupier = $occupier; Ours = $ours }
 }

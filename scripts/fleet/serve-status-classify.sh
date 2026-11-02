@@ -38,10 +38,18 @@ esac
 
 OCCUPIER=0; OURS=0
 IN_TARGET=0; BLOCK_HAS=0; BLOCK_ALL_OURS=1
+# Ours is an AND across every target-port block (critic round): at least
+# one target block must carry handlers AND every one of them must be
+# entirely ours. A sticky per-block OR let an operator or mixed target
+# block hide behind an all-ours sibling (PRR-001 regression class).
+SAW_TARGET_BLOCK=0; ALL_TARGET_BLOCKS_OURS=1
 
 flush_block() {
-    if [ "$IN_TARGET" -eq 1 ] && [ "$BLOCK_HAS" -eq 1 ] && [ "$BLOCK_ALL_OURS" -eq 1 ]; then
-        OURS=1
+    if [ "$IN_TARGET" -eq 1 ] && [ "$BLOCK_HAS" -eq 1 ]; then
+        SAW_TARGET_BLOCK=1
+        if [ "$BLOCK_ALL_OURS" -ne 1 ]; then
+            ALL_TARGET_BLOCKS_OURS=0
+        fi
     fi
     IN_TARGET=0; BLOCK_HAS=0; BLOCK_ALL_OURS=1
 }
@@ -61,6 +69,9 @@ while IFS= read -r line || [ -n "$line" ]; do
     elif printf '%s' "$line" | grep -Eq '^\|--'; then
         if printf '%s' "$line" | grep -Eq "\|-- tcp://[^ ]+:$TARGET_PORT "; then
             OCCUPIER=1
+            # A tcp forward on the target port conflicts wherever it is
+            # listed - it suppresses ours at ANY position.
+            ALL_TARGET_BLOCKS_OURS=0
             if [ "$IN_TARGET" -eq 1 ]; then
                 BLOCK_ALL_OURS=0
             fi
@@ -72,4 +83,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 done
 
 flush_block
+if [ "$SAW_TARGET_BLOCK" -eq 1 ] && [ "$ALL_TARGET_BLOCKS_OURS" -eq 1 ]; then
+    OURS=1
+fi
 echo "$OCCUPIER $OURS"

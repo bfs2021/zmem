@@ -82,10 +82,16 @@ if command -v tailscale >/dev/null 2>&1; then
     SERVE_STATUS="$(tailscale serve status 2>/dev/null)" && STATUS_RC=0 || STATUS_RC=$?
     if [ "$STATUS_RC" -ne 0 ] || [ -z "$SERVE_STATUS" ]; then
         echo "install-hub: REFUSED: cannot verify tailscale serve occupancy (status query failed, exit $STATUS_RC)" >&2
-        echo "Not publishing over an unverifiable :443 - check tailscaled, then re-run." >&2
+        echo "Not publishing over an unverifiable serve configuration - check tailscaled, then re-run." >&2
         exit 2
     fi
     CLASSIFICATION="$(printf '%s\n' "$SERVE_STATUS" | PORT="$PORT" TARGET_PORT="$HTTPS_PORT" bash "$REPO_ROOT/scripts/fleet/serve-status-classify.sh")"
+    case "$CLASSIFICATION" in
+        [01]" "[01]) : ;;
+        *)
+            echo "install-hub: REFUSED: serve-status classifier returned an unparseable result (got: $CLASSIFICATION)" >&2
+            exit 2 ;;
+    esac
     OCCUPIER="${CLASSIFICATION%% *}"
     OURS="${CLASSIFICATION##* }"
     if [ "$OCCUPIER" = "1" ] && [ "$OURS" = "0" ]; then
