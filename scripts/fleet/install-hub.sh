@@ -65,7 +65,7 @@ if [ "$MODE" != "600" ]; then
     exit 2
 fi
 MAP_OWNER="$(stat -c %U "$TOKENS_FILE")"
-if [ "$MAP_OWNER" != "$SERVICE_USER" ] fi$ && [ "$MAP_OWNER" != "root" ]; then
+if [ "$MAP_OWNER" != "$SERVICE_USER" ] && [ "$MAP_OWNER" != "root" ]; then
     echo "install-hub: REFUSED: $TOKENS_FILE is owned by '$MAP_OWNER', not the service user ($SERVICE_USER) or root - a non-owner could append principals to a map the root-adjacent hub trusts" >&2
     exit 2
 fi
@@ -85,12 +85,13 @@ if command -v tailscale >/dev/null 2>&1; then
         echo "Not publishing over an unverifiable :443 - check tailscaled, then re-run." >&2
         exit 2
     fi
-    CLASSIFICATION="$(printf '%s\n' "$SERVE_STATUS" | PORT="$PORT" bash "$REPO_ROOT/scripts/fleet/serve-status-classify.sh")"
+    CLASSIFICATION="$(printf '%s\n' "$SERVE_STATUS" | PORT="$PORT" TARGET_PORT="$HTTPS_PORT" bash "$REPO_ROOT/scripts/fleet/serve-status-classify.sh")"
     OCCUPIER="${CLASSIFICATION%% *}"
     OURS="${CLASSIFICATION##* }"
-    if [ "$HTTPS_PORT" = "443" ] && [ "$OCCUPIER" = "1" ] && [ "$OURS" = "0" ]; then
-        echo "install-hub: REFUSED: tailscale serve already has a handler on :443" >&2
-        echo "(an operator service is live there). Re-run with an explicit" >&2
+    if [ "$OCCUPIER" = "1" ] && [ "$OURS" = "0" ]; then
+        echo "install-hub: REFUSED: tailscale serve already has a handler on :$HTTPS_PORT" >&2
+        echo "(an operator service is live there, or the existing handler" >&2
+        echo "set is not entirely ours). Re-run with an explicit" >&2
         echo "HTTPS_PORT=<n> (5th arg) to publish the hub on another port" >&2
         echo "instead of replacing it. Current serve status:" >&2
         printf '%s\n' "$SERVE_STATUS" >&2

@@ -1,15 +1,4 @@
-"""Static contract + shipped-classifier behavioral tests for the hub
-installers' serve-port behavior (issue #423). The installers are host-only
-scripts (a Tailscale node, a scheduled task / systemd unit — not
-CI-executable), so the static pins hold the contract at the source level,
-while the behavioral oracle drives the SHIPPED classifiers
-(scripts/fleet/serve-status-classify.sh + scripts/fleet/serve-status-lib.ps1)
-through a shared status matrix — a mutant that edits the shipped matcher
-turns these red, because the test executes the shipped code rather than a
-re-implementation (review round 3: PRR-002/FB-8, FB-7).
-
-Run: python tests/test_fleet_installer_443.py
-"""
+"""Static contract + shipped-classifier behavioral tests for the hub\ninstallers' serve-port behavior (issue #423). The installers are host-only\nscripts (a Tailscale node, a scheduled task / systemd unit — not\nCI-executable), so the static pins hold the contract at the source level,\nwhile the behavioral oracle drives the SHIPPED classifiers\n(scripts/fleet/serve-status-classify.sh + scripts/fleet/serve-status-lib.ps1)\nthrough a shared status matrix — a mutant that edits the shipped matcher\nturns these red, because the test executes the shipped code rather than a\nre-implementation (review round 3: PRR-002/FB-8, FB-7).\n\nRun: python tests/test_fleet_installer_443.py\n"""
 from __future__ import annotations
 
 import os
@@ -27,28 +16,43 @@ CLS_SH = REPO_ROOT / "scripts" / "fleet" / "serve-status-classify.sh"
 LIB_PS1 = REPO_ROOT / "scripts" / "fleet" / "serve-status-lib.ps1"
 FLEET = REPO_ROOT / "docs" / "FLEET.md"
 
-# The shared status matrix: (name, port, status, want_occupier, want_ours)
+# The shared status matrix:
+# (name, our_port, target_port, status, want_occupier, want_ours)
 CASES = [
-    ("plex-443", 8765, "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:32400", 1, 0),
-    ("all-ours-idempotent", 8765, "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8765", 1, 1),
-    ("funnel-dup-ours", 8765,
+    ("plex-443", 8765, 443, "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:32400", 1, 0),
+    ("all-ours-idempotent", 8765, 443, "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8765", 1, 1),
+    ("funnel-dup-ours", 8765, 443,
      "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8765\n\n"
      "# Funnel on:\nhttps://host.ts.net (funnel)\n|-- / proxy http://127.0.0.1:8765", 1, 1),
-    ("tcp-443", 8765, "|-- tcp://foo.ts.net:443 (TLS-terminated TCP, tailnet only)", 1, 0),
-    ("non443-header", 8765, "https://host.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8765", 0, 0),
-    ("no-config", 8765, "No serve config", 0, 0),
+    ("tcp-443", 8765, 443, "|-- tcp://foo.ts.net:443 (TLS-terminated TCP, tailnet only)", 1, 0),
+    ("non443-header", 8765, 443, "https://host.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8765", 0, 0),
+    ("no-config", 8765, 443, "No serve config", 0, 0),
     # PRR-001: a hub handler under a non-default header never masks a :443 operator.
-    ("prr001-hub-8765-operator-443", 8765,
+    ("prr001-hub-8443-operator-443", 8765, 443,
      "https://host.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8765\n"
      "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.1:32400", 1, 0),
-    ("mixed-block", 8765,
+    ("mixed-block", 8765, 443,
      "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.1:32400\n"
      "|-- /zmem proxy http://127.0.0.1:8765", 1, 0),
     # FB-3: a plain http:// handler is a :80 handler, not a :443 occupier.
-    ("http-80-not-occupier", 8765, "http://host.ts.net (tailnet only)\n|-- / proxy http://127.0.1:8080", 0, 0),
-    ("http-443-explicit", 8765, "http://host.ts.net:443 (tailnet only)", 1, 0),
-    ("port-prefix", 8765, "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.1:87650", 1, 0),
-    ("empty-input", 8765, "", 0, 0),
+    ("http-80-not-occupier", 8765, 443, "http://host.ts.net (tailnet only)\n|-- / proxy http://127.0.1:8080", 0, 0),
+    ("http-443-explicit", 8765, 443, "http://host.ts.net:443 (tailnet only)", 1, 0),
+    ("port-prefix", 8765, 443, "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.1:87650", 1, 0),
+    ("empty-input", 8765, 443, "", 0, 0),
+    # Review round 4: EVERY target-port block counts (the ps1
+    # last-block-only regression) - an all-ours :443 block followed by a
+    # :8443 block stays ours.
+    ("ours443-then-8443-block", 8765, 443,
+     "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8765\n\n"
+     "https://host.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:3000", 1, 1),
+    ("operator443-then-ours8443", 8765, 443,
+     "https://host.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:32400\n\n"
+     "https://host.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8765", 1, 0),
+    # Review round 4: the explicit-port escape is itself occupancy-checked.
+    ("target-8443-operator", 8765, 8443,
+     "https://host.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:32400", 1, 0),
+    ("target-8443-ours-idempotent", 8765, 8443,
+     "https://host.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8765", 1, 1),
 ]
 
 EXPECTED_RANGE = "1-65535"
@@ -73,10 +77,11 @@ def _resolve_pwsh() -> str | None:
     return shutil.which("pwsh") or shutil.which("powershell")
 
 
-def _drive_bash_classifier(bash: str, port: int, status: str) -> tuple[int, int]:
+def _drive_bash_classifier(bash: str, port: int, target: int, status: str) -> tuple[int, int]:
     proc = subprocess.run(
         [bash, str(CLS_SH)], input=status, text=True, capture_output=True,
-        env={**os.environ, "PORT": str(port)}, timeout=60)
+        env={**os.environ, "PORT": str(port), "TARGET_PORT": str(target)},
+        timeout=60)
     parts = proc.stdout.strip().split()
     if proc.returncode != 0 or len(parts) < 2:
         raise AssertionError(
@@ -85,13 +90,14 @@ def _drive_bash_classifier(bash: str, port: int, status: str) -> tuple[int, int]
     return int(parts[0]), int(parts[1])
 
 
-def _drive_ps1_classifier(pwsh: str, lines: list[str], our_port: int) -> tuple[bool, bool]:
+def _drive_ps1_classifier(pwsh: str, lines: list[str], our_port: int,
+                          target_port: int = 443) -> tuple[bool, bool]:
     def q(s: str) -> str:
         return s.replace("'", "''")
     script = (
         ". '" + str(LIB_PS1) + "';\n"
         "$l = @(" + ",".join("'" + q(line) + "'" for line in lines) + ");\n"
-        "$r = Get-ServeStatusClassification -Lines $l -OurPort " + str(our_port) + "\n"
+        "$r = Get-ServeStatusClassification -Lines $l -OurPort " + str(our_port) + " -TargetPort " + str(target_port) + "\n"
         "Write-Output (\"{0},{1}\" -f $r.Occupier, $r.Ours)"
     )
     proc = subprocess.run(
@@ -105,9 +111,9 @@ def _drive_ps1_classifier(pwsh: str, lines: list[str], our_port: int) -> tuple[b
     return occ_s == "True", ours_s == "True"
 
 
-def _drive_ps1_classifier_lines(pwsh: str, port: int, status: str) -> tuple[int, int]:
+def _drive_ps1_classifier_lines(pwsh: str, port: int, target: int, status: str) -> tuple[int, int]:
     lines = status.splitlines() or [""]
-    occ, ours = _drive_ps1_classifier(pwsh, lines, port)
+    occ, ours = _drive_ps1_classifier(pwsh, lines, port, target)
     return (1 if occ else 0), (1 if ours else 0)
 
 
@@ -116,17 +122,16 @@ def _drivers() -> list[tuple[str, object]]:
     bash = _resolve_bash()
     if bash:
         out.append(("bash+shipped-sh-classifier",
-                    lambda p, s: _drive_bash_classifier(bash, p, s)))
+                    lambda p, s, t: _drive_bash_classifier(bash, p, s, t)))
     pwsh = _resolve_pwsh()
     if pwsh:
         out.append(("pwsh+shipped-ps1-classifier",
-                    lambda p, s: _drive_ps1_classifier_lines(pwsh, p, s)))
+                    lambda p, s, t: _drive_ps1_classifier_lines(pwsh, p, s, t)))
     return out
 
 
 class FleetInstaller443PsTest(unittest.TestCase):
-    """AC1 — the Windows installer refuses an occupied :443 before ANY host
-    side effect and takes a -HttpsPort parameter."""
+    """AC1 — the Windows installer refuses an occupied :443 before ANY host\n    side effect and takes a -HttpsPort parameter."""
 
     def test_httpsport_parameter_exists(self):
         src = _src(PS1)
@@ -142,11 +147,17 @@ class FleetInstaller443PsTest(unittest.TestCase):
             "-HttpsPort must be declared AFTER -TaskName so existing "
             "positional calls keep their meaning (FB-1)")
 
+    def test_serve_call_uses_the_parameter(self):
+        src = _src(PS1)
+        self.assertRegex(
+            src, r"tailscale\s+serve\s+--bg\s+--https=\$HttpsPort",
+            "the serve call still hardcodes its https port")
+        self.assertNotRegex(
+            src, r"--https=443(?!\s*http)",
+            "a hardcoded --https=443 remains somewhere in the serve path")
+
     def test_guard_precedes_every_host_side_effect(self):
-        """FB-5: the serve-occupancy preflight runs BEFORE the wrapper write,
-        the task registration, and the task start — a refusal leaves the host
-        exactly as found. The serve EXECUTION stays after the task state
-        check, so serve is never configured against a dead hub."""
+        """FB-5: the serve-occupancy preflight runs BEFORE the wrapper write,\n        the task registration, and the task start — a refusal leaves the host\n        exactly as found. The serve EXECUTION stays after the task state\n        check, so serve is never configured against a dead hub."""
         src = _src(PS1)
         guard = src.index("serve status")
         self.assertLess(guard, src.index("New-Item -ItemType Directory -Force -Path $DataDir"))
@@ -159,10 +170,19 @@ class FleetInstaller443PsTest(unittest.TestCase):
 
     def test_occupied_443_refusal_guard(self):
         src = _src(PS1)
-        self.assertIn("serve status", src)
+        self.assertIn(
+            "serve status", src,
+            "the installer never inspects current serve state")
         self.assertRegex(
             src, r"REFUSED: tailscale serve already has a handler",
             "the occupied-:443 refusal is missing")
+        self.assertRegex(
+            src, r'Write-Error \("REFUSED: tailscale serve already has a handler',
+            "the :443 refusal must be a TERMINATING Write-Error, not an "
+            "advisory Write-Warning (review round 4)")
+        self.assertRegex(
+            src, r"Write-Error \(\"REFUSED: cannot verify tailscale serve occupancy",
+            "the fail-closed status refusal must be a TERMINATING Write-Error")
         self.assertRegex(src, r"-HttpsPort <n>",
                          "the refusal must name the -HttpsPort escape")
         self.assertIn(
@@ -170,15 +190,14 @@ class FleetInstaller443PsTest(unittest.TestCase):
             "an unreadable status must FAIL CLOSED (FB-2)")
 
     def test_detection_is_line_scoped_and_port_aware(self):
-        """BEHAVIORAL ORACLE — drives the shipped classifiers (sh via bash,
-        ps1 via powershell) through the shared status matrix."""
+        """BEHAVIORAL ORACLE — drives the shipped classifiers (sh via bash,\n        ps1 via powershell) through the shared status matrix."""
         found = _drivers()
         if not found:
             self.skipTest("no bash or pwsh/powershell runtime available")
         for name, drive in found:
             with self.subTest(driver=name):
-                for case_name, port, status, want_occ, want_ours in CASES:
-                    got_occ, got_ours = drive(port, status)
+                for case_name, port, target, status, want_occ, want_ours in CASES:
+                    got_occ, got_ours = drive(port, target, status)
                     self.assertEqual(
                         (got_occ, got_ours), (want_occ, want_ours),
                         f"[{name}] {case_name}: want=({want_occ},{want_ours}) "
@@ -186,8 +205,7 @@ class FleetInstaller443PsTest(unittest.TestCase):
 
 
 class FleetInstaller443ShTest(unittest.TestCase):
-    """AC2 — the Linux installer applies the same refusal with the same
-    ordering and fail-closed status contract."""
+    """AC2 — the Linux installer applies the same refusal with the same\n    ordering and fail-closed status contract."""
 
     def test_https_port_arg_and_guard(self):
         src = _src(SH)
@@ -198,7 +216,9 @@ class FleetInstaller443ShTest(unittest.TestCase):
             src, r"--https=\"\$HTTPS_PORT\"",
             "the serve call still hardcodes 443")
         self.assertRegex(src, r"REFUSED: tailscale serve already has a handler")
-        self.assertRegex(src, r"HTTPS_PORT=<n>")
+        self.assertRegex(
+            src, r"HTTPS_PORT=<n>",
+            "the refusal must name the HTTPS_PORT escape")
         # FB-6: numeric normalization - a leading-zero port (0443) is
         # compared against the refusal by value, not text.
         self.assertIn('PORT=$((10#$PORT))', src)
@@ -207,12 +227,22 @@ class FleetInstaller443ShTest(unittest.TestCase):
         self.assertIn('case "$HTTPS_PORT" in', src)
         self.assertIn('*[!0-9]*', src)
         self.assertIn('-le 65535', src)
-        # FB-2: the status read is fail-closed.
+        # FB-2: the status read is fail-closed; the refusal exits nonzero.
         self.assertIn("cannot verify tailscale serve occupancy", src)
+        self.assertIn("exit 2", src,
+                      "the sh refusals must exit nonzero (terminating)")
+
+    def test_serve_call_uses_the_parameter(self):
+        src = _src(SH)
+        self.assertRegex(
+            src, r"--https=\"\$HTTPS_PORT\"",
+            "the serve call still hardcodes 443")
+        self.assertNotRegex(
+            src, r"--https=443(?!\s*http)",
+            "a hardcoded --https=443 remains somewhere in the serve path")
 
     def test_guard_precedes_every_host_side_effect(self):
-        """FB-5 for the sh installer: the preflight precedes the env-file
-        write, the unit write, and the service restart."""
+        """FB-5 for the sh installer: the preflight precedes the env-file\n        write, the unit write, and the service restart."""
         src = _src(SH)
         guard = src.index("serve status")
         self.assertLess(guard, src.index('cat > "$ENV_FILE"'))
@@ -220,15 +250,14 @@ class FleetInstaller443ShTest(unittest.TestCase):
         self.assertLess(guard, src.index("systemctl restart"))
 
     def test_detection_is_line_scoped_and_port_aware(self):
-        """Same shipped-classifier behavioral oracle, sh-specific class (the
-        bash driver executes the shipped classifier file directly)."""
+        """Same shipped-classifier behavioral oracle, sh-specific class (the\n        bash driver executes the shipped classifier file directly)."""
         found = [d for d in _drivers() if d[0].startswith("bash")]
         if not found:
             self.skipTest("no usable bash runtime available")
         for name, drive in found:
             with self.subTest(driver=name):
-                for case_name, port, status, want_occ, want_ours in CASES:
-                    got_occ, got_ours = drive(port, status)
+                for case_name, port, target, status, want_occ, want_ours in CASES:
+                    got_occ, got_ours = drive(port, target, status)
                     self.assertEqual(
                         (got_occ, got_ours), (want_occ, want_ours),
                         f"[{name}] {case_name}: want=({want_occ},{want_ours}) "
@@ -236,15 +265,16 @@ class FleetInstaller443ShTest(unittest.TestCase):
 
 
 class HttpsPortParameterTest(unittest.TestCase):
-    """AC3 — the parameter is documented in FLEET.md, replacing the
-    hardcoded-443 prose."""
+    """AC3 — the parameter is documented in FLEET.md, replacing the\n    hardcoded-443 prose."""
 
     def test_docs_name_the_parameter(self):
         src = _src(FLEET)
         self.assertRegex(
             src, r"`-HttpsPort <n>`|`install-hub\.ps1 -HttpsPort <n>`",
             "FLEET.md does not document the -HttpsPort parameter")
-        self.assertIn("HTTPS_PORT", src)
+        self.assertIn(
+            "HTTPS_PORT", src,
+            "FLEET.md does not document the Linux HTTPS_PORT arg")
         self.assertNotIn(
             "`tailscale serve --bg --https=443 http://127.0.0.1:<port>`",
             src,

@@ -70,18 +70,28 @@ if ($broad) {
 # instead of falling through to the serve call.
 $serveFound = [bool](Get-Command tailscale -ErrorAction SilentlyContinue)
 if ($serveFound) {
-    $statusLines = @(& tailscale serve status 2>$null)
-    $statusRc = $LASTEXITCODE
+    # PS 5.1: a native-command stderr byte under EAP=Stop throws
+    # NativeCommandError BEFORE the guarded check runs (review round 4), so
+    # the read is scoped to EAP=Continue and classified by EXIT CODE.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $statusLines = @(& tailscale serve status 2>$null)
+        $statusRc = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
     if ($statusRc -ne 0 -or $statusLines.Count -eq 0) {
         Write-Error ("REFUSED: cannot verify tailscale serve occupancy " +
             "(status query failed, exit $statusRc). Not publishing over an " +
-            "unverifiable :443 - check tailscaled, then re-run.")
+            "unverifiable serve configuration - check tailscaled, then re-run.")
     }
-    $cls = Get-ServeStatusClassification -Lines $statusLines -OurPort $Port
-    if ($HttpsPort -eq 443 -and $cls.Occupier -and -not $cls.Ours) {
+    $cls = Get-ServeStatusClassification -Lines $statusLines -OurPort $Port -TargetPort $HttpsPort
+    if ($cls.Occupier -and -not $cls.Ours) {
         $statusText = $statusLines -join "`n"
         Write-Error ("REFUSED: tailscale serve already has a handler on " +
-            ":443 (an operator service is live there). Re-run with an " +
+            ":$HttpsPort (an operator service is live there, or the " +
+            "existing handler set is not entirely ours). Re-run with an " +
             "explicit -HttpsPort <n> to publish the hub on another " +
             "port instead of replacing it. Current serve status:`n$statusText")
     }
