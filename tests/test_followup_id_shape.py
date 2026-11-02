@@ -153,7 +153,7 @@ class ImportStoreIdShapeTest(_HermeticTestCase):
                 "INSERT INTO memory (id, namespace, type, content, "
                 "ingestion_ts, confidence, signal, taint, tags) VALUES "
                 "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                ("a" * 8 + "-" + "a" * 4 + "-4" + "a" * 2 + "-8" + "a" * 2
+                ("a" * 8 + "-" + "a" * 4 + "-" + "a" * 4 + "-" + "a" * 4
                  + "-" + "a" * 12, "project:import-shape", "fact",
                  "pre-existing dest row", "2026-01-02T03:04:05Z", 0.5,
                  "none", "trusted_internal", ""))
@@ -202,7 +202,7 @@ class ImportStoreIdShapeTest(_HermeticTestCase):
             try:
                 pre_row = conn.execute(
                     "SELECT content FROM memory WHERE id=?",
-                    ("a" * 8 + "-" + "a" * 4 + "-4" + "a" * 2 + "-8" + "a" * 2
+                    ("a" * 8 + "-" + "a" * 4 + "-" + "a" * 4 + "-" + "a" * 4
                      + "-" + "a" * 12,)).fetchone()
             finally:
                 conn.close()
@@ -238,8 +238,8 @@ class DatasetIdShapeTest(_HermeticTestCase):
         # (memories=0). With a kept row present, a silent drop leaves
         # memories=1 and the zero-kept heuristic can no longer mask it.
         good_row = dict(row)
-        good_row["id"] = ("b" * 8 + "-" + "b" * 4 + "-4" + "b" * 2 + "-8"
-                          + "b" * 2 + "-" + "b" * 12)
+        good_row["id"] = ("b" * 8 + "-" + "b" * 4 + "-" + "b" * 4 + "-"
+                          + "b" * 4 + "-" + "b" * 12)
         good_row["content"] = "kept good row for the C3 falsifiability pin"
         families = {"memories": [row, good_row], "episodes": [],
                     "episode_members": [], "links": []}

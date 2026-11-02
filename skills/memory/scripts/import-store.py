@@ -402,15 +402,18 @@ def _sanitize_staged_store(staged: sqlite3.Connection,
                        ("memory_link", "dst_id"),
                        ("episode_memory", "memory_id"),
                        ("episode", "id")):
-        if not _table_exists(staged, table):
+        # Legacy sources may predate a column entirely; skip it there.
+        src_cols = {r["name"] for r in source.execute(
+            f"PRAGMA table_info({table})")} if _table_exists(source, table) else set()
+        if col not in src_cols:
             continue
         for (val,) in source.execute(
                 f"SELECT DISTINCT {col} FROM {table} "
-                f"WHERE {col} IS NOT NULL"):
+                f"WHERE {col} IS NOT NULL AND {col} != ''"):
             if not isinstance(val, str) or not _INGEST_ID_RE.fullmatch(val):
                 raise ValueError(
                     f"import refused: source store column {table}.{col} "
-                    f"carries a non-UUID-shaped id (first offender "
+                    f"carries a not UUID-shaped id (first offender "
                     f"{val!r}); refusing the import rather than copying "
                     "malformed ids")
 

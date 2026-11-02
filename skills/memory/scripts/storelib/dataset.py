@@ -410,7 +410,7 @@ def export_dataset(conn: sqlite3.Connection, *, out_dir: str,
 
     from .sync import _INGEST_ID_RE
     unimportable_ids = sum(
-        1 for row in memory_rows
+        1 for row in memory_rows + episode_rows
         if not isinstance(row.get("id"), str)
         or not _INGEST_ID_RE.fullmatch(row["id"]))
     manifest = {
@@ -421,7 +421,7 @@ def export_dataset(conn: sqlite3.Connection, *, out_dir: str,
         "row_counts": {family: len(rows)
                        for family, rows in families.items()},
         "include_tombstones": bool(include_tombstones),
-        "non_uuid_memory_rows": unimportable_ids,
+        "non_uuid_rows": unimportable_ids,
         "generator_revision": GENERATOR_REVISION,
         "export_snapshot_id": source_snapshot_hash,
         "format": DATASET_FORMAT_PARQUET,
@@ -503,14 +503,14 @@ def cmd_export_dataset(conn: sqlite3.Connection, *, out_dir: str,
                        for family, count in manifest["row_counts"].items())
     print(f"[zmem] dataset exported: {out_dir} ({counts}) "
           f"snapshot={manifest['export_snapshot_id']}")
-    if manifest.get("non_uuid_memory_rows"):
+    if manifest.get("non_uuid_rows"):
         print(
-            f"[zmem] WARNING: {manifest['non_uuid_memory_rows']} exported "
-            "memory row(s) carry non-UUID ids; import-dataset (this version "
-            "and any newer) will REFUSE this dataset. Fix the ids at the "
-            "source store (they were written by a pre-0.136.0 writer). "
-            "Scoped imports validate the WHOLE snapshot, not just the "
-            "requested namespace.", file=sys.stderr)
+            f"[zmem] WARNING: {manifest['non_uuid_rows']} exported "
+            "row(s) carry non-UUID ids (memory or episode family); "
+            "import-dataset (this version and any newer) will REFUSE this "
+            "dataset. Fix the ids at the source store (they were written "
+            "by a pre-0.136.0 writer). Scoped imports validate the WHOLE "
+            "snapshot, not just the requested namespace.", file=sys.stderr)
     return 0
 
 

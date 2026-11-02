@@ -138,6 +138,31 @@ class SchemaLockLivenessTest(unittest.TestCase):
         except AttributeError:
             raise AssertionError(_FROZEN_MESSAGE)
 
+    def test_empty_token_phantom_classifier_uses_clamped_grace(self):
+        """The stripped-empty lock file branch (the one the grace window
+        exists for): young -> live, older than the CLAMPED grace ->
+        phantom, and ZMEM_MAINTENANCE_LOCK_GRACE_SECONDS governs it
+        (reviewer round)."""
+        import importlib
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        import storelib.schema as schema
+        importlib.reload(schema) if False else None
+        from storelib.schema import _inspect_lock_phantom
+        lock = Path(self._tmpdir) / "empty-token.lock"
+        lock.write_text("", encoding="utf-8")
+        # young empty file: live (inside the create-then-write window)
+        is_phantom, expected = _inspect_lock_phantom(lock, 10.0)
+        self.assertFalse(is_phantom)
+        # aged past the grace: phantom
+        old = time.time() - 20.0
+        os.utime(lock, (old, old))
+        is_phantom, expected = _inspect_lock_phantom(lock, 10.0)
+        self.assertTrue(is_phantom)
+        self.assertEqual(expected, "")
+        # the knob widens the window: 30s grace keeps the same file live
+        is_phantom, expected = _inspect_lock_phantom(lock, 30.0)
+        self.assertFalse(is_phantom)
+
     def test_dead_holder_is_broken(self):
         dead_pid = self._provably_dead_pid()
         self._write_lock_file(dead_pid)
