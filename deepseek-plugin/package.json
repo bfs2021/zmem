@@ -1,10 +1,6 @@
 {
   "name": "@zaxbyhub/zmem-deepseek",
-<<<<<<< HEAD
   "version": "0.137.0",
-=======
-  "version": "0.137.0",
->>>>>>> 2e81ccc (chore(release): complete the 0.137.0 release surfaces — deepseek package parity + dsh evidence regenerated (issue #423))
   "private": true,
   "type": "module",
   "main": "index.mjs",
