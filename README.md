@@ -1108,7 +1108,12 @@ closed lane vocabulary is `claude`, `codex`, `zcode`, `deepseek`,
 `pretool`, `subagent`, and `precompact`. The exact silent-reason vocabulary is
 `empty-pool`, `omitted`, `below-bar`, `budget-drop`, `below-relevance`,
 `already-delivered`, and `expired`; `expired` names a pool that was eligible
-before the live-expiry gate drained it (issue #174). `reason=injected` is the successful
+before the live-expiry gate drained it (issue #174). The decision line can
+additionally carry `reason=store-error` — the hook-side token for a store
+child that exited nonzero (transport failure, e.g. a partial-upgrade store
+rejecting an unknown flag); it is a transport classification, never a
+store-side silent reason, and miss-rate reporting excludes it from the
+missed count like the other negotiation refusals. `reason=injected` is the successful
 decision, while `reason=disabled` is the separate passive-injection kill-switch
 marker.
 

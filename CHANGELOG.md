@@ -5,6 +5,31 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.139.0] - 2026-11-03
+
+### Fixed
+
+- **Hook decision line names a failed store child instead of a phantom empty pool.**
+  When the store child exits nonzero (partial upgrade: a pre-0.138 store rejects
+  the new hook's `--consume-tasktext` with argparse exit 2), the hook's decision
+  line now carries `reason=store-error` (single token — the decision-log
+  reader's reason slot is `\S+`, reader-parity preserved) plus one bounded
+  stderr line naming the rc, instead of silently logging `reason=empty-pool`
+  and making a broken transport indistinguishable from a healthy no-match
+  (PR #427 closeout D-2b, swarm-critic-adjudicated, owner-approved; pinned by
+  tests/test_hook_store_error_reason.py including the reader-parity leg).
+  Fail-open posture unchanged: the hook still exits 0 and delivers an empty
+  envelope. The miss-rate report joins `store-error` to its deliberate-
+  silence exclusion set (a transport failure is not a retrieval miss), and
+  the report caveats now name the store-transport cause explicitly instead
+  of folding it into the ZMEM_INJECT=0 kill-switch wording — a store-error
+  failure is no longer counted as a retrieval miss, and the excluded
+  failures are diagnosable as transport (pinned by
+  StoreErrorWindowClassificationTest; its mixed-window breadth leg also
+  pins the #133-design corollary that a same-session store-error decision
+  inside the measurement window can still absorb an adjacent genuine
+  miss).
+
 ## [0.138.0] - 2026-11-03
 
 Collated #253-remediation family: subagent task-text recall hardening

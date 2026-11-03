@@ -1001,8 +1001,13 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
     # issue #285/#133 class: every deliberate-silence boundary reason the
     # hub writes must be excluded from the missed classification, exactly
     # like the kill switch — a negotiation refusal is not a retrieval miss.
+    # store-error joins the set at 0.139.0 (PR #427 closeout D-2b): a store
+    # child that exited nonzero is a transport failure, not a retrieval
+    # miss — counting it as missed would keep the old empty-pool line's
+    # headline effect under a new name.
     disabled_lines = [ln for ln in lines if ln.get("reason") in (
-        "disabled", "protocol-incompatible", "deadline-exceeded")]
+        "disabled", "protocol-incompatible", "deadline-exceeded",
+        "store-error")]
     decision_ts = [ln["ts"] for ln in lines]
     period = [min(decision_ts), max(decision_ts)] if decision_ts else None
     sid_lines = sum(1 for ln in lines if ln.get("sid") is not None)
@@ -1101,6 +1106,7 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
     query_source = {"operation": 0, "ring": 0, "none": 0}
     missed_all_only = 0
     legacy_attributions = 0
+    counts_disabled_store_error = 0
     in_period = 0
     no_timestamp = 0
     recall_errors = 0
@@ -1182,11 +1188,11 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
         elif any(matched & set(ln["ids"]) for ln in cand_legacy):
             counts["surfaced_legacy"] += 1
             legacy_attributions += 1
-        elif (f_sid_real and any(
+        elif f_sid_real and any(
                 lo <= ln["ts"] <= hi
                 and (ln.get("sid") == f_sid
                      or ln.get("sid") in (None, "unknown"))
-                for ln in disabled_lines)):
+                for ln in disabled_lines):
             # Issue #133: the switch was OFF for THIS SESSION around this
             # failure — the hook logged reason=disabled and injected nothing
             # by design. Not a miss: excluded from the numerator AND the
@@ -1199,7 +1205,19 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
             # logs) weakly match any failure, mirroring the
             # surfaced-sid/surfaced-legacy split above — a sid-less disabled
             # line is still proof the switch was off for whatever ran.
+            # 0.139.0 (PR #434 closeout D-2b): reason=store-error joins the
+            # exclusion — a store child that exited nonzero is a transport
+            # failure, not a retrieval miss — and the caveat text below
+            # splits by reason so the operator is never told the inject
+            # switch was off when the store actually failed.
             counts["disabled"] += 1
+            if any(
+                    lo <= ln["ts"] <= hi
+                    and (ln.get("sid") == f_sid
+                         or ln.get("sid") in (None, "unknown"))
+                    and ln.get("reason") == "store-error"
+                    for ln in disabled_lines):
+                counts_disabled_store_error += 1
         else:
             counts["missed"] += 1
             tool = f.get("tool") or "?"
@@ -1299,17 +1317,38 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
             "sid-less bg-log lines (time-window + id overlap only); "
             "miss_rate_strict_sid excludes them.")
     if counts["disabled"]:
-        caveats.append(
-            f"{counts['disabled']} failure(s) fell in ZMEM_INJECT=0 "
-            "kill-switch windows (bg-log reason=disabled) — the inject "
-            "switch was off, so nothing could have been injected; excluded "
-            "from miss_rate and miss_rate_strict_sid. Read this as "
-            "'switch off', not as misses.")
+        _kw = counts["disabled"] - counts_disabled_store_error
+        if _kw:
+            caveats.append(
+                f"{_kw} failure(s) fell in deliberate-silence windows "
+                "(bg-log reason=disabled / protocol-incompatible / "
+                "deadline-exceeded) — the inject switch was off or the "
+                "transport refused by design, so nothing could have been "
+                "injected; excluded from miss_rate and miss_rate_strict_sid."
+                " Read this as deliberate silence, not as misses.")
+        if counts_disabled_store_error:
+            caveats.append(
+                f"{counts_disabled_store_error} failure(s) fell in "
+                "store-transport-failure windows (bg-log reason=store-error"
+                " — the store child exited nonzero, e.g. a partial-upgrade"
+                " store rejecting an unknown hook flag); excluded from "
+                "miss_rate and miss_rate_strict_sid. Fix the store "
+                "transport — this is not a retrieval miss and not the "
+                "inject switch.")
     if disabled_lines and not counts["disabled"]:
-        caveats.append(
-            f"{len(disabled_lines)} kill-switch decision line(s) "
-            "(reason=disabled) present in the bg log, but no examined "
-            "failure fell inside those windows.")
+        _se_lines = sum(1 for ln in disabled_lines
+                        if ln.get("reason") == "store-error")
+        if _se_lines:
+            caveats.append(
+                f"{_se_lines} store-transport-failure decision line(s) "
+                "(reason=store-error) present in the bg log, but no "
+                "examined failure fell inside those windows.")
+        if len(disabled_lines) - _se_lines:
+            caveats.append(
+                f"{len(disabled_lines) - _se_lines} deliberate-silence "
+                "decision line(s) (reason=disabled / protocol-incompatible "
+                "/ deadline-exceeded) present in the bg log, but no "
+                "examined failure fell inside those windows.")
     if counts["missed"] and period and in_period < counts["missed"]:
         caveats.append(
             "bg-log coverage is partial (the log truncates at its size cap);"
