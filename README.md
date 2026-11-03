@@ -65,8 +65,17 @@ The passive `--for-injection --json` lane of `recall` and `recent` accepts
 `--session-id`, `--moment`, `--lane`, and repeatable `--ops-token` attribution
 flags. On the `pretool` passive lane, `recall` also accepts
 `--state-hint dirty|clean` (issue #397: refused with exit 2 unless the
-passive shape and `--moment pretool` are present). An empty query selects
-recent memories; `pretool` is the only moment
+passive shape and `--moment pretool` are present) and the delegating
+`--delegation-prompt <text>` (issue #253: parked store-side for the child's
+SubagentStart; redacted before it touches disk). `--consume-tasktext`
+(issue #339) grants that lane the store-side consume of a parked
+delegation. DEFAULT-OFF and CALLER-ASSERTED: any caller may pass it (an
+authenticated hub principal can self-grant on the MCP prefetch tool), so
+the boundary is convention, not enforcement — the stash is keyed by
+session id only. Trusted-fleet assumption; see FLEET.md's disclosed
+boundary. An empty query selects recent memories on every moment except
+`subagent`, where an empty query first consumes a parked delegation when
+this call carries the grant (issue #253); `pretool` is the only moment
 that composes the store-side operation ring. Use
 `<interpreter> <store.py> delivery-clear --session-id=<id>` for terminal session
 cleanup of both the ledger and pending sidecars. Use

@@ -975,6 +975,7 @@ def select_and_budget_for_injection(
     harness: str | None = None,
     no_telemetry: bool = False,
     state_hint: str | None = None,
+    consume_tasktext: bool = False,
 ) -> dict:
     """Select, render, account, and record one passive injection event.
 
@@ -1055,10 +1056,16 @@ def select_and_budget_for_injection(
     # takes the delegating prompt parked store-side at PreToolUse(Agent) as
     # its recall query — event fields keep structural precedence (the
     # consume only fires when the payload ladder produced nothing). Fail-open
-    # and moment-scoped: every other moment and every caller that arrives
-    # with a query is byte-identical.
+    # and moment-scoped. Issue #339: the consume is CALLER-GATED — only the
+    # two SubagentStart lanes pass consume_tasktext=True (the local hook's
+    # recall/recent argv and the fleet broker's SubagentStart prefetch);
+    # every other caller that arrives with moment="subagent" and an empty
+    # query (plain prefetch, the MCP surface, the offline snapshot serve) is
+    # byte-identical to a no-stash session and can no longer DRAIN the
+    # parked delegation. Every caller that arrives with a query is
+    # byte-identical regardless of the grant.
     bridged_query = False
-    if moment == "subagent" and not effective_query.strip():
+    if consume_tasktext and moment == "subagent" and not effective_query.strip():
         try:
             bridged = ledger.consume_task_text(resolved_data, session_id)
             if isinstance(bridged, str) and bridged.strip():
@@ -1303,6 +1310,32 @@ def select_and_budget_for_injection(
             if state_hint:
                 kwargs["_state_hazard_hint"] = state_hint
             recall_module.recall_memory(conn, **kwargs)
+            # Issue #337: bridged zero-hit fallback. When the bridged query
+            # matched NOTHING — the COMBINED query-shaped result is empty
+            # (no ordinary capture rows AND no eligible curated pages; a
+            # page-only hit through its derived bullet prose is preserved,
+            # not replaced) — the child falls back to the recent lane it
+            # received before #253 instead of an empty context. State
+            # transition (plan rev 3): the first capture is REPLACED (not
+            # merged), query-only kwargs (query / cross_rerank /
+            # _state_hazard_hint) are dropped, the effective query resets
+            # so the "Recent memories" header renders, the recent
+            # confidence floor applies exactly as the query-less path
+            # computes it, and bridged_query stays True so the #331
+            # carve-out keeps the fallback's exclusions empty. Final token
+            # admission below reads only this fallback capture.
+            if bridged_query:
+                probe = capture.get("results") if capture else None
+                if not probe and not page_rows_pre:
+                    capture.clear()
+                    kwargs.pop("query", None)
+                    kwargs.pop("cross_rerank", None)
+                    kwargs.pop("_state_hazard_hint", None)
+                    effective_query = ""
+                    if effective_min_confidence is None:
+                        effective_min_confidence = inject_recent_floor()
+                    kwargs["min_confidence"] = effective_min_confidence
+                    recall_module.recent_memory(conn, **kwargs)
         else:
             recall_module.recent_memory(conn, **kwargs)
     except Exception:

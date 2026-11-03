@@ -5,6 +5,74 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.138.0] - 2026-11-03
+
+Collated #253-remediation family: subagent task-text recall hardening
+across eleven issues (#329 #330 #331 #332 #333 #334 #335 #337 #338 #339
+#340), maintainer-ratified 2026-11-02.
+
+- **Task-text consume is caller-gated (#339).** The store-side consume of a
+  parked delegation now requires an explicit grant: the SubagentStart hook
+  lane (`--consume-tasktext` on its recall/recent argv) and the fleet
+  broker's SubagentStart prefetch (new optional MCP `consume_tasktext`
+  param, threaded transport/remote_gate; the LocalSubprocess transport
+  also carries the parameter for API parity but no production caller
+  passes it yet). A plain
+  `prefetch --moment subagent` with an empty query — or any other
+  ungranted caller — is byte-identical to a no-stash session and can no
+  longer destructively drain a delegation (the R2 probe: 3 entries -> 2,
+  prompt destroyed, never echoed). Fleet rollout policy: lockstep
+  broker/hub upgrades (FLEET.md); one skew window degrades (old broker
+  loses the bridge), the other keeps the bridge with the old unconditional
+  drain open until the paired upgrade.
+- **Orphaned-park aged-head skip (#329).** `consume_task_text` drops a
+  leading entry older than 300 s in favor of a strictly newer one (exact
+  `agent_id` match still outranks the heuristic; malformed timestamps are
+  never aged; a sole entry inside the 6h window is always served (the
+  window prune still applies); skipped heads leave the write-back). Two disclosed residuals, maintainer-ratified 2026-11-02 (correlation-key
+  follow-up tracked in issue #428): an orphan younger than the band still
+  shifts by one until it ages out, and a live child delayed past the band
+  can lose its prompt to a strictly newer delegation - a failure mode the
+  heuristic introduces (pre-0.138.0 a delayed child consumed its own head
+  entry).
+- **Bridged zero-hit fallback (#337).** A bridged child whose task-keyed
+  query matches nothing — the COMBINED query-shaped result: no ordinary
+  rows AND no eligible curated pages — now falls back to the recent lane
+  (recent floor applied, "Recent memories" header, the #331 carve-out
+  retained, first capture replaced, single token admission) instead of an
+  empty `empty-pool` context. A page-only hit through its derived bullet
+  prose is preserved, not replaced.
+- **Park redaction fails closed (#334 AC2).** A raising redactor parks
+  NOTHING rather than persisting raw host prose (the sibling source.py
+  posture; the straddling-token boundary leak was already fixed in
+  0.98.0's redact-first-then-cap and is now pinned).
+- **No fsync on the .tasktext sidecar (#340).** The park and consume
+  writes skip `os.fsync` (the segment writer's documented posture for a
+  regenerable prompt cache); `_atomic_write_json` gains `fsync=True` as
+  the default so the 11 other callers keep durability. Disclosed
+  residuals (0.138.0 review round): a host crash between the atomic
+  rename and disk writeback can truncate the sidecar — the reader then
+  discards the WHOLE stash (up to 16 parked prompts), unlike the segment
+  writer's one-record loss — and a lost consume write-back can
+  re-deliver an already-consumed delegation to the next child. A
+  pathologically slow write beyond the removed fsync remains disclosed
+  (the issue's Scope names the fsync-skip remedy).
+- **Docs truth pass (#330, #338, #329 AC2).** The delivery-ledger docstring,
+  SKILL.md, and the corrected 0.98.0 CHANGELOG passage now name all four
+  .tasktext interleavings with the measured survivor counts (no "rare";
+  "drop-not-swap" corrected to partial-survivor last-writer-wins), the
+  three-rung subagent ladder comment, README's passive-flag list
+  (`--delegation-prompt`, `--consume-tasktext`, the empty-query-at-
+  subagent note), the apply_patch matcher alignment (+ its pinning test),
+  and FLEET.md's lockstep note.
+- **Pins (#331, #333, #334 AC1, #335).** Four new test files freeze the
+  0.98.0 carve-out, event-prompt precedence, Task-tool description
+  fallback, NUL strip, redact-first-cap boundary, negative moment gates,
+  and the cap order; the stranded-code scan now compares repo-relative
+  path parts (#333 AC2 — the absolute-parts filter went vacuous on
+  checkouts under a directory named `tests` or `.agents`).
+
+
 ## [0.137.0] - 2026-11-01
 
 ### Fixed
@@ -1470,18 +1538,17 @@ on a shared store keeps working.
   until the age sweep — #336). Correlation under concurrent dispatches is
   FIFO — no probed host supplies an agent id at park time — with the
   documented limitations: out-of-order SubagentStart arrival swaps two
-  children's prompts, two parallel parks race read-modify-write with the
-  empirically-proven drop-not-swap outcome, and two concurrent consumes
-  can both load the same head entry (both children receive that
-  delegation; degraded relevance only), and an orphaned park — a
-  delegation whose child never starts (permission denied, cancelled,
-  tool errored) — sits at the FIFO head and shifts EVERY later
-  child's prompt by one for the rest of the window, because no
-  correlation id exists on the park side to expire it. That trade is
-  accepted: an off-by-one task-keyed recall is degraded relevance,
-  never a wrong action, and the alternative (age-expiring queued
-  entries) would drop live entries during a large fan-out. See
-  #329. A bridged child is a fresh
+  children's prompts; two parallel parks race read-modify-write and the
+  LAST writer wins (CORRECTED during the 0.138.0 round, issue #330: an
+  earlier revision said "drop-not-swap" — under jittered starts the
+  survivor set is partial, not single); two concurrent consumes can both
+  load the same head entry (both children receive that delegation;
+  degraded relevance only); a park racing a consume can also RESURRECT an
+  already-consumed entry or WIPE a just-parked one (#330). An orphaned
+  park — a delegation whose child never starts — shifted EVERY later
+  child's prompt by one for the rest of the window (no correlation id
+  exists at park time); that unbounded shift was later bounded by the
+  0.138.0 aged-head skip (#329). A bridged child is a fresh
   context: the parent's pretool deliveries can no longer starve it (the
   #117 sibling-shares-session_id shape). The read-side carve-out is gated
   on the consume, so query-less pulls WITHOUT a bridge are byte-identical;

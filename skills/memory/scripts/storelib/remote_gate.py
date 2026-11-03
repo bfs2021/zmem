@@ -75,6 +75,7 @@ _READ_DEFAULTS: dict[str, dict[str, Any]] = {
         "ops_token": [], "principal": None, "harness": None,
         "authorized_namespace": [], "include_cross_project": False,
         "legacy_unscoped": False, "delegation_prompt": "",
+        "consume_tasktext": False,
     },
     "search": {
         "exact": False, "include_global": False, "global_limit": 3,
@@ -87,6 +88,7 @@ _READ_DEFAULTS: dict[str, dict[str, Any]] = {
         "delegation_prompt": "", "ops_token": [], "principal": None,
         "harness": None, "authorized_namespace": [],
         "include_cross_project": False, "legacy_unscoped": False,
+        "consume_tasktext": False,
     },
     "list": {},
     "get": {},
@@ -372,6 +374,21 @@ def _expected_read_keys(cmd: str, envelope: dict[str, Any]) -> bool:
     return required.issubset(envelope)
 
 
+
+def _forward_prefetch(args: Any, http: Any, remaining_ms: int) -> Any:
+    """One hub prefetch call for the remote CLI lane (issue #339 review R2-1:
+    extracted so the forwarding contract - the caller's consume grant rides
+    the hub call VERBATIM; the remote lane is a transport, not a grant
+    authority - has a direct, non-vacuous pin)."""
+    return http.prefetch(
+        args.query, namespace=args.namespace,
+        session_id=args.session_id, moment=args.moment,
+        ops_tokens=list(getattr(args, "ops_tokens", []) or []),
+        lane=args.lane, reserve=bool(args.reserve),
+        deadline_ms=max(1, remaining_ms),
+        consume_tasktext=bool(getattr(args, "consume_tasktext", False)))
+
+
 def _route_prefetch(args: Any) -> None:
     """Remote prefetch (issue #374): forwarded = query, namespace,
     session-id, moment, lane, reserve, ops-token; REFUSED = --exclude (the
@@ -414,12 +431,7 @@ def _route_prefetch(args: Any) -> None:
         except Exception:  # noqa: BLE001 - flush is best-effort, never fatal
             pass
     try:
-        result = http.prefetch(
-            args.query, namespace=args.namespace,
-            session_id=args.session_id, moment=args.moment,
-            ops_tokens=list(getattr(args, "ops_tokens", []) or []),
-            lane=args.lane, reserve=bool(args.reserve),
-            deadline_ms=max(1, remaining_ms))
+        result = _forward_prefetch(args, http, remaining_ms)
     except Exception as exc:  # noqa: BLE001 - offline leg
         envelope, state = _offline_prefetch(args)
         if envelope is not None:

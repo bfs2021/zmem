@@ -45,6 +45,7 @@ _FLOOR = {"ZMEM_INJECT_FLOOR_LEX": "0"}
 
 _STRIP_ENV = (
     "ZMEM_STORE", "ZMEM_DATA", "ZMEM_HOME", "ZMEM_NAMESPACE", "ZMEM_HOST",
+    "ZMEM_PROJECT", "CLAUDE_PROJECT_DIR", "ZCODE_PROJECT_DIR",
     "ZMEM_QUERY_CONTEXT", "ZMEM_INJECT", "ZMEM_INJECT_TOKEN_BUDGET",
     "ZMEM_INJECT_FLOOR_LEX", "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_MODELS_DIR",
     "ZMEM_SESSION", "CLAUDE_SESSION_ID", "ZCODE_SESSION_ID",
@@ -389,7 +390,9 @@ class RegistrationNeedleTest(unittest.TestCase):
                      if "#119" in blk and "Agent" in blk
                      and "2026-09-10" in blk), "")
         self.assertTrue(para, "dated #119 task-text/Agent paragraph missing")
-        self.assertIn("Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task", para,
+        self.assertIn(
+            "Edit|Write|MultiEdit|NotebookEdit|Bash|apply_patch|Agent|Task",
+            para,
                       "the #119 paragraph must carry the full matcher")
         self.assertIn("UNVERIFIED by #119", text,
                       "SKILL.md must mark the Codex delegation surface "

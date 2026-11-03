@@ -857,6 +857,13 @@ def main() -> int:
             recent_global_limit if command == "recent" else "3",
             "--no-bump", "--for-injection", "--json",
             f"--session-id={session_id}", "--moment", moment, "--lane", lane]
+    # Issue #339: ONLY the SubagentStart lane grants the store-side
+    # task-text consume. The store's default is grant-off (a plain
+    # --moment subagent empty-query caller no longer drains a parked
+    # delegation); this hook body IS the legitimate lane, so the subagent
+    # moment always carries the grant.
+    if mode == "subagent":
+        args.append("--consume-tasktext")
     if command == "recall":
         args[1:1] = _free_text_arg("--query", query)
     # Issue #397: pretool-only repository-state hint. Computed once per

@@ -2479,7 +2479,16 @@ def main():
         help="PreToolUse(Agent/Task) delegating prompt (issue #253): park it "
              "store-side for the child's SubagentStart recall query. Only "
              "honored on --moment pretool with --session-id; the text is "
-             "secret-redacted before it touches disk (advisory, fail-open).")
+             "secret-redacted before it touches disk (advisory; a "
+             "redaction failure parks nothing - the caller stays fail-open).")
+    p_recall.add_argument("--consume-tasktext", dest="consume_tasktext",
+                          action="store_true", default=False,
+                          help="Issue #339: grant this passive recall the "
+                               "store-side task-text consume. Default-off and "
+                               "caller-asserted: intended for the SubagentStart "
+                               "hook lane (any caller may pass it); ungranted "
+                               "--moment subagent empty-query callers are "
+                               "byte-identical to a no-stash session.")
     p_recall.add_argument("--ops-token", dest="ops_token", action="append",
                           type=str, default=[],
                           help="Operation token from the pretool ring "
@@ -2560,7 +2569,16 @@ def main():
         help="PreToolUse(Agent/Task) delegating prompt (issue #253): park it "
              "store-side for the child's SubagentStart recall query. Only "
              "honored on --moment pretool with --session-id; the text is "
-             "secret-redacted before it touches disk (advisory, fail-open).")
+             "secret-redacted before it touches disk (advisory; a "
+             "redaction failure parks nothing - the caller stays fail-open).")
+    p_recent.add_argument("--consume-tasktext", dest="consume_tasktext",
+                          action="store_true", default=False,
+                          help="Issue #339: grant this passive recent the "
+                               "store-side task-text consume. Default-off and "
+                               "caller-asserted: intended for the SubagentStart "
+                               "hook lane (any caller may pass it); ungranted "
+                               "--moment subagent empty-query callers are "
+                               "byte-identical to a no-stash session.")
     p_recent.add_argument("--ops-token", dest="ops_token", action="append",
                           type=str, default=[],
                           help="Operation token from the pretool ring "
@@ -2612,6 +2630,13 @@ def main():
         choices=("dirty", "clean"), default=None,
         help="Pretool repository-state predicate (issue #397; passive "
              "prefetch under --moment pretool only — refuses elsewhere)")
+    p_prefetch.add_argument("--consume-tasktext", dest="consume_tasktext",
+                            action="store_true", default=False,
+                            help="Issue #339: grant this prefetch the store-side "
+                                 "task-text consume. Threading point for the fleet "
+                                 "broker SubagentStart lane (MCP prefetch tool "
+                                 "consume_tasktext param -> hub argv); default-off "
+                                 "and caller-asserted — any caller may pass it.")
     p_prefetch.add_argument("--ops-token", dest="ops_tokens", type=str,
                             action="append", default=[],
                             help="Operation token from the pretool ring "
@@ -5920,6 +5945,8 @@ def main():
                             if args.authorized_namespace else None),
                         principal=getattr(args, "principal", None),
                         harness=getattr(args, "harness", None),
+                        consume_tasktext=bool(
+                            getattr(args, "consume_tasktext", False)),
                     )
                 except ValueError as exc:
                     print(f"[zmem] {exc}", file=sys.stderr)
@@ -6033,6 +6060,8 @@ def main():
                             if args.authorized_namespace else None),
                         principal=getattr(args, "principal", None),
                         harness=getattr(args, "harness", None),
+                        consume_tasktext=bool(
+                            getattr(args, "consume_tasktext", False)),
                     )
                 except ValueError as exc:
                     print(f"[zmem] {exc}", file=sys.stderr)
@@ -6117,6 +6146,8 @@ def main():
                     reserve=args.reserve,
                     principal=args.principal,
                     harness=args.harness,
+                    consume_tasktext=bool(
+                        getattr(args, "consume_tasktext", False)),
                 )
             except ValueError as exc:
                 print(f"[zmem] {exc}", file=sys.stderr)

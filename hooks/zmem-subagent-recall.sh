@@ -150,9 +150,14 @@ BUDGET="${ZMEM_CTX_BUDGET:-25000}"
 # The body lives in hooks/lib/zmem-recall-body.py and is invoked as a
 # subprocess exactly like zmem-recall.sh and zmem-precompact.sh do —
 # the file is HYPHENATED, so it cannot be `import`ed; every consumer
-# runs it as a script (final-critic round 2 fix). Mode "subagent" (issue
-# #90 / #85 D) prefers the delegated task text when the host event carries
-# it and otherwise falls back to the query-less recent pull; it emits
+# runs it as a script (final-critic round 2 fix). Mode "subagent" is a
+# THREE-rung ladder (issues #90 / #85 D + #253): (1) the delegated task
+# text when the host event carries it; (2) otherwise the delegating prompt
+# PARKED store-side at PreToolUse(Agent/Task) — this hook's argv carries
+# --consume-tasktext (issue #339: this lane is the INTENDED holder of
+# the consume grant — caller-asserted by convention, not enforcement);
+# (3) the
+# query-less recent pull when both rungs are empty. It emits
 # the full {"additionalContext": ...} envelope with the fenced,
 # provenance-tagged render and the selective-inject gate applied.
 # Limits 5/3 preserve this hook's pre-existing pull width (up to 5

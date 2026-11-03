@@ -392,7 +392,12 @@ def _handle_read(http: transport.McpHttp, env: Mapping[str, str], event: str,
             envelope = http.prefetch(
                 query, namespace=ns, session_id=session_id, moment=moment,
                 ops_tokens=[], lane=lane, reserve=True,
-                deadline_ms=remaining_ms)
+                deadline_ms=remaining_ms,
+                # Issue #339: ONLY the SubagentStart moment is granted the
+                # store-side task-text consume (the remote half of the
+                # #253 bridge). Every other remote moment keeps the
+                # default-off grant and cannot drain a parked delegation.
+                consume_tasktext=(moment == "subagent"))
     except Exception as exc:  # noqa: BLE001 - fail open
         return _fail_open(event, "broker-error", str(exc), started)
     # Read-your-writes (issue #288 AC3) holds in BOTH hub states: render

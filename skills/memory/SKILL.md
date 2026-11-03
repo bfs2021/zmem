@@ -791,9 +791,8 @@ On hosts whose pre-tool contract was probed and confirmed (ZCode: documented;
 Claude: emitted — issue #117 retired the sidecar default in favor of the
 per-session delivery ledger), a
 PreToolUse hook (`zmem-pretool-recall.sh`, matcher
-`Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task` since 0.31.0 — issue #119;
-the live registration in `hooks/hooks.claude.json` also carries `apply_patch`
-(added later; see #338 for the apply_patch dating).
+`Edit|Write|MultiEdit|NotebookEdit|Bash|apply_patch|Agent|Task` since 0.31.0 (apply_patch added later; #338) — issue #119;
+matching the live registration in `hooks/hooks.claude.json`.
 the Agent branch passes task text when the event carries it AND,
 when it does not, parks the delegating prompt store-side for the child's
 SubagentStart (issue #253), otherwise using the store-owned recent path)
@@ -868,29 +867,52 @@ host prose on disk remains the ops age sweep,
 `ZMEM_SENTINEL_SWEEP_DAYS`, default 7 days; `purge`
 scrubs the stash by needle and reaps orphaned `*.tasktext.tmp.*`;
 0600-at-open + atomic replace, with owner-only access on Windows resting
-on the operator-profile ACL rather than chmod), and the selector consumes it
+on the operator-profile ACL rather than chmod; since 0.138.0 written
+WITHOUT fsync (#340), so a host crash can lose the whole sidecar (the
+reader discards an unreadable stash) or re-deliver an already-consumed
+delegation — disclosed, regenerable-cache posture), and the selector consumes it
 FIFO at the subagent moment only when the payload ladder produced no query —
 no agent id exists at park time on any probed host, so FIFO is the
 correlation rule and out-of-order arrival of truly concurrent children is
-the documented limitation; the accepted races are the parallel-park
-drop-not-swap, a parallel-consume overlap (two concurrent children can
-load the same head entry before either rewrite lands — both receive that
-delegation, one child's prompt is consumed by its sibling; degraded
-relevance only, never a crash), and the parked-against-consume overlap
-(a fresh park loses its entry to a concurrent rewrite). An ORPHANED park
+the documented limitation; the consume lands before the selector runs
+(#337), so a selector failure after a successful consume loses that
+delegation (disclosed residual); the accepted (unlocked, #330) races are the
+parallel-park last-writer-wins (jittered N=8 parks left 2-7 survivors;
+CORRECTED from "drop-not-swap" in 0.138.0), a parallel-consume overlap
+(two concurrent children can load the same head entry before either
+rewrite lands — both receive that same delegation (duplicated delivery —
+the text is served twice, not lost); degraded relevance only, never a
+crash), and the parked-against-consume overlap in BOTH directions: a fresh park
+loses its entry to a concurrent rewrite (unlink-wipe) or an
+already-consumed entry is re-delivered (resurrection). An ORPHANED park
 — a delegation whose child never starts (permission denied, cancelled,
-tool errored) — sits at the FIFO head and shifts EVERY later child's
-prompt by one for the rest of the window: no correlation id exists on the
-park side to expire it early. That trade is accepted (issue #329); the
-6h window and 16-entry cap bound how long the shift lasts, not how many
-children it affects. `ZMEM_QUERY_CONTEXT=0` or `ZMEM_INJECT=0`
+tool errored) — would sit at the FIFO head and shift EVERY later child's
+prompt by one; since 0.138.0 the consume applies an AGED-HEAD SKIP
+(issue #329): a leading entry older than 300 s is dropped in favor of a
+strictly newer one (an exact agent_id match still outranks the
+heuristic; malformed timestamps are never aged; a sole entry inside the
+6h window is always served — the window prune still applies). Two residuals stand (issue #329, maintainer-ratified
+2026-11-02; tracked with the correlation-key work in issue #428): an
+orphan younger than 300 s still shifts by one until it ages out, and a
+live child delayed past 300 s can lose its prompt to a strictly newer
+delegation - a failure mode the heuristic introduces (pre-0.138.0 a
+delayed child consumed its own head entry). The 6h window and 16-entry cap bound how long any
+shift lasts, not how many children it affects. Since 0.138.0 the consume
+is CALLER-GATED (issue #339): only the SubagentStart hook lane
+(`--consume-tasktext` on its recall/recent argv) and the fleet broker's
+SubagentStart prefetch are INTENDED to pass the grant; the gate is
+default-off but CALLER-ASSERTED — any caller (including any
+authenticated hub principal via the MCP prefetch param) may self-grant,
+so the boundary is convention, not enforcement (the stash is keyed by
+session id only; trusted-fleet assumption). An ungranted `--moment
+subagent` empty-query caller is byte-identical to a no-stash session. `ZMEM_QUERY_CONTEXT=0` or `ZMEM_INJECT=0`
 disables parking via the early exit. A bridged child is a fresh context:
 its pull drops the delivered-derived exclusions entirely, so the parent's
 pretool deliveries cannot starve it and a fresh child re-reads rows an
 earlier sibling already rendered (over-delivery of already-seen rows,
 never starvation — deliberately NOT narrowed to sibling-moment rows,
 which would let one sibling starve the next; issue #331). Claude's matcher remains
-`Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task` since 0.31.0 — issue
+`Edit|Write|MultiEdit|NotebookEdit|Bash|apply_patch|Agent|Task` since 0.31.0 (apply_patch added later; #338) — issue
 #119; `Task` is accepted as the pre-rename delegation tool name per community
 issue 29677, closed stale and not vendor-confirmed. Claude Code also registers
 PostToolBatch (issue #120, 2026-09-11 — post-edit checkpoint recall, the
@@ -1319,7 +1341,9 @@ The exact session-aware CLI forms are:
 The passive `recall` and `recent` commands accept the additive attribution
 flags `--session-id=<id>`, `--moment`, `--lane`, and repeatable `--ops-token` when
 called with `--for-injection --json`, plus the payload flag
-`--delegation-prompt` (issue #253) and repeatable `--authorized-namespace`
+`--delegation-prompt` (issue #253), `--consume-tasktext` (issue #339:
+SubagentStart-lane-only grant of the store-side task-text consume), and
+repeatable `--authorized-namespace`
 (issue #283: the caller's namespace allow-list — the selector's
 `user:global` and cross-project lanes are filtered to it; omitted means
 unscoped). On the pretool passive lane, recall additionally accepts
@@ -1369,7 +1393,7 @@ second budget run.
   [--lane <claude|codex|zcode|hermes-provider|hermes-compat>] \
   [--ops-token <token>]... [--exclude <memory-id>]... \
   [--authorized-namespace <ns>]... [--reserve] \
-  [--principal <id>] [--harness <id>]
+  [--principal <id>] [--harness <id>] [--consume-tasktext]
 <interpreter> <store.py> prefetch-ack --reservation <id>
 ```
 
@@ -1394,8 +1418,8 @@ while SessionEnd uses `delivery-clear --session-id` to retire both sidecars.
 
 The MCP server exposes the same one-call envelope as the `prefetch` tool
 (`query`, `namespace`, `session_id`, `moment` required; optional `lane` —
-validated against the five-value tuple, never defaulted to a host lane — and
-`ops_tokens`), enforcing namespace scope and the `ZMEM_INJECT=0` kill switch
+validated against the five-value tuple, never defaulted to a host lane —,
+`ops_tokens`, and (issue #339) the caller-asserted `consume_tasktext`), enforcing namespace scope and the `ZMEM_INJECT=0` kill switch
 before any store subprocess, and returning the complete selector envelope
 plus the additive `context` alias equal to `rendered`. Scoped principals keep
 their `ops_tokens`: the selector's cross-project lane intersects its foreign

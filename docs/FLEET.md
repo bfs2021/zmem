@@ -143,6 +143,22 @@ exhausting the retry behind a crashed holder) both fall back lock-free, per
 `record_undelivered`'s docstring. The emission-side window remains the
 documented residual bounded by next-turn suppression.
 
+**Disclosed boundary — the SubagentStart consume grant (0.138.0,
+issue #339):** the store-side task-text consume is INTENDED for the local
+SubagentStart hook lane and the broker's SubagentStart prefetch (the MCP
+`consume_tasktext` param); the gate is default-off but CALLER-ASSERTED —
+by convention, not enforcement (any authenticated principal may pass it;
+the stash is keyed by session id only). The rollout policy is LOCKSTEP
+broker/hub upgrades: an old broker against a new hub sends no grant, so
+its remote SubagentStart loses the delegation bridge (the child degrades
+to the query-less recent lane — degrade, never block) until the broker
+upgrades; a new broker against an old hub passes a param the old hub's
+arg model IGNORES (extra arguments are dropped, not rejected), so the OLD
+store gate still applies in that window — the child KEEPS the delegation
+bridge, and the unconditional empty-query consume (#339's original hole)
+remains open to any principal until the paired upgrade closes it. Neither
+window is protected by the grant; only the paired upgrade closes them.
+
 **Disclosed residual — the ack-vs-ingestion gap:** the broker can
 acknowledge only what its adapter EMITTED, never what the model actually
 INGESTED. An ack asserts successful emission into the harness's context
