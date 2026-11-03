@@ -12,18 +12,19 @@
 #     Users, matched by well-known SID so localized Windows cannot defeat
 #     it) is REFUSED before anything is configured;
 #   * idempotent: re-running replaces the wrapper, the task, and re-points
-#     serve, and RESTARTS the task so the running hub converges onto the
-#     new configuration.
+#     serve (subject to the serve occupancy preflight below), and RESTARTS
+#     the task so the running hub converges onto the new configuration.
 #
 # Usage:
 #   .\install-hub.ps1 -RepoRoot C:\path\to\zmem -DataDir D:\zmem-data `
-#       -TokensFile D:\zmem-data\principal-map.json -Port 8765
+#       -TokensFile D:\zmem-data\principal-map.json -Port 8765 [-TaskName zmem-hub] [-HttpsPort 443]
 param(
     [Parameter(Mandatory = $true)][string]$RepoRoot,
     [Parameter(Mandatory = $true)][string]$DataDir,
     [Parameter(Mandatory = $true)][string]$TokensFile,
     [int]$Port = 8765,
-    [string]$TaskName = "zmem-hub"
+    [string]$TaskName = "zmem-hub",
+    [int]$HttpsPort = 443
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +32,14 @@ $ErrorActionPreference = "Stop"
 if ($Port -lt 1 -or $Port -gt 65535) {
     Write-Error "-Port must be 1-65535 (got: $Port)"
 }
+if ($HttpsPort -lt 1 -or $HttpsPort -gt 65535) {
+    Write-Error "-HttpsPort must be 1-65535 (got: $HttpsPort)"
+}
+
+# Shared serve-status classifier (issue #423, review round 3): dot-sourced so
+# the installer and the behavioral oracle in tests/test_fleet_installer_443.py
+# execute the SAME shipped code.
+. (Join-Path $PSScriptRoot "serve-status-lib.ps1")
 
 # --- refuse a broad-ACL principal map (SID-based, locale-independent) -------
 if (-not (Test-Path $TokensFile)) {
@@ -53,6 +62,41 @@ if ($broad) {
     Write-Error "REFUSED: $TokensFile grants a broad allow ACE (Everyone / Users / Authenticated Users - matched by SID). Restrict it to the hub service account first."
 }
 
+# --- tailscale serve occupancy preflight (issue #423, review round 3) -------
+# The guard runs BEFORE ANY side effect (wrapper write, task registration,
+# task start): a refusal must leave the host exactly as found, not in the
+# half-configured "boot task live, no ingress" state issue #423 complains
+# about. The status query is FAIL-CLOSED: an unreadable serve status refuses
+# instead of falling through to the serve call.
+$serveFound = [bool](Get-Command tailscale -ErrorAction SilentlyContinue)
+if ($serveFound) {
+    # PS 5.1: a native-command stderr byte under EAP=Stop throws
+    # NativeCommandError BEFORE the guarded check runs (review round 4), so
+    # the read is scoped to EAP=Continue and classified by EXIT CODE.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $statusLines = @(& tailscale serve status 2>$null)
+        $statusRc = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if ($statusRc -ne 0 -or $statusLines.Count -eq 0) {
+        Write-Error ("REFUSED: cannot verify tailscale serve occupancy " +
+            "(status query failed, exit $statusRc). Not publishing over an " +
+            "unverifiable serve configuration - check tailscaled, then re-run.")
+    }
+    $cls = Get-ServeStatusClassification -Lines $statusLines -OurPort $Port -TargetPort $HttpsPort
+    if ($cls.Occupier -and -not $cls.Ours) {
+        $statusText = $statusLines -join "`n"
+        Write-Error ("REFUSED: tailscale serve already has a handler on " +
+            ":$HttpsPort (an operator service is live there, or the " +
+            "existing handler set is not entirely ours). Re-run with an " +
+            "explicit -HttpsPort <n> to publish the hub on another " +
+            "port instead of replacing it. Current serve status:`n$statusText")
+    }
+}
+
 # --- data dir + wrapper script (the task action cannot carry env) -----------
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $serverPy = Join-Path $RepoRoot "hermes-plugin\server\mcp_server.py"
@@ -71,8 +115,7 @@ set "ZMEM_DATA=$DataDir"
 # --- the service: startup scheduled task as the map owner (S4U) --------------
 $action = New-ScheduledTaskAction -Execute "$wrapper"
 $trigger = New-ScheduledTaskTrigger -AtStartup
-# Run the task as the ACL OWNER of the principal map with S4U
-# logon: no
+# Run the task as the ACL OWNER of the principal map with S4U logon: no
 # password prompt, fires without an interactive logon, and the identity
 # can READ the issuer-hardened principal map (issue-principal strips
 # inheritance and grants only the issuer - a SYSTEM principal could not
@@ -90,11 +133,14 @@ if ($state -ne "Running") {
 }
 
 # --- tailscale serve: tailnet HTTPS -> localhost ONLY -----------------------
-$serve = Get-Command tailscale -ErrorAction SilentlyContinue
-if (-not $serve) {
-    Write-Warning "tailscale not found - install it, then run: tailscale serve --bg --https=443 http://127.0.0.1:$Port"
+# Issue #423: the serve HTTPS port is a parameter. The OCCUPANCY PREFLIGHT
+# ran before any side effect (see above); this late block only EXECUTES the
+# serve re-point, after the hub task is verified up, so serve is never
+# configured against a dead hub.
+if (-not $serveFound) {
+    Write-Warning "tailscale not found - install it, then run: tailscale serve --bg --https=$HttpsPort http://127.0.0.1:$Port"
 } else {
-    tailscale serve --bg --https=443 "http://127.0.0.1:$Port"
+    tailscale serve --bg --https=$HttpsPort "http://127.0.0.1:$Port"
     if ($LASTEXITCODE -ne 0) { Write-Error "tailscale serve failed (exit $LASTEXITCODE)" }
     tailscale serve status
 }

@@ -5,6 +5,24 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.137.0] - 2026-11-01
+
+### Fixed
+
+- **Hub installers no longer clobber an occupied serve :443 (issue #423).**
+  `install-hub.ps1 -HttpsPort <n>` / `install-hub.sh ... [PORT [HTTPS_PORT]]`
+  parameterize the tailscale serve HTTPS port (default 443). An installer
+  targeting the default :443 runs an occupancy preflight BEFORE any host
+  mutation — the refusal leaves the host exactly as found (no half-configured
+  boot task/service, no serve re-point) — and refuses when the serve status
+  cannot be read (fail-closed) or when the default-port web handler set is
+  not entirely the hub's own localhost proxy, naming the escape
+  (`-HttpsPort <n>` / `HTTPS_PORT=<n>`). The matcher ships as a shared
+  classifier (scripts/fleet/serve-status-classify.sh +
+  serve-status-lib.ps1) that the behavioral test executes directly.
+  docs/FLEET.md documents the parameter; the contract test pins both
+  installers.
+
 ## [0.136.0] - 2026-11-01
 
 > Release surfaces (dsh host-gate evidence): the committed canary and

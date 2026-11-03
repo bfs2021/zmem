@@ -15,14 +15,15 @@
 #     success.
 #
 # Usage:
-#   sudo ./install-hub.sh /path/to/zmem /srv/zmem-data /srv/zmem-data/principal-map.json [port]
+#   sudo ./install-hub.sh /path/to/zmem /srv/zmem-data /srv/zmem-data/principal-map.json [port [https-port]]
 
 set -euo pipefail
 
-REPO_ROOT="${1:?usage: install-hub.sh REPO_ROOT DATA_DIR TOKENS_FILE [PORT]}"
+REPO_ROOT="${1:?usage: install-hub.sh REPO_ROOT DATA_DIR TOKENS_FILE [PORT [HTTPS_PORT]]}"
 DATA_DIR="${2:?DATA_DIR required}"
 TOKENS_FILE="${3:?TOKENS_FILE required}"
 PORT="${4:-8765}"
+HTTPS_PORT="${5:-443}"
 
 if ! command -v systemctl >/dev/null 2>&1; then
     echo "install-hub: systemd (systemctl) is required - this installer targets Linux hosts only" >&2
@@ -32,11 +33,21 @@ case "$PORT" in
     ''|*[!0-9]*) echo "install-hub: PORT must be numeric (got: $PORT)" >&2; exit 2 ;;
     *) [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || { echo "install-hub: PORT must be 1-65535 (got: $PORT)" >&2; exit 2; } ;;
 esac
+# Issue #423: the serve HTTPS port is a parameter (default 443).
+case "$HTTPS_PORT" in
+    ''|*[!0-9]*) echo "install-hub: HTTPS_PORT must be numeric (got: $HTTPS_PORT)" >&2; exit 2 ;;
+    *) [ "$HTTPS_PORT" -ge 1 ] && [ "$HTTPS_PORT" -le 65535 ] || { echo "install-hub: HTTPS_PORT must be 1-65535 (got: $HTTPS_PORT)" >&2; exit 2; } ;;
+esac
 case "$DATA_DIR$TOKENS_FILE$REPO_ROOT" in
     *[\\\#\$\'\"]*)
         echo "install-hub: REFUSED: paths containing whitespace-quoting/metacharacters (\\ # \$ ' \") are not supported by the generated unit (got one in DATA_DIR/TOKENS_FILE/REPO_ROOT)" >&2
         exit 2 ;;
 esac
+# Numeric-normalize the ports AFTER validation so a leading-zero spelling
+# (e.g. HTTPS_PORT=0443) is compared against the :443 refusal by VALUE, not
+# text - tailscale itself would parse 0443 as 443 (review round 3).
+PORT=$((10#$PORT))
+HTTPS_PORT=$((10#$HTTPS_PORT))
 SERVICE_USER="${SUDO_USER:-$(id -un)}"
 if [ "$SERVICE_USER" = "root" ]; then
     echo "install-hub: REFUSED: run via sudo from an unprivileged account (the hub must not run as root; SUDO_USER names the service user)" >&2
@@ -57,6 +68,41 @@ MAP_OWNER="$(stat -c %U "$TOKENS_FILE")"
 if [ "$MAP_OWNER" != "$SERVICE_USER" ] && [ "$MAP_OWNER" != "root" ]; then
     echo "install-hub: REFUSED: $TOKENS_FILE is owned by '$MAP_OWNER', not the service user ($SERVICE_USER) or root - a non-owner could append principals to a map the root-adjacent hub trusts" >&2
     exit 2
+fi
+
+# --- tailscale serve occupancy preflight (issue #423, review round 3) -------
+# The guard runs BEFORE ANY side effect (env file, unit, service restart):
+# a refusal must leave the host exactly as found, not in the half-configured
+# "service restarted, no ingress" state issue #423 complains about. The
+# status query is FAIL-CLOSED: an unreadable serve status refuses instead of
+# falling through to the serve call. Classification lives in the shipped
+# scripts/fleet/serve-status-classify.sh so the behavioral oracle in
+# tests/test_fleet_installer_443.py executes the SAME code.
+if command -v tailscale >/dev/null 2>&1; then
+    SERVE_STATUS="$(tailscale serve status 2>/dev/null)" && STATUS_RC=0 || STATUS_RC=$?
+    if [ "$STATUS_RC" -ne 0 ] || [ -z "$SERVE_STATUS" ]; then
+        echo "install-hub: REFUSED: cannot verify tailscale serve occupancy (status query failed, exit $STATUS_RC)" >&2
+        echo "Not publishing over an unverifiable serve configuration - check tailscaled, then re-run." >&2
+        exit 2
+    fi
+    CLASSIFICATION="$(printf '%s\n' "$SERVE_STATUS" | PORT="$PORT" TARGET_PORT="$HTTPS_PORT" bash "$REPO_ROOT/scripts/fleet/serve-status-classify.sh")"
+    case "$CLASSIFICATION" in
+        [01]" "[01]) : ;;
+        *)
+            echo "install-hub: REFUSED: serve-status classifier returned an unparseable result (got: $CLASSIFICATION)" >&2
+            exit 2 ;;
+    esac
+    OCCUPIER="${CLASSIFICATION%% *}"
+    OURS="${CLASSIFICATION##* }"
+    if [ "$OCCUPIER" = "1" ] && [ "$OURS" = "0" ]; then
+        echo "install-hub: REFUSED: tailscale serve already has a handler on :$HTTPS_PORT" >&2
+        echo "(an operator service is live there, or the existing handler" >&2
+        echo "set is not entirely ours). Re-run with an explicit" >&2
+        echo "HTTPS_PORT=<n> (5th arg) to publish the hub on another port" >&2
+        echo "instead of replacing it. Current serve status:" >&2
+        printf '%s\n' "$SERVE_STATUS" >&2
+        exit 2
+    fi
 fi
 
 mkdir -p "$DATA_DIR"
@@ -104,11 +150,15 @@ if ! systemctl --no-pager --lines=5 status zmem-hub.service; then
 fi
 
 # --- tailscale serve: tailnet HTTPS -> localhost ONLY -----------------------
+# Issue #423: the serve HTTPS port is a parameter. The OCCUPANCY PREFLIGHT
+# ran before any side effect (see above); this late block only EXECUTES the
+# serve re-point, after the hub service is verified up, so serve is never
+# configured against a dead hub.
 if command -v tailscale >/dev/null 2>&1; then
-    tailscale serve --bg --https=443 "http://127.0.0.1:$PORT"
+    tailscale serve --bg --https="$HTTPS_PORT" "http://127.0.0.1:$PORT"
     tailscale serve status
 else
-    echo "install-hub: tailscale not found - install it, then run: tailscale serve --bg --https=443 http://127.0.0.1:$PORT" >&2
+    echo "install-hub: tailscale not found - install it, then run: tailscale serve --bg --https=$HTTPS_PORT http://127.0.0.1:$PORT" >&2
 fi
 
 echo
