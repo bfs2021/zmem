@@ -53,6 +53,16 @@ jobs:
       # Never attempt to download the 90MB model in CI — the whole point of
       # this job is proving the suites pass in degraded (no-embeddings) mode.
       ZMEM_MODEL_AUTODOWNLOAD: "0"
+      # Bare `python` on windows-latest runs cp1252 (utf8_mode=0, PEP 540/686
+      # keep the default ASCII-ish until 3.15): a custom runner printing an
+      # unencodable character crashes mid-report and MASKS the real failure.
+      # Pin UTF-8 mode for the python lanes. The repo's cp1252-pinned child
+      # fixtures are unaffected by the pin either way: storelib's CLI
+      # reconfigures its own stdout to UTF-8 before dispatch (verified by
+      # execution on the add path), so no shipped test depends on a cp1252
+      # child — there is deliberately no in-repo leg that still exercises
+      # cp1252 mode.
+      PYTHONUTF8: "1"
     steps:
       # Actions are tag-pinned. This workflow uses no secrets and no
       # pull_request_target, so the threat model for tag-repointing is low
@@ -546,6 +556,8 @@ jobs:
       # not the ONNX model.
       ZMEM_MODEL_AUTODOWNLOAD: "0"
       ZMEM_EMBED_PROFILE: "fake"
+      # Same cp1252 hazard as the main test job (see that env block).
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
