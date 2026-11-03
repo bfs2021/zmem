@@ -1,7 +1,7 @@
 {
   "schema": "zmem-deepseek-support-v1",
-  "generated_at": "2026-11-03T12:57:18.026Z",
-  "zmem_version": "0.139.0",
+  "generated_at": "2026-11-03T17:59:24.362149Z",
+  "zmem_version": "0.140.0",
   "tested_floors": {
     "runtime": "@deepseek-ai/* 0.2.1-rc.2 (cordis 4.0.5)",
     "node": ">=20 (verified on v24.16.0, Windows x64)",

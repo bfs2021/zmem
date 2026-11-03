@@ -5,6 +5,46 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.140.0] - 2026-11-03
+
+Collated follow-up bundle: issues #429 + #430 + #432 (the PR #425/#426
+post-merge closeout family; #310 absorbed by #432 AC2).
+
+- fix(fleet): broker-restore snapshot id gate (issue #429) — the
+  broker-restore path (`fleet/snapshot.py` `_build_from_payload`) refuses
+  a hub-served payload whose rows container, row shape, or memory id is
+  malformed (ValueError naming the offender, `_INGEST_ID_RE.fullmatch`
+  semantics; out-of-range integers translated into the same refusal),
+  before any destination write; a refused restore leaves the served
+  snapshot pair byte-identical. Closes the last un-gated memory-id
+  writer from the #353 closed-id-set contract.
+- test(store): schema-lock grace binding pinned (issue #430) —
+  `SchemaGraceBindingTest` fails any literal re-freeze of
+  `SCHEMA_LOCK_GRACE_SECONDS` (mutant-proven), and
+  `SchemaLockKnobProbeTest` proves the knob governs the schema-side
+  empty-token window end-to-end through the real acquisition chain
+  (knob=30 waits out a live empty holder; default breaks the phantom).
+- test(hygiene): the four box-env standalone failures fixed (issue
+  #432 AC1) — test_compact_reinject / test_recall_hook_behavior /
+  test_query_rewrite_hook / test_host_canary now sandbox HOME, strip
+  ambient project-dir and session-identity vars (wrong-namespace
+  resolution and cross-lane ledger dedup on operator boxes), pin the
+  launcher watchdog under self-load, and pin ZMEM_STORE inside the
+  decisions-log tempdir (ZMEM_DATA precedence).
+- test(js): capture-adapter teardown cannot race the detached writer
+  (issues #432 AC2 / #310) — bounded-retry removal
+  (`_rmSyncRetry`, ENOTEMPTY/EBUSY/EPERM, deterministic unit-proven),
+  plus a load-tolerant 5 s detached-observation deadline (both cited
+  windows-CI failure shapes).
+- test(ci): expected `::error::` fixture output never reaches the
+  Actions annotation stream (issue #432 AC3) — the in-process gate
+  verify inside RefreshRefusalPin is captured (redirect_stdout) and its
+  refusal diagnostics become a pinned contract; attribution corrected:
+  the emitter was test_release_gate_feedback.py, not the freshness-gate
+  file named in the issue.
+- DeepSeek evidence regenerated at 0.140.0 (real dsh-host canary run,
+  7 lanes; support report re-stamped).
+
 ## [0.139.0] - 2026-11-03
 
 ### Fixed

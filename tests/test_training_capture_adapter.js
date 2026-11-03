@@ -32,6 +32,32 @@ function fakeExec(calls, result = { capture_id: "capture-1", state: "partial" })
     };
 }
 
+// Issue #432 AC2 / #310: teardown raced the DETACHED capture writer into
+// ENOTEMPTY on Windows (fs.rmSync force:true does not suppress it — two
+// windows CI failures: runs 41363672590, 41555774743). The writer is a
+// grandchild of spawnSync (launcher-spawned, unhandleable), so the
+// sanctioned leg is bounded-retry removal: retry the removal on the
+// transient Windows codes while the detached writer finishes closing its
+// handles, rethrowing only after the bound.
+function _rmSyncRetry(root, attempts = 10, delayMs = 150) {
+    let lastErr;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            fs.rmSync(root, { recursive: true, force: true });
+            return;
+        } catch (error) {
+            if (!["ENOTEMPTY", "EBUSY", "EPERM"].includes(error.code)) {
+                throw error;
+            }
+            lastErr = error;
+            if (i + 1 < attempts) {
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+            }
+        }
+    }
+    throw lastErr;
+}
+
 for (const host of ["claude", "codex", "zcode"]) {
     test(`${host} starts a partial and records the exact delivery snapshot`, () => {
         const calls = [];
@@ -309,7 +335,7 @@ test("the production main path clamps start capture under a small watchdog", () 
         assert.strictEqual(envelope.hookSpecificOutput.additionalContext, "watchdog context",
             `expected the hook body result, got ${result.stdout}`);
     } finally {
-        fs.rmSync(root, { recursive: true, force: true });
+        _rmSyncRetry(root);
     }
 });
 
@@ -386,7 +412,7 @@ test("recall start enforces the carried deadline when a helper runs long", () =>
         assert(elapsed >= 100 && elapsed < 1500,
             `capture did not time out under its positive carried allocation: ${elapsed}ms`);
     } finally {
-        fs.rmSync(root, { recursive: true, force: true });
+        _rmSyncRetry(root);
     }
 });
 
@@ -485,7 +511,11 @@ test("detached observations start only after the translated hook has produced it
         assert.strictEqual(result.status, 0, result.stderr);
         const envelope = JSON.parse(result.stdout.trim());
         assert.strictEqual(envelope.hookSpecificOutput.hookEventName, "PostToolUse");
-        const deadline = Date.now() + 1500;
+        // Issue #432 AC2: 1500 ms was the whole budget for the detached
+        // observation under load (the second cited CI failure shape —
+        // "missing detached observation" on run 41555774743). Keep the
+        // early exit; give the writer the full 5 s.
+        const deadline = Date.now() + 5000;
         while ((!fs.existsSync(log) || !fs.readFileSync(log, "utf8").includes("capture:observe"))
                && Date.now() < deadline) {
             Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
@@ -495,7 +525,7 @@ test("detached observations start only after the translated hook has produced it
         assert(order.indexOf("child-finished") < order.indexOf("capture:observe"),
             `observation ran before child completion: ${order}`);
     } finally {
-        fs.rmSync(root, { recursive: true, force: true });
+        _rmSyncRetry(root);
     }
 });
 
@@ -563,6 +593,72 @@ test("unsupported hosts and incomplete delivery payloads are no-ops", () => {
     assert.deepStrictEqual(launch.snapshotTrainingDelivery("claude", "recall", meta,
         env, { effective_ops: ["ignored"] }, execFn), {});
     assert.strictEqual(calls.length, 0);
+});
+
+// Deterministic discrimination for the #432 AC2 teardown fix: the retry
+// helper must ride out transient ENOTEMPTY/EBUSY/EPERM and rethrow only
+// after the bound, without depending on a live detached writer (the 4.2
+// reap-removal mutant is the nondeterministic backup tooth).
+test("_rmSyncRetry retries transient removal failures and succeeds", () => {
+    const realRmSync = fs.rmSync;
+    let attempts = 0;
+    try {
+        fs.rmSync = (target, opts) => {
+            attempts++;
+            if (attempts < 3) {
+                const err = new Error("simulated detached writer");
+                err.code = "ENOTEMPTY";
+                throw err;
+            }
+            return realRmSync(target, opts);
+        };
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "zmem-rmsync-retry-"));
+        fs.writeFileSync(path.join(root, "payload.txt"), "x", "utf8");
+        _rmSyncRetry(root, 10, 1);
+        assert.strictEqual(attempts, 3,
+            `expected success on the 3rd attempt, saw ${attempts}`);
+        assert.strictEqual(fs.existsSync(root), false, "root must be gone");
+    } finally {
+        fs.rmSync = realRmSync;
+    }
+});
+
+test("_rmSyncRetry rethrows a non-transient error immediately", () => {
+    const realRmSync = fs.rmSync;
+    let attempts = 0;
+    try {
+        fs.rmSync = () => {
+            attempts++;
+            const err = new Error("not transient");
+            err.code = "ENOENT Weird";
+            throw err;
+        };
+        assert.throws(() => _rmSyncRetry("Z:\\definitely\\not\\here", 10, 1),
+            /not transient/);
+        assert.strictEqual(attempts, 1,
+            "a non-transient code must not be retried");
+    } finally {
+        fs.rmSync = realRmSync;
+    }
+});
+
+test("_rmSyncRetry gives up after the bound and rethrows the last error", () => {
+    const realRmSync = fs.rmSync;
+    let attempts = 0;
+    try {
+        fs.rmSync = () => {
+            attempts++;
+            const err = new Error("writer never finishes");
+            err.code = "ENOTEMPTY";
+            throw err;
+        };
+        assert.throws(() => _rmSyncRetry("unused-target", 4, 1),
+            /writer never finishes/);
+        assert.strictEqual(attempts, 4,
+            `the bound must cap attempts at 4, saw ${attempts}`);
+    } finally {
+        fs.rmSync = realRmSync;
+    }
 });
 
 console.log(`\n${passed} training capture launcher tests passed`);

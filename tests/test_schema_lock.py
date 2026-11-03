@@ -193,9 +193,201 @@ class SchemaLockLivenessTest(unittest.TestCase):
             pass
 
 
+class SchemaGraceBindingTest(unittest.TestCase):
+    """Frozen acceptance check C3 (issue #430): the schema-lock grace stays
+    BOUND to the maintenance grace at import — storelib/schema.py's
+    ``SCHEMA_LOCK_GRACE_SECONDS = MAINTENANCE_LOCK_GRACE_SECONDS`` (the
+    #357 clamped-knob contract).
+
+    The knob is pinned to 30 in setUpClass BEFORE the first storelib import
+    ON PURPOSE: CPython pools identical float literals within one module, so
+    under the default env a re-frozen literal ``10.0`` would be
+    object-identical to the derived default constant and a bare identity
+    check could not discriminate. Under a knob-set import the maintenance
+    grace is a float("30")-derived object, which no literal re-freeze can be
+    identical to (or equal to) — the identity assertion then fails under any
+    literal re-freeze. The mutant-shaped discrimination is executed by the
+    trace's c3_binding_mutant.sh driver (re-freeze to ``10.0`` -> THIS class
+    must fail there); at base runtime the binding is already correct, so
+    this class passes here by design (its red anchor is the driver).
+    """
+
+    _tmpdir: str | None = None
+    _saved_env: dict | None = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmpdir = tempfile.mkdtemp(prefix="zmem-ac430-bind-")
+        cls._saved_env = {k: os.environ.get(k) for k in _HERMETIC_KEYS}
+        os.environ["ZMEM_STORE"] = str(Path(cls._tmpdir) / "store.sqlite")
+        os.environ["ZMEM_DATA"] = str(Path(cls._tmpdir) / "data")
+        os.environ["ZMEM_MODELS_DIR"] = str(Path(cls._tmpdir) / "no-models")
+        os.environ["ZMEM_MODEL_AUTODOWNLOAD"] = "0"
+        os.environ.pop("ZMEM_ALLOW_NEWER_SCHEMA", None)
+        # Pin the knob BEFORE the first storelib import (see class docstring)
+        # and clear every other timing knob that could clamp the grace.
+        for key in ("ZMEM_MAINTENANCE_LOCK_GRACE_SECONDS",
+                    "ZMEM_MAINTENANCE_LOCK_STALE_SECONDS",
+                    "ZMEM_SCHEMA_LOCK_POLL_SECONDS",
+                    "ZMEM_SCHEMA_LOCK_STALE_SECONDS",
+                    "ZMEM_SCHEMA_LOCK_WAIT_SECONDS"):
+            cls._saved_env.setdefault(key, os.environ.get(key))
+            os.environ.pop(key, None)
+        os.environ["ZMEM_MAINTENANCE_LOCK_GRACE_SECONDS"] = "30"
+        if str(SCRIPTS_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS_DIR))
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._saved_env is not None:
+            for k, v in cls._saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            cls._saved_env = None
+        if cls._tmpdir is not None:
+            shutil.rmtree(cls._tmpdir, ignore_errors=True)
+            cls._tmpdir = None
+
+    def test_binding_is_identity(self):
+        import storelib.schema as schema
+
+        self.assertIs(
+            schema.SCHEMA_LOCK_GRACE_SECONDS,
+            schema.MAINTENANCE_LOCK_GRACE_SECONDS,
+            "SCHEMA_LOCK_GRACE_SECONDS must be the SAME OBJECT as "
+            "MAINTENANCE_LOCK_GRACE_SECONDS at import (the #357 clamped-knob "
+            "binding; under the pinned knob=30 import both must be 30.0) — "
+            "a re-freeze to a literal breaks the knob contract")
+
+
+class SchemaLockKnobProbeTest(unittest.TestCase):
+    """Frozen acceptance check C4 (issue #430): a fresh-subprocess probe
+    proves ZMEM_MAINTENANCE_LOCK_GRACE_SECONDS=30 widens the SCHEMA-side
+    empty-token liveness window end-to-end — the child imports
+    storelib.schema UNDER the env (constants freeze at import), plants an
+    aged (20 s) stripped-empty lock file at the REAL schema-lock path
+    (schema._lock_path("schema"), the file the acquisition chain's
+    _inspect_lock_phantom classifies), and classifies it through
+    ``schema._inspect_lock_phantom(lock, schema.SCHEMA_LOCK_GRACE_SECONDS)``.
+
+    knob=30 -> grace 30.0 -> the aged-empty lock is LIVE; default (unset)
+    -> grace 10.0 -> the SAME lock is PHANTOM. At base runtime this probe
+    passes by design (the binding is already correct); its red anchor is
+    the trace's c4_knob_probe.py driver (class absent from HEAD at base).
+    """
+
+    _tmpdir: str | None = None
+
+    _PROBE_SOURCE = """\\
+import os
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])  # skills/memory/scripts
+from storelib import schema
+
+lock = schema._lock_path("schema")
+lock.parent.mkdir(parents=True, exist_ok=True)
+if lock.exists():
+    lock.unlink()
+lock.write_bytes(b"")
+aged = time.time() - 20.0
+os.utime(lock, (aged, aged))
+# Plan-critic round 1 (#6): drive the REAL acquisition chain (the seam
+# _strict_acquire_lock("schema", ...) consults at schema.py:812), not just
+# the classifier in isolation — a mutant that re-freezes the grace ARGUMENT
+# at the acquisition call site must be killed by this probe too.
+is_phantom, _expected = schema._inspect_lock_phantom(
+    lock, schema.SCHEMA_LOCK_GRACE_SECONDS)
+token = schema._acquire_schema_lock_with_liveness(wait_seconds=1.0)
+if token:
+    schema._release_named_lock("schema", token)
+print("KNOB_PROBE grace=%s classification=%s acquisition=%s" % (
+    schema.SCHEMA_LOCK_GRACE_SECONDS,
+    "PHANTOM" if is_phantom else "LIVE",
+    "BROKEN" if token else "LIVE-NOT-BROKEN"))
+"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmpdir = tempfile.mkdtemp(prefix="zmem-ac430-knob-")
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._tmpdir is not None:
+            shutil.rmtree(cls._tmpdir, ignore_errors=True)
+            cls._tmpdir = None
+
+    def _run_probe_leg(self, label: str, knob: str | None):
+        leg_dir = Path(self._tmpdir) / label
+        leg_dir.mkdir(parents=True, exist_ok=True)
+        probe_path = leg_dir / "knob_probe_child.py"
+        probe_path.write_text(self._PROBE_SOURCE, encoding="utf-8")
+        env = dict(os.environ)
+        env.update({
+            "ZMEM_STORE": str(leg_dir / "store.sqlite"),
+            "ZMEM_DATA": str(leg_dir / "data"),
+            "ZMEM_MODELS_DIR": str(leg_dir / "no-models"),
+            "ZMEM_MODEL_AUTODOWNLOAD": "0",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        })
+        for key in ("ZMEM_MAINTENANCE_LOCK_GRACE_SECONDS",
+                    "ZMEM_MAINTENANCE_LOCK_STALE_SECONDS",
+                    "ZMEM_SCHEMA_LOCK_POLL_SECONDS",
+                    "ZMEM_SCHEMA_LOCK_STALE_SECONDS",
+                    "ZMEM_SCHEMA_LOCK_WAIT_SECONDS",
+                    "ZMEM_ALLOW_NEWER_SCHEMA"):
+            env.pop(key, None)
+        if knob is not None:
+            env["ZMEM_MAINTENANCE_LOCK_GRACE_SECONDS"] = knob
+        proc = subprocess.run(
+            [sys.executable, "-X", "utf8", str(probe_path), str(SCRIPTS_DIR)],
+            capture_output=True, text=True, timeout=180, env=env,
+            cwd=str(leg_dir))
+        self.assertEqual(
+            proc.returncode, 0,
+            f"{label} leg crashed: rc={proc.returncode} stderr={proc.stderr}")
+        return proc.stdout
+
+    def test_knob30_widens_schema_empty_token_window(self):
+        out = self._run_probe_leg("knob30", "30")
+        self.assertIn(
+            "classification=LIVE", out,
+            "ZMEM_MAINTENANCE_LOCK_GRACE_SECONDS=30 must widen the "
+            "SCHEMA-side empty-token liveness window (aged-empty lock "
+            "classified LIVE); got: " + out.strip())
+        self.assertIn(
+            "acquisition=LIVE-NOT-BROKEN", out,
+            "under knob=30 the real acquisition chain must WAIT OUT a live "
+            "empty-token holder, not break it (token must be absent); "
+            "got: " + out.strip())
+
+    def test_default_classifies_aged_empty_lock_phantom(self):
+        out = self._run_probe_leg("default", None)
+        self.assertIn(
+            "classification=PHANTOM", out,
+            "with the knob unset the default 10 s grace must classify the "
+            "same aged-empty lock PHANTOM; got: " + out.strip())
+        self.assertIn(
+            "acquisition=BROKEN", out,
+            "under the default grace the real acquisition chain must BREAK "
+            "the phantom empty-token holder (token must be present); "
+            "got: " + out.strip())
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
-    _suite = _loader.loadTestsFromModule(sys.modules[__name__])
+    _names = sys.argv[1:]
+    if _names:
+        _suite = unittest.TestSuite()
+        for _name in _names:
+            _suite.addTests(
+                _loader.loadTestsFromName(f"{__name__}.{_name}"))
+    else:
+        _suite = _loader.loadTestsFromModule(sys.modules[__name__])
     _result = unittest.TextTestRunner(verbosity=2).run(_suite)
     print("CHECK-PASS" if _result.wasSuccessful() else "CHECK-FAIL")
     sys.exit(0 if _result.wasSuccessful() else 1)

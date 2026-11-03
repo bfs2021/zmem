@@ -23,6 +23,12 @@ class HookBehaviorSmokeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix="zmem-hooksmoke-")
         cls.store = Path(cls.tmp) / "store.sqlite"
+        # Issue #432 AC1 (hermeticity): sandbox the home so the driven
+        # hooks cannot see the operator's real ~/.zmem Tier-0 state (both
+        # vars pinned unconditionally — USERPROFILE wins on Windows, HOME
+        # on POSIX); CI checkouts have no ambient home state.
+        home = Path(cls.tmp) / "home"
+        home.mkdir(parents=True, exist_ok=True)
         env = {
             **os.environ,
             "ZMEM_STORE": str(cls.store),
@@ -31,7 +37,24 @@ class HookBehaviorSmokeTests(unittest.TestCase):
             "ZMEM_INJECT": "1",
             "ZMEM_NAMESPACE": "project:smoke",
             "ZMEM_INJECT_FLOOR_RECENT": "0.5",
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            # 12 s default outer watchdog flakes under self-load on
+            # operator boxes (outer_timeout=1 omits the fence).
+            "ZMEM_LAUNCHER_WATCHDOG_MS": "60000",
         }
+        # Issue #432 AC1 (hermeticity): ambient project-dir markers hijack
+        # the launcher's namespace resolution over the driven cwd, and
+        # ambient session-identity vars (ZMEM_SESSION / *_SESSION_ID from a
+        # live host session) make every drive in this class share ONE
+        # ledger sid, so the earlier recall deliveries dedup-suppress the
+        # session-start fence (status=silent). Strip both families so each
+        # drive is isolated; CI has neither.
+        for _marker in ("ZMEM_PROJECT", "ZCODE_PROJECT_DIR",
+                        "CLAUDE_PROJECT_DIR", "CODEX_PROJECT_DIR",
+                        "ZMEM_SESSION", "CLAUDE_SESSION_ID",
+                        "ZCODE_SESSION_ID", "ZMEM_HOST"):
+            env.pop(_marker, None)
         r = subprocess.run(
             [sys.executable, str(SCRIPTS_DIR / "store.py"), "add",
              "--namespace", "project:smoke", "--type", "fact",

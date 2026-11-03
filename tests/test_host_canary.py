@@ -103,6 +103,26 @@ LANE_STATUSES = ("ok", "active", "degraded", "error", "not_applicable")
 
 def run_canary(*args, extra_env=None, timeout=600):
     env = dict(os.environ)
+    # Issue #432 AC1 (hermeticity): ambient HOME state (real ~/.zmem
+    # Tier-0/bg logs) and ambient project-dir markers (wrong-namespace
+    # resolution in the driven hooks) make the canary self-test fail
+    # standalone on operator boxes (reason=no-row-id) while CI stays
+    # green. Sandbox the home and strip the markers; CI is unaffected.
+    _home = os.path.join(_TMP, "canary-home")
+    os.makedirs(_home, exist_ok=True)
+    env["HOME"] = _home
+    env["USERPROFILE"] = _home
+    env["ZMEM_LAUNCHER_WATCHDOG_MS"] = "60000"
+    # Ambient session-identity vars (from the live host session running the
+    # suite) make every canary lane share ONE ledger sid: the plain
+    # self-test's delivery then dedup-suppresses the compact lane
+    # (reason=no-row-id) and the decision line renders the ambient sid
+    # instead of the canary's own. Strip them; CI has none.
+    for _marker in ("ZMEM_PROJECT", "ZCODE_PROJECT_DIR",
+                    "CLAUDE_PROJECT_DIR", "CODEX_PROJECT_DIR",
+                    "ZMEM_SESSION", "CLAUDE_SESSION_ID",
+                    "ZCODE_SESSION_ID"):
+        env.pop(_marker, None)
     env.update(extra_env or {})
     return subprocess.run(
         [sys.executable, str(CANARY), *args],

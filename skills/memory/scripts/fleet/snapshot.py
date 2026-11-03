@@ -405,6 +405,7 @@ def _build_from_payload(payload: dict, env: dict[str, str]) -> Path:
     try:
         from storelib.schema import (  # noqa: PLC0415 - lazy
             STATE_EXPIRY_CLASSES, init_db, migrate)
+        from storelib.sync import _INGEST_ID_RE  # noqa: PLC0415 - lazy
         # init_db creates the base tables; migrate() brings the LATER
         # columns the selector reads (supersede_reason, embedding, …) —
         # the same pair connect()/_prepare_store runs on a real store.
@@ -412,10 +413,66 @@ def _build_from_payload(payload: dict, env: dict[str, str]) -> Path:
         # single-writer scratch, never a shared store.
         init_db(out)
         migrate(out)
-        out.executemany(
-            "INSERT INTO memory (" + _SNAPSHOT_COLUMNS + ") VALUES (" +
-            ",".join("?" * ncols) + ")",
-            [_decode(r) for r in payload.get("rows", [])])
+        # Issue #429: the closed-id-set contract (#353) at the LAST
+        # un-gated writer. The payload is hub-served (untrusted-peer
+        # surface), so EVERY malformed shape refuses with ValueError —
+        # _refresh's designed degrade (keep the previous pair) — and never
+        # with TypeError/IndexError/OverflowError, which would escape that
+        # degrade and crash the broker moment.
+        rows = payload.get("rows", [])
+        if not isinstance(rows, (list, tuple)):
+            raise ValueError(
+                "fleet snapshot payload rows is not a list: "
+                f"{type(rows).__name__}")
+        # Implementation-review round 1: the SCALAR control fields are
+        # consumed downstream as int() (payload_bytes in _refresh,
+        # snapshot_revision in build_snapshot — the latter AFTER the served
+        # sqlite has been os.replace'd), so a non-int-like value would
+        # raise TypeError outside the ValueError degrade and leave a
+        # half-updated pair. Refuse them here, before any write.
+        for _field, _accept_none in (("payload_bytes", False),
+                                     ("snapshot_revision", True)):
+            _value = payload.get(_field)
+            if _value is None and _accept_none:
+                continue
+            try:
+                int(_value)
+            except (TypeError, ValueError, OverflowError):
+                # OverflowError: JSON 1e400 decodes to float inf, and
+                # int(inf) overflows (review round 2) — refuse, never
+                # escape the degrade.
+                raise ValueError(
+                    f"fleet snapshot payload {_field} is not an integer: "
+                    f"{_value!r}") from None
+        prepared = []
+        for i, row in enumerate(rows):
+            if (not isinstance(row, (list, tuple))
+                    or len(row) != ncols):
+                raise ValueError(
+                    f"fleet snapshot payload row {i} is not a "
+                    f"{ncols}-column sequence: {row!r}")
+            mid = row[0]
+            if not isinstance(mid, str):
+                raise ValueError(
+                    f"fleet snapshot payload row {i} id is not a string: "
+                    f"{mid!r}")
+            if not _INGEST_ID_RE.fullmatch(mid):
+                raise ValueError(
+                    f"fleet snapshot payload row {i} id is not "
+                    f"UUID-shaped: {mid!r}")
+            prepared.append(_decode(row))
+        try:
+            out.executemany(
+                "INSERT INTO memory (" + _SNAPSHOT_COLUMNS + ") VALUES (" +
+                ",".join("?" * ncols) + ")",
+                prepared)
+        except OverflowError as exc:
+            # A right-shaped row with an out-of-range integer (e.g.
+            # 1 << 100 in an INTEGER column) overflows at sqlite bind
+            # time — outside the ValueError degrade, so translate it.
+            raise ValueError(
+                "fleet snapshot payload row value is out of range for "
+                f"the store schema: {exc}") from exc
         # Issue #414: restore the additive ``expiry`` family — the shipped
         # state rows' memory_expiry side records. Older hubs omit the key
         # (tolerated: every row stays live by the missing-side-row law);
@@ -502,7 +559,15 @@ def _refresh(http: Any, env: dict[str, str],
     # ok=True with rows == [] and IS a valid refresh).
     if not isinstance(payload, dict) or payload.get("ok") is not True:
         return False
-    if int(payload.get("payload_bytes", 0)) > MAX_SNAPSHOT_BYTES:
+    # Implementation-review round 1: a non-int-like payload_bytes raised
+    # TypeError HERE — outside the _build_from_payload ValueError gate and
+    # outside this function's own degrade below. Refuse it as a designed
+    # degrade (keep the previous pair) rather than crashing the caller.
+    try:
+        _payload_bytes = int(payload.get("payload_bytes", 0))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if _payload_bytes > MAX_SNAPSHOT_BYTES:
         return False
     try:
         _build_from_payload(payload, env)
