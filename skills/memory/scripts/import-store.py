@@ -299,6 +299,18 @@ def _sanitize_staged_store(staged: sqlite3.Connection,
     rows = source.execute("SELECT * FROM memory ORDER BY id").fetchall()
     for row in rows:
         mid = row["id"]
+        # Issue #353: the sqlite-to-sqlite path is the one writer that
+        # never validated ids (the JSONL sub-path routes through
+        # _INGEST_ID_RE). A caller-supplied store can carry arbitrary
+        # memory.id values (spaces, ']', newlines, fence delimiters);
+        # refuse the WHOLE import rather than copying a foreign id set
+        # into the destination. Raising mid-transaction aborts the staged
+        # copy before any replace, so the prior destination is untouched.
+        if not isinstance(mid, str) or not _INGEST_ID_RE.fullmatch(mid):
+            raise ValueError(
+                "import refused: source store carries a memory.id that is "
+                f"not UUID-shaped (first offender {mid!r}); refusing the "
+                "import rather than copying malformed ids")
         # NULL fields are legal in a real legacy store; the policy joins
         # strings and must never see None.
         content = row["content"] or ""
@@ -378,6 +390,33 @@ def _sanitize_staged_store(staged: sqlite3.Connection,
             _rebuild_belief_heads(staged, mid, new_content)
             counters["redacted"] += 1
         counters["added"] += 1
+
+    # Issue #353 completeness (PR-review round): the closed id set covers
+    # every id-bearing column sync validates at ingest, not just memory.id —
+    # memory.update_of, memory_link.src_id/dst_id, episode_memory.memory_id,
+    # and episode.id. NULLs are legal (update_of/summary pointers); only
+    # present values must be UUID-shaped, or the WHOLE import refuses
+    # mid-transaction (staged rollback, prior destination untouched).
+    for table, col in (("memory", "update_of"),
+                       ("memory_link", "src_id"),
+                       ("memory_link", "dst_id"),
+                       ("episode_memory", "memory_id"),
+                       ("episode", "id")):
+        # Legacy sources may predate a column entirely; skip it there.
+        src_cols = {r["name"] for r in source.execute(
+            f"PRAGMA table_info({table})")} if _table_exists(source, table) else set()
+        if col not in src_cols:
+            continue
+        for (val,) in source.execute(
+                f"SELECT DISTINCT {col} FROM {table} "
+                f"WHERE {col} IS NOT NULL AND {col} != ''"):
+            if not isinstance(val, str) or not _INGEST_ID_RE.fullmatch(val):
+                raise ValueError(
+                    f"import refused: source store column {table}.{col} "
+                    f"carries a not UUID-shaped id (first offender "
+                    f"{val!r}); refusing the import rather than copying "
+                    "malformed ids")
+
     staged_count = source_count - counters["quarantined"]
     return {"source_count": source_count, "staged_count": staged_count,
             **counters}, pending

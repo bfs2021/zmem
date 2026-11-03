@@ -5,6 +5,53 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.136.0] - 2026-11-01
+
+> Release surfaces (dsh host-gate evidence): the committed canary and
+> support-report pair was regenerated from a real dsh-host run at
+> `git c1ce99044cba` on this release branch; the zero-runtime-code delta
+> between that recorded revision and the release commit is disclosed here
+> by this note (self-reference at the release commit is impossible for a
+> run-time artifact), and the support fields are unchanged except
+> version/generated_at.
+
+### Changed
+
+- **Memory id shape is now enforced at every writer (issue #353).** The shared
+  ingest id pattern is anchored for full-string semantics (`\Z`), closing the
+  trailing-newline acceptance in sync ingest validation, and the two remaining
+  writers validate ids fail-closed: `import-store.py`'s sqlite-to-sqlite path
+  refuses a source store whose `memory.id` column carries non-uuid-shaped ids
+  (the offending id is named, destination untouched), and dataset bulk load
+  refuses a snapshot carrying malformed ids, naming the offending id. Rows
+  these paths previously accepted are now refused — a behavior-changing
+  tightening to keep the id set closed at every writer.
+- **The twelve-kind `entity` CHECK is derived from one source (issue #356).**
+  All four DDL sites (fresh `init_db`, `_ENTITY_V16_DDL_RECREATED`, the v16
+  staging table, the legacy migration block) now render the kind list from
+  `schema_meta.ENTITY_KINDS` via a single helper; the CHECK constraint is
+  semantically identical (whitespace inside the rendered list differs from
+  the old literals — SQLite semantics unaffected, no consumer string-matches
+  the literal), and a ratchet test pins that no hand-written entity-kind
+  literal remains.
+
+### Fixed
+
+- **A dead schema-lock holder no longer wedges every store command for the
+  full stale window (issue #357).** The schema lock gains the same
+  PID-liveness phantom break the maintenance lock has (issue #262 precedent):
+  a PROVABLY dead holder's lock is broken identity-checked for the next
+  writer, a live holder is never broken, and consumer refusal behavior is
+  byte-identical when a live holder exists. Operators get documented
+  first-open rebuild duration and backup/restore guidance (README +
+  skills/memory/SKILL.md).
+- **Schema-16 test-hygiene residuals (issue #360).** The two migration tests
+  snapshot `os.environ` before mutating it (restore no longer replays mutated
+  values), a guard module pins that every network-capable git invocation in
+  the suite runs non-interactively, the self-fixture assertion in
+  `test_jsonl_sync` is removed, and the migration-fixture generator refuses
+  tracked-fixture targets without an explicit `--allow-tracked`.
+
 ## [0.134.0] - 2026-11-01
 
 ### Fixed
