@@ -526,7 +526,11 @@ runtime moments are
 Silent reasons are exactly `empty-pool`, `omitted`, `below-bar`, `budget-drop`,
 `below-relevance`, `already-delivered`, and `expired` (`expired` names a pool
 that was eligible before the live-expiry gate drained it — issue #174's
-producer; every other condition keeps its precedence). `reason=injected` is a
+producer; every other condition keeps its precedence). The decision line can
+additionally carry the hook-side transport token `reason=store-error` — a
+store child that exited nonzero (e.g. a partial-upgrade store rejecting an
+unknown flag); miss-rate reporting excludes it from the missed count like the
+other negotiation refusals. `reason=injected` is a
 successful decision and `reason=disabled` is the separate kill-switch marker.
 
 `already-delivered` is selected when pre-ledger candidate ids are nonempty but

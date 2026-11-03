@@ -961,9 +961,27 @@ def main() -> int:
     rendered = envelope.get("rendered")
     if not isinstance(rendered, str):
         rendered = ""
+    if result is not None and result.returncode != 0:
+        # PR #427 closeout D-2b: a store child that REJECTS the hook's argv
+        # (partial upgrade: a pre-0.138 store exits 2 on the new hook's
+        # --consume-tasktext) must not masquerade as an empty pool — the
+        # decision-line reason feeds miss-rate classification, and a silent
+        # "empty-pool" makes a broken transport indistinguishable from a
+        # healthy no-match. One bounded stderr line (auditable); the reason
+        # stays a SINGLE token because the decision-log reader's reason slot
+        # is \S+ (miss_rate._BG_LINE_RE reader-parity). The write is guarded
+        # (mirrors the _store_timeout_s warning above): a closed/broken
+        # stderr must never break the fail-open contract or cost the
+        # decision line itself.
+        try:
+            print("[zmem] store child failed (rc=%d); recall degraded"
+                  % result.returncode, file=sys.stderr)
+        except Exception:
+            pass
     reason = envelope.get("reason")
     if not isinstance(reason, str) or not reason:
         reason = ("omitted" if result is None else
+                  "store-error" if result.returncode != 0 else
                   "injected" if rendered else "empty-pool")
     candidate_ids = envelope.get("candidate_ids")
     if not isinstance(candidate_ids, list):

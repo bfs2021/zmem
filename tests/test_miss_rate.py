@@ -493,8 +493,13 @@ class DisabledWindowClassificationTest(_JoinFixture, unittest.TestCase):
         self.assertIsNone(report["miss_rate"],
                           "a disabled-only report reads as switch-off, "
                           "never 100% miss")
-        self.assertTrue(any("switch off" in c for c in report["caveats"]),
+        self.assertTrue(any("deliberate silence" in c
+                            for c in report["caveats"]),
                         report["caveats"])
+        self.assertFalse(any("store-transport-failure" in c
+                             for c in report["caveats"]),
+                         "a disabled-only window must not be mislabeled "
+                         "as a store-transport failure")
 
     def test_mixed_disabled_window_and_genuine_miss(self):
         _make_fixture_db(self.db, [
@@ -571,7 +576,65 @@ class DisabledWindowClassificationTest(_JoinFixture, unittest.TestCase):
         report = self._run()
         self.assertEqual(report["counts"]["disabled"], 0)
         self.assertEqual(report["counts"]["missed"], 1)
-        self.assertTrue(any("kill-switch decision line" in c
+        self.assertTrue(any("deliberate-silence decision line" in c
+                            for c in report["caveats"]),
+                        report["caveats"])
+
+
+class StoreErrorWindowClassificationTest(_JoinFixture, unittest.TestCase):
+    """PR #427 closeout D-2b (0.139.0): reason=store-error marks a store
+    child that exited nonzero (partial upgrade: the store rejects an
+    unknown hook flag with argparse exit 2) — a transport failure, never a
+    retrieval miss. Pre-0.139.0 such a line logged reason=empty-pool and
+    counted as missed; the boundary exclusion keeps the failure visible in
+    the decision line without poisoning the miss rate."""
+
+    def test_store_error_only_window_is_transport_failure_not_miss(self):
+        self._fixture()
+        self._bg_log([
+            _bg_line(self.now, [], reason="store-error", status="silent"),
+        ])
+        report = self._run()
+        self.assertEqual(report["counts"]["disabled"], 1)
+        self.assertEqual(report["counts"]["missed"], 0)
+        self.assertIsNone(report["miss_rate"],
+                          "a store-error-only window is a transport "
+                          "failure, never a 100% miss")
+        # The caveat names the REAL cause: the store child failed — never
+        # the ZMEM_INJECT=0 kill switch (swarm-pr-review pr434-20261103:
+        # three lanes converged on the mislabel; an operator debugging the
+        # documented partial-upgrade failure must be pointed at the store).
+        self.assertTrue(any("store-transport-failure" in c
+                            for c in report["caveats"]),
+                        report["caveats"])
+        self.assertFalse(any("kill-switch" in c or "switch off" in c
+                             for c in report["caveats"]),
+                         report["caveats"])
+
+    def test_mixed_store_error_window_and_genuine_miss_stays_a_miss(self):
+        # CS-003 breadth pin: the exclusion is WINDOW-based (issue #133
+        # design), so a same-sid store-error line inside the window
+        # reclassifies an unrelated genuine miss. Pin that established
+        # breadth honestly — the metric consequence is the designed
+        # behavior, and the caveat must still name the transport failure
+        # so the undercount is diagnosable.
+        _make_fixture_db(self.db, [
+            {"session_id": "sess-a", "ts_s": self.now, "call_id": "call-1",
+             "tool": "Bash", "operation": "git stash pop",
+             "error_message": "conflict"},
+            {"session_id": "sess-a", "ts_s": self.now - 7200,
+             "call_id": "call-2", "tool": "Bash",
+             "operation": "git stash pop", "error_message": "conflict"},
+        ])
+        self._bg_log([
+            _bg_line(self.now, [], reason="store-error", status="silent"),
+        ])
+        report = self._run()
+        self.assertEqual(report["counts"]["disabled"], 1)
+        self.assertEqual(report["counts"]["missed"], 1,
+                         "the out-of-window failure stays a real miss")
+        self.assertEqual(report["miss_rate"], 1.0)
+        self.assertTrue(any("store-transport-failure" in c
                             for c in report["caveats"]),
                         report["caveats"])
 
