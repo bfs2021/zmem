@@ -60,10 +60,14 @@ if str(SCRIPTS_DIR) not in sys.path:
 from fleet import snapshot as fsnap  # noqa: E402
 
 GOOD_ID = "0d8e7a5b-1234-4c5d-9e8f-a1b2c3d4e5f7"
-# Hostile shapes: not UUID-shaped (SQL-metachar carry), and 36-hex + trailing
-# newline (the pre-#426 .match() escape class _INGEST_ID_RE's \Z closes).
+# Hostile shapes: not UUID-shaped (SQL-metachar carry), and a FULL 36-char
+# in-class id + trailing newline — the pre-#426 .match() escape class. The
+# id is deliberately 36 in-class chars so LENGTH cannot refuse it: a
+# \Z->$ anchor regression in _INGEST_ID_RE would let .match() callers
+# accept it (review PRR-002; the regex leg below kills that mutant
+# directly).
 HOSTILE_ID = "x'-- DROP TABLE memory; --"
-HOSTILE_ID_NL = "0d8e7a5b12344c5d9e8fa1b2c3d4e5f7a\n"
+HOSTILE_ID_NL = GOOD_ID + "\n"
 
 _COLS = [c.strip() for c in fsnap._SNAPSHOT_COLUMNS.split(",")]
 
@@ -182,6 +186,20 @@ class BrokerRestoreIdGateTest(unittest.TestCase):
             "the refusal must name the offending id (repr form — a literal "
             "newline in the id must appear escaped, keeping the ValueError "
             "single-line)")
+
+    def test_ingest_id_regex_anchor_rejects_trailing_newline(self):
+        # Review PRR-002: the refusal gate uses .fullmatch, which cannot
+        # see a \Z->$ anchor regression at all — the anchor contract lives
+        # in the .match() call sites (the sync.py ingest validators). The
+        # fixture is a full 36-char in-class id + newline, so only the
+        # anchor keeps it out; this leg kills that mutant directly.
+        from storelib.sync import _INGEST_ID_RE  # noqa: PLC0415 - lazy
+
+        self.assertIsNone(
+            _INGEST_ID_RE.match(HOSTILE_ID_NL),
+            "a 36-char in-class id + trailing newline must NOT match via "
+            ".match() — a \\Z->$ anchor regression re-opens the pre-#426 "
+            "newline-escape class")
 
     def test_non_sequence_row_degrades_not_crashes(self):
         # Plan-critic round 1 (#1) + round 2 (#1): a hostile payload whose

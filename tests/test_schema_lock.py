@@ -50,6 +50,30 @@ _HERMETIC_KEYS = ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODELS_DIR",
 _FROZEN_MESSAGE = "the schema lock has no holder-liveness escape at base"
 
 
+def _rmtree_loud(path, label):
+    """Bounded-retry removal that never fails SILENTLY (review PRR-003:
+    a bare ``rmtree(ignore_errors=True)`` left empty ``/tmp/<label>-*``
+    dirs behind on Windows when a transient handle held the freshly
+    created directory). Retries ride out the transient holder; a dir that
+    STILL survives the bound is reported loudly on stderr instead of
+    disappearing into ignore_errors."""
+    for attempt in range(4):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError:
+            if attempt < 3:
+                time.sleep(0.2)
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    finally:
+        if Path(path).exists():
+            print(f"WARNING: {label} teardown could not remove {path} "
+                  f"(transient Windows dir handle survived the retry "
+                  f"bound) — non-silent per review PRR-003",
+                  file=sys.stderr)
+
+
 class SchemaLockLivenessTest(unittest.TestCase):
     _tmpdir: str | None = None
     _saved_env: dict | None = None
@@ -201,15 +225,16 @@ class SchemaGraceBindingTest(unittest.TestCase):
 
     The knob is pinned to 30 in setUpClass BEFORE the first storelib import
     ON PURPOSE: CPython pools identical float literals within one module, so
-    under the default env a re-frozen literal ``10.0`` would be
-    object-identical to the derived default constant and a bare identity
-    check could not discriminate. Under a knob-set import the maintenance
-    grace is a float("30")-derived object, which no literal re-freeze can be
+    under the default env a re-frozen literal ``10.0`` could be
+    object-identical to a literal-bound constant and a bare identity check
+    could not discriminate. Under a knob-set import the maintenance grace is
+    a float("30")-derived object, which no literal re-freeze can be
     identical to (or equal to) — the identity assertion then fails under any
-    literal re-freeze. The mutant-shaped discrimination is executed by the
-    trace's c3_binding_mutant.sh driver (re-freeze to ``10.0`` -> THIS class
-    must fail there); at base runtime the binding is already correct, so
-    this class passes here by design (its red anchor is the driver).
+    literal re-freeze (re-freeze ``SCHEMA_LOCK_GRACE_SECONDS`` to any
+    literal and THIS class fails; the mutant discipline is additionally
+    exercised by out-of-repo acceptance drivers, which this assertion's
+    discrimination does not depend on). At base runtime the binding is
+    already correct, so this class passes here by design.
     """
 
     _tmpdir: str | None = None
@@ -247,7 +272,7 @@ class SchemaGraceBindingTest(unittest.TestCase):
                     os.environ[k] = v
             cls._saved_env = None
         if cls._tmpdir is not None:
-            shutil.rmtree(cls._tmpdir, ignore_errors=True)
+            _rmtree_loud(cls._tmpdir, "zmem-ac430-bind")
             cls._tmpdir = None
 
     def test_binding_is_identity(self):
@@ -274,8 +299,11 @@ class SchemaLockKnobProbeTest(unittest.TestCase):
 
     knob=30 -> grace 30.0 -> the aged-empty lock is LIVE; default (unset)
     -> grace 10.0 -> the SAME lock is PHANTOM. At base runtime this probe
-    passes by design (the binding is already correct); its red anchor is
-    the trace's c4_knob_probe.py driver (class absent from HEAD at base).
+    passes by design (the binding is already correct); the mutant-shaped
+    discrimination (a schema.py re-freeze that decouples the knob from the
+    schema-side window) fails THIS probe's knob leg and is additionally
+    exercised by out-of-repo acceptance drivers, which this probe's
+    discrimination does not depend on.
     """
 
     _tmpdir: str | None = None
@@ -318,7 +346,7 @@ print("KNOB_PROBE grace=%s classification=%s acquisition=%s" % (
     @classmethod
     def tearDownClass(cls):
         if cls._tmpdir is not None:
-            shutil.rmtree(cls._tmpdir, ignore_errors=True)
+            _rmtree_loud(cls._tmpdir, "zmem-ac430-knob")
             cls._tmpdir = None
 
     def _run_probe_leg(self, label: str, knob: str | None):

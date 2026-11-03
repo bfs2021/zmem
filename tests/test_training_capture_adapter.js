@@ -46,7 +46,7 @@ function _rmSyncRetry(root, attempts = 10, delayMs = 150) {
             fs.rmSync(root, { recursive: true, force: true });
             return;
         } catch (error) {
-            if (!["ENOTEMPTY", "EBUSY", "EPERM"].includes(error.code)) {
+            if (!["ENOTEMPTY", "EBUSY", "EPERM", "EMFILE", "ENFILE"].includes(error.code)) {
                 throw error;
             }
             lastErr = error;
