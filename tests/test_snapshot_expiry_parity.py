@@ -105,7 +105,7 @@ def tearDownModule():  # noqa: N802 - unittest hook
 def _row_values():
     """The hub payload's single live state row (NOT-NULL-safe values)."""
     return {
-        "id": uuid.uuid4().hex,
+        "id": str(uuid.uuid4()),
         "namespace": "user:global",
         "type": "state",
         "content": CONTENT,
@@ -178,7 +178,7 @@ class SnapshotExpiryParityTest(unittest.TestCase):
                    for r in (envelope or {}).get("results", []))
 
     def test_leg1_expired_state_row_withheld_offline(self):
-        row_id = uuid.uuid4().hex
+        row_id = str(uuid.uuid4())
         envelope, state = self._serve(_payload(row_id, PAST))
         self.assertEqual(state, "valid",
                          "leg 1: the materialized snapshot must be valid")
@@ -194,7 +194,7 @@ class SnapshotExpiryParityTest(unittest.TestCase):
             "expired state row")
 
     def test_leg2_live_state_row_with_record_served(self):
-        row_id = uuid.uuid4().hex
+        row_id = str(uuid.uuid4())
         envelope, state = self._serve(_payload(row_id, FUTURE))
         self.assertEqual(state, "valid")
         self.assertTrue(
@@ -204,7 +204,7 @@ class SnapshotExpiryParityTest(unittest.TestCase):
             "withhold)")
 
     def test_leg3_payload_without_expiry_key_still_serves(self):
-        row_id = uuid.uuid4().hex
+        row_id = str(uuid.uuid4())
         envelope, state = self._serve(_payload(row_id, None))
         self.assertEqual(state, "valid",
                          "leg 3: an older producer's payload (no expiry "

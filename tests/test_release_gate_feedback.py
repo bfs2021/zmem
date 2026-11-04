@@ -402,11 +402,27 @@ class RefreshRefusalPin(unittest.TestCase):
             git("commit", "-qm", "edit manifest without re-emit")
             home = tmp / "home"
             home.mkdir()
-            with self.assertRaises(Exception) as ctx:
-                refresh_hosts._refresh_transaction(
-                    home, checkout, ("codex",), tmp / "report.json",
-                    dry_run=False)
+            # Issue #432 AC3: _refresh_transaction runs release_gate's
+            # verify IN-PROCESS (refresh_hosts.py:545), whose ::error::
+            # prints would otherwise land on this test process's stdout —
+            # GitHub Actions renders those as failure annotations on GREEN
+            # runs (observed on run 41558677789). Capture them here; the
+            # captured diagnostics become part of the pin, and nothing
+            # directive-shaped may reach the real stdout.
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                with self.assertRaises(Exception) as ctx:
+                    refresh_hosts._refresh_transaction(
+                        home, checkout, ("codex",), tmp / "report.json",
+                        dry_run=False)
             self.assertIn("verification failed", str(ctx.exception))
+            captured = buf.getvalue()
+            self.assertIn(
+                "::error::", captured,
+                "the in-process gate verify must still EMIT its refusal "
+                "diagnostics (captured) — a silent verify is a different "
+                "defect")
+            self.assertIn("STALE", captured)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

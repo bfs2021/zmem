@@ -667,7 +667,7 @@ def test_payload_built_snapshot_serves_offline():
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         # A REAL-store-shaped row (NOT NULL columns get their defaults).
         by_name = {
-            "id": "t11s17-" + marker, "namespace": "user:global",
+            "id": str(uuid.uuid4()), "namespace": "user:global",
             "type": "fact", "content": f"t11s17 payload canary fretsaw {marker}",
             "tags": "", "source_ref": "", "confidence": 0.9,
             "signal": "test", "valid_from": now, "valid_until": "",

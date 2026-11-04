@@ -46,16 +46,41 @@ _STRIP_ENV = (
     "CLAUDE_PLUGIN_ROOT", "ZCODE_PLUGIN_ROOT", "PLUGIN_ROOT", "PLUGIN_DATA",
     "ZMEM_PENDING_SIDECAR", "ZMEM_DELIVER_WINDOW_S", "ZMEM_LEDGER_CAP",
     "ZMEM_SESSION_SOURCE",
+    # Issue #432 AC1 (hermeticity): ambient project-dir markers hijack the
+    # launcher's namespace resolution (buildCanonicalEnv prefers
+    # ZCODE_PROJECT_DIR/CLAUDE_PROJECT_DIR over the workdir cwd), so on a
+    # box with live host sessions the hook queries the WRONG namespace and
+    # the seeded scratch rows never surface (reason=empty-pool). CI has no
+    # ambient markers; stripping keeps the resolution cwd-based everywhere.
+    "ZMEM_PROJECT", "ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR",
+    "CODEX_PROJECT_DIR",
 )
 
 
 def _clean_env(tmp: str, host: str = "claude", **extra: str) -> dict:
     env = {k: v for k, v in os.environ.items() if k not in _STRIP_ENV}
+    # Issue #432 AC1 (hermeticity): the driven hooks resolve Tier-0 state
+    # against the AMBIENT home when HOME/USERPROFILE are left in place — on
+    # an operator box the real ~/.zmem (core.md seeding path, live decision
+    # and bg logs) leaks into the fixture context and suppresses the
+    # asserted markers (8/23 standalone failures). Sandbox BOTH home vars
+    # (USERPROFILE wins on Windows, HOME on POSIX — pin both
+    # unconditionally) into the per-run scratch; CI checkouts have no
+    # ambient home state, so this is a no-op there.
+    home = os.path.join(tmp, "home")
+    os.makedirs(home, exist_ok=True)
     env.update({
         "ZMEM_STORE": os.path.join(tmp, "store.sqlite"),
         "ZMEM_DATA": tmp,
         "ZMEM_MODEL_AUTODOWNLOAD": "0",
         "PYTHONUTF8": "1",
+        "HOME": home,
+        "USERPROFILE": home,
+        # The launcher's 12 s default outer watchdog flakes under self-load
+        # on operator boxes (outer_timeout=1 omits the tier-2 block while
+        # the store leg itself injected in <1 s). Raise it for the driven
+        # hooks; CI runners are unloaded and keep the default behavior.
+        "ZMEM_LAUNCHER_WATCHDOG_MS": "60000",
         # Launcher host detection: the claude lane (full compaction surface).
         "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT),
     })

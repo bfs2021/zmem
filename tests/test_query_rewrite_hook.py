@@ -285,7 +285,15 @@ class MissRateRewriteTest(unittest.TestCase):
     def test_writer_order_and_parser_roundtrip(self):
         body = _load_body()
         with tempfile.TemporaryDirectory() as raw, mock.patch.dict(
-            os.environ, {"ZMEM_DATA": raw}, clear=False
+            os.environ,
+            # Issue #432 AC1: _data_dir() gives an ambient ZMEM_STORE's
+            # directory precedence over ZMEM_DATA (zmem-recall-body.py
+            # :158-167), so with a loop/driver-provided scratch STORE the
+            # decisions log resolves next to THAT store and the read below
+            # never finds it. Pin BOTH inside the tempdir so the writer
+            # and reader agree on one resolved path.
+            {"ZMEM_DATA": raw, "ZMEM_STORE": os.path.join(raw, "store.sqlite")},
+            clear=False
         ):
             body._maybe_log_drift = lambda *_: None
             body._rotate_telemetry_logs = lambda *_: None
