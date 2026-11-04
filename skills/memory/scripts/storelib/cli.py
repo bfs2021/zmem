@@ -1650,17 +1650,19 @@ def cmd_query_rewrite(*, prompt: str, session_id: str, namespace: str) -> int:
               file=sys.stderr)
         _query_rewrite_output(original, False)
         return 0
-    conn: sqlite3.Connection | None = None
+    handle = None
     try:
         if _schema_host is not None:
             _schema_host.assert_local_fs(STORE_PATH.parent)
-        # URI mode=ro is deliberate: query-rewrite must not create, migrate,
-        # or checkpoint the application database.  A normal WAL-aware read is
-        # required so committed rows in a live WAL remain visible.
-        uri = STORE_PATH.resolve().as_uri() + "?mode=ro"
-        conn = sqlite3.connect(uri, uri=True, timeout=0.25)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=250")
+        # Sidecar-free (issue #345 AC1) AND shallow (PR #422 422R-007): the
+        # bare mode=ro open previously materialized a 0-byte -wal on every
+        # prompt — persistent residue that routed every later read-only open
+        # to the copy arm. Shallow: quiesced stores take the immutable arm
+        # (no sidecars); a residue store refuses (ReadOnlyStoreError) and
+        # query-rewrite fails open below, like its other probe failures —
+        # advisory surface, never a store-sized copy per prompt.
+        handle = _readonly_store.open_readonly(STORE_PATH, shallow=True)
+        conn = handle.conn
         conn.execute("BEGIN")
         if not _query_rewrite_has_evidence(conn):
             raise RuntimeError("evidence table unavailable")
@@ -1671,19 +1673,14 @@ def cmd_query_rewrite(*, prompt: str, session_id: str, namespace: str) -> int:
         _query_rewrite_output(rewritten, applied)
         return 0
     except Exception:
-        try:
-            if conn is not None:
-                conn.rollback()
-        except Exception:
-            pass
         print("[zmem] query-rewrite unavailable; using original query",
               file=sys.stderr)
         _query_rewrite_output(original, False)
         return 0
     finally:
-        if conn is not None:
+        if handle is not None:
             try:
-                conn.close()
+                handle.close()
             except Exception:
                 pass
 

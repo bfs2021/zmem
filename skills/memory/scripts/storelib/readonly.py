@@ -261,7 +261,15 @@ def open_readonly(store_path: Path | str,
                 raise ReadOnlyStoreError(
                     "store failed the read-only consistency check "
                     "(quick_check: %s)" % (check[0] if check else "no result"))
-            return ReadOnlyHandle(conn, None)
+            # After-open residue re-check (422R-005 residual, final-critic):
+            # a writer that created -wal/-journal between the pre-open probe
+            # and this connection would be invisible to the immutable read.
+            # Fall through to arm B instead of serving possibly-stale rows.
+            if _residue_exists():
+                conn.close()
+                has_residue = True
+            else:
+                return ReadOnlyHandle(conn, None)
 
     # Arm B: read a private copy so the operator's directory is untouched.
     print("[zmem] readonly: store has WAL/journal residue; "

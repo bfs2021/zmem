@@ -29,6 +29,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   a TLD that is not a filename extension; SETTING matches require a
   modifier+noun pair or a `noun=value` assignment, so ordinary prose stops
   matching while the golden mapping is byte-stable.
+
 ## [0.140.0] - 2026-11-03
 
 Collated follow-up bundle: issues #429 + #430 + #432 (the PR #425/#426

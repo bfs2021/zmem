@@ -14,7 +14,13 @@ BEFORE importing storelib (the operator store is never opened) and passes
 """
 
 from __future__ import annotations
-import _store_guard  # noqa: F401  (issue #244 isolation guard)
+# Pin the store env BEFORE the isolation guard (PR #422 review 422R-014).
+import os as _os
+import tempfile as _tempfile
+_PIN_DIR = _tempfile.mkdtemp(prefix="zmem-state-expiry-pin-")
+_os.environ["ZMEM_STORE"] = _os.path.join(_PIN_DIR, "store.sqlite")
+_os.environ["ZMEM_DATA"] = _PIN_DIR
+import _store_guard  # noqa: F401,E402  (issue #244 isolation guard)
 
 import atexit
 import contextlib

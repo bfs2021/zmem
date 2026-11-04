@@ -22,7 +22,12 @@ import sqlite3
 #   the #174 golden's api.example.com bare row depends on it), svc
 #   (Kubernetes service DNS like kubernetes.default.svc — a first-class
 #   host family for this repo's fleet surfaces).   Everything else below
-#   is clean (not a filename extension).
+#   matches the original audit's "not a filename extension" finding — NOTE
+#   (PR #422 review 422R-014): "ru" is also a filename extension
+#   (config.ru, app.ru); it is KEPT because dropping it would re-classify
+#   .ru-host rows and drift the pinned #174 golden, and the audit's
+#   not-a-filename claim is wrong for it — an accepted narrowing residual,
+#   recorded in the PR body's Considered table.
 _TLD_ALLOWLIST = frozenset({
     "com", "org", "net", "io", "dev", "edu", "gov", "info", "biz", "xyz",
     "uk", "de", "fr", "jp", "ca", "ru", "eu", "nl", "se", "no", "fi", "ch",

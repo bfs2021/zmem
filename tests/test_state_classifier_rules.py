@@ -11,7 +11,9 @@ collisions com/svc carry documented host-family exceptions), the SETTING
 vocabulary-shape rule, the endpoint > metric > setting precedence, and the
 issue-#174 golden vocabulary. RED at base, GREEN after the fix.
 """
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -19,7 +21,14 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "skills" / "memory" / "scrip
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-import _store_guard  # noqa: F401  (issue #244 isolation guard)
+# Pin the store env BEFORE the isolation guard (PR #422 review 422R-014:
+# guard-before-pin made the file exit 1 on operator boxes whose real default
+# store exists).
+_PIN_DIR = tempfile.mkdtemp(prefix="zmem-classifier-pin-")
+os.environ["ZMEM_STORE"] = os.path.join(_PIN_DIR, "store.sqlite")
+os.environ["ZMEM_DATA"] = _PIN_DIR
+
+import _store_guard  # noqa: F401,E402  (issue #244 isolation guard)
 
 from storelib import state
 
