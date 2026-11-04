@@ -485,6 +485,64 @@ class ReadonlyNoSidecarsTest(unittest.TestCase):
         self.assertIn("lock-aware fail-closed", str(outcome["error"]))
         self.assertEqual(outcome["stage"], set())
 
+    def test_stale_staging_sweep_reaps_aged_dirs_only(self):
+        """Delta re-gate (final-critic pin a): the staging sweeper must reap
+        an aged zmem-readonly-copy-* dir at open (the hard-kill residue the
+        close/except cleanup never sees) while leaving fresh dirs alone —
+        a no-op _sweep_stale_stages mutant went 12/12 green before this."""
+        import glob
+        import os as _os
+        import time
+        store = _build_store(self.scratch / "sweep.sqlite")
+        (Path(str(store) + "-wal")).write_bytes(b"")
+        tmp = Path(tempfile.gettempdir())
+        aged = tmp / "zmem-readonly-copy-zzz-aged"
+        fresh = tmp / "zmem-readonly-copy-zzz-fresh"
+        aged.mkdir(parents=True, exist_ok=True)
+        fresh.mkdir(parents=True, exist_ok=True)
+        old = time.time() - 2 * 3600
+        _os.utime(aged, (old, old))
+        try:
+            from storelib import readonly
+            handle = readonly.open_readonly(store)
+            handle.close()
+            self.assertFalse(
+                aged.exists(),
+                "the sweeper must reap aged staging dirs at open")
+            self.assertTrue(
+                fresh.exists(), "the sweeper must not reap fresh dirs")
+        finally:
+            shutil.rmtree(aged, ignore_errors=True)
+            shutil.rmtree(fresh, ignore_errors=True)
+
+    def test_copy_order_refuses_moving_store(self):
+        """Delta re-gate (final-critic pin c): the copy-order consistency
+        check must refuse (after bounded retries) when the main file keeps
+        moving during the staged snapshot — a `moved = False` mutant served
+        a pre-checkpoint snapshot 12/12 green before this. Deterministic
+        seam: the .verify copy is dirtied so it always differs from the
+        first main copy."""
+        import shutil as real_shutil
+        store = _build_store(self.scratch / "moving.sqlite")
+        (Path(str(store) + "-wal")).write_bytes(b"")
+        from storelib import readonly
+        real_copyfile = real_shutil.copyfile
+
+        def diverging_copyfile(src, dst, **kwargs):
+            real_copyfile(src, dst, **kwargs)
+            if str(dst).endswith(".verify"):
+                with open(dst, "ab") as f:
+                    f.write(b"\x00diverge")
+
+        with mock.patch.object(readonly.shutil, "copyfile",
+                               diverging_copyfile):
+            with self.assertRaises(readonly.ReadOnlyStoreError) as ctx:
+                handle = readonly.open_readonly(store)
+                handle.close()
+        self.assertIn(
+            "kept changing while the private snapshot was staged",
+            str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

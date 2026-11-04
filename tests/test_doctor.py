@@ -1664,6 +1664,23 @@ class V15DoctorChecksTest(unittest.TestCase):
             self.assertIn(field, entry,
                           f"expiring_states rows must carry {field!r}")
 
+    def test_expiring_residue_store_fails_closed_with_read_error(self):
+        """PR #422 delta re-gate (422R-012 oracle): on a residue WAL store
+        the expiry scan must surface expiry_read_error — the #342 fail-closed
+        contract — instead of silently under-reporting just-committed rows
+        behind a private snapshot."""
+        (Path(str(self.store_path) + "-wal")).write_bytes(b"")
+        report = self._report(self.T_ZERO)
+        err = report.get("expiry_read_error")
+        self.assertTrue(
+            err,
+            f"residue store must surface expiry_read_error (keys: "
+            f"{sorted(report)[:24]})")
+        self.assertIn("lock-aware fail-closed", str(err))
+        self.assertFalse(
+            report.get("expiring_states"),
+            "a refused scan must not report rows it could not read")
+
     def test_expiring_is_read_only(self):
         """The sqlite file is byte-identical before and after both the
         in-process build_report call and a --format json CLI subprocess

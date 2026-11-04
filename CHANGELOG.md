@@ -16,9 +16,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (creates nothing), and a store with `-wal`/`-journal` residue is read
   through a private copy staged outside the data directory (guarded by
   `quick_check`, disclosed on stderr). Doctor's expiry scan keeps a
-  lock-observable open on non-WAL stores so the #342 fail-closed contract
-  holds, and reads a disclosed private snapshot on WAL stores (failed reads
-  still surface as the documented expiry read error). Query-rewrite and the
+  lock-observable open on non-WAL stores and fails closed with the
+  documented expiry read error on residue stores (the #342 contract,
+  oracle-pinned); the doctor report's other opens read a disclosed private
+  snapshot on residue stores. Query-rewrite and the
   session-start hook's source-exists probes read through the same helper in
   shallow mode (residue refuses instead of staging a copy), as do backup's
   integrity check and import-store's source open. Surfaces that deliberately
