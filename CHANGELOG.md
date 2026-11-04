@@ -17,9 +17,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   through a private copy staged outside the data directory (guarded by
   `quick_check`, disclosed on stderr). Doctor's expiry scan keeps a
   lock-observable open on non-WAL stores so the #342 fail-closed contract
-  holds. Surfaces that deliberately need live WAL rows (page refresh,
-  query-rewrite, source scans, mining/metrics/snapshot builders) are
-  unchanged and pinned by a live-visibility test.
+  holds, and reads a disclosed private snapshot on WAL stores (failed reads
+  still surface as the documented expiry read error). Query-rewrite and the
+  session-start hook's source-exists probes read through the same helper in
+  shallow mode (residue refuses instead of staging a copy), as do backup's
+  integrity check and import-store's source open. Surfaces that deliberately
+  need live WAL rows (page refresh, write-intent guards, mining/metrics/
+  snapshot builders, decision_report/rekey) are unchanged and pinned by a
+  live-visibility test.
 - **Issue #174 fixtures are tamper-evident (issue #346).** The four fixture
   files now carry test-side SHA-256 pins and both generators' verify modes
   run in-suite; a hand-edited fixture fails CI.
