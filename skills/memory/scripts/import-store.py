@@ -208,7 +208,7 @@ def _open_source_readonly(source_store: Path):
     ``ReadOnlyHandle`` — connection attribute access forwards, and
     ``close()`` also removes any staging directory.
     """
-    from readonly import open_readonly  # noqa: PLC0415 - lazy, sibling module
+    from storelib.readonly import open_readonly  # noqa: PLC0415
 
     return open_readonly(source_store)
 

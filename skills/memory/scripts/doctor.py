@@ -6114,14 +6114,21 @@ def _finish_report(
     if expiring is not None:
         try:
             expiring_rows = _expiring_states(resolved_store, expiring, now)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, RuntimeError) as exc:
+            # RuntimeError: the lock-aware sidecar-free open REFUSED (issue
+            # #342 fail-closed contract held on a residue store, PR #422
+            # feedback) — the reason names the condition instead of a
+            # traceback escaping main.
             report["expiry_read_error"] = str(exc)[:200]
         else:
             report["expiring_states"] = expiring_rows
             try:
                 unreadable_rows = _unreadable_expiry_states(
                     resolved_store, now)
-            except sqlite3.Error as exc:
+            except (sqlite3.Error, RuntimeError) as exc:
+                # RuntimeError: the sibling lock_aware open can refuse on
+                # residue appearing between the two scans (same contract as
+                # the primary scan above — PR #422 review round 2).
                 report["expiry_read_error"] = str(exc)[:200]
             else:
                 if unreadable_rows:

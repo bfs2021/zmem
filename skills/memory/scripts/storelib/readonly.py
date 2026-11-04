@@ -278,6 +278,16 @@ def open_readonly(store_path: Path | str,
         # (bounded retries) when the two main copies differ — a difference
         # proves the main file changed mid-copy.
         for _attempt in range(3):
+            # Review round 2 probe: a stale staged -journal from a previous
+            # attempt is auto-replayed by SQLite onto the fresh main copy,
+            # rolling back pages committed after that journal was written —
+            # clear the staged sidecars before every attempt so the served
+            # main is opened alone.
+            for residue in (wal, journal):
+                staged_residue = Path(str(staged_store)
+                                      + residue.name[len(store.name):])
+                if staged_residue.exists():
+                    os.remove(str(staged_residue))
             shutil.copyfile(store, staged_store)
             main_first = staged_store.read_bytes()
             for residue in (wal, journal):
