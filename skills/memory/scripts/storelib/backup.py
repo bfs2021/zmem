@@ -606,22 +606,22 @@ def _integrity_check_readonly(path: Path) -> str:
     sidecars that did NOT exist before we looked — never one that was already
     there, since that one may hold real committed frames.
     """
-    pre_existing = {s for s in SIDECAR_SUFFIXES if Path(str(path) + s).exists()}
-    uri = path.resolve().as_uri() + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
+    # Issue #345 AC1 (unconditional): the old bare ``?mode=ro`` open
+    # materialized ``-wal``/``-shm`` beside the store and relied on the
+    # remove-what-we-created sweep. Route through the sidecar-free helper:
+    # a quiesced store takes the immutable arm, a residue store a private
+    # snapshot copy — the store directory is never touched. The handle
+    # proxies the connection, so the integrity_check call is unchanged.
     try:
-        return conn.execute("PRAGMA integrity_check").fetchone()[0]
+        from .readonly import open_readonly  # noqa: PLC0415
+    except ImportError:  # standalone probe loads (storelib dir on path)
+        from readonly import open_readonly  # noqa: PLC0415
+
+    handle = open_readonly(path)
+    try:
+        return handle.execute("PRAGMA integrity_check").fetchone()[0]
     finally:
-        conn.close()
-        for s in SIDECAR_SUFFIXES:
-            if s in pre_existing:
-                continue
-            try:
-                sib = Path(str(path) + s)
-                if sib.exists():
-                    sib.unlink()
-            except OSError:
-                pass
+        handle.close()
 
 def cmd_restore(*, from_path: str, force: bool = False, out_dir: str | None = None) -> int:
     """Restore the store from a snapshot, under the maintenance locks.

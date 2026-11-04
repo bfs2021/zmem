@@ -1326,6 +1326,12 @@ def _open_store_ro(store_path: Path, lock_aware: bool = False):
     try:
         from storelib import readonly as _readonly
         return _readonly.open_readonly(store_path, lock_aware=lock_aware)
+    except _readonly.ReadOnlyStoreError as exc:
+        # A refusal carries the operator-actionable reason (residue held by
+        # a live writer, torn copy, lock_aware contract): keep it on the
+        # error chain instead of collapsing to a bare None that reports
+        # only "store unreadable" (PR #422 review, cubic doctor-1).
+        raise RuntimeError(f"store read-only open refused: {exc}") from exc
     except Exception:
         return None
 

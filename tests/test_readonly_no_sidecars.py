@@ -29,7 +29,17 @@ if str(SCRIPTS_DIR) not in sys.path:
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
-import _store_guard  # noqa: F401  (issue #244: never the operator's real store)
+# Pin the store env BEFORE the isolation guard AND before storelib can be
+# imported (storelib freezes STORE_PATH at first import — PR #422 review
+# 422R-014/cubic: the guard import ran first and made the file exit 1 on
+# operator boxes whose real default store exists).
+_SHARED_PIN_DIR = Path(tempfile.mkdtemp(prefix="zmem-readonly-pin-"))
+os.environ["ZMEM_STORE"] = str(_SHARED_PIN_DIR / "store.sqlite")
+os.environ["ZMEM_DATA"] = str(_SHARED_PIN_DIR)
+os.environ["ZMEM_MODELS_DIR"] = str(_SHARED_PIN_DIR / "no-such-models")
+os.environ["ZMEM_MODEL_AUTODOWNLOAD"] = "0"
+
+import _store_guard  # noqa: F401,E402  (issue #244: never the operator's store)
 
 
 def _pin_env(store_dir: Path) -> dict:
@@ -51,6 +61,7 @@ def _sidecars(directory: Path):
 
 _TEMPLATE: Path | None = None
 _TEMPLATE_DIR: Path | None = None
+_SAVED_ENV: dict | None = None
 
 
 def _template_store() -> Path:
@@ -60,8 +71,10 @@ def _template_store() -> Path:
     only ever target one directory per process — every test copies this
     template instead of re-running the builder.
     """
-    global _TEMPLATE, _TEMPLATE_DIR
+    global _TEMPLATE, _TEMPLATE_DIR, _SAVED_ENV
     if _TEMPLATE is None:
+        if _SAVED_ENV is None:
+            _SAVED_ENV = dict(os.environ)
         import sqlite3
 
         _TEMPLATE_DIR = Path(tempfile.mkdtemp(prefix="zmem-readonly-tpl-"))
@@ -116,6 +129,62 @@ class ReadonlyNoSidecarsTest(unittest.TestCase):
     def tearDownClass(cls):
         if _TEMPLATE_DIR is not None:
             shutil.rmtree(_TEMPLATE_DIR, ignore_errors=True)
+        # Restore the process environment: _pin_env deletes every ZMEM_*
+        # variable and pins STORE_PATH to the (now removed) template dir —
+        # without this restore, subsequent in-process tests in the same
+        # interpreter resolve a deleted store (PR #422 review, cubic
+        # test_readonly_no_sidecars-2).
+        if _SAVED_ENV is not None:
+            os.environ.clear()
+            os.environ.update(_SAVED_ENV)
+
+    def test_staging_dir_removed_on_close_and_refusal_path(self):
+        """PR #422 review (F-03/422R-010): the arm-B staging copy must be
+        GONE after handle.close(), and a refusal (shallow on residue) must
+        stage nothing — the mutation probe (no-op _discard_stage) that stayed
+        10/10 green is closed by asserting the filesystem, not the return."""
+        import glob
+        import os as _os
+        store = _build_store(self.scratch / "staged.sqlite")
+        (Path(str(store) + "-wal")).write_bytes(b"")
+        before = set(glob.glob(
+            os.path.join(tempfile.gettempdir(), "zmem-readonly-copy-*")))
+        from storelib import readonly
+        handle = readonly.open_readonly(store)
+        stage_dir = handle._stage
+        self.assertIsNotNone(stage_dir, "arm B must stage a copy")
+        handle.close()
+        self.assertFalse(
+            stage_dir.exists(),
+            "the staging copy must be removed by close(): %s" % stage_dir)
+        # Refusal path: shallow on residue raises and stages NOTHING.
+        with self.assertRaises(readonly.ReadOnlyStoreError):
+            readonly.open_readonly(store, shallow=True)
+        after = set(glob.glob(
+            os.path.join(tempfile.gettempdir(), "zmem-readonly-copy-*")))
+        self.assertEqual(
+            after - before, set(),
+            "a refused shallow open must stage no directory")
+
+    def test_torn_copy_refuses_with_readonly_store_error(self):
+        """PR #422 review (F-03/422R-010): a torn (non-sqlite) residue copy
+        refuses with ReadOnlyStoreError — the error class the cli.py catch
+        maps to the documented "store unreadable" exit."""
+        store = _build_store(self.scratch / "torn.sqlite")
+        # A genuinely torn copy: truncate the main file mid-page (quick_check
+        # raises "database disk image is malformed"). SQLite's recovery is
+        # lenient with merely INVALID -wal content (it resets the header), so
+        # the fixture corrupts the MAIN file the copy is staged from.
+        raw = store.read_bytes()
+        store.write_bytes(raw[: len(raw) // 2])
+        (Path(str(store) + "-wal")).write_bytes(b"")
+        from storelib import readonly
+        try:
+            handle = readonly.open_readonly(store)
+            handle.close()
+            self.fail("a torn residue copy must raise ReadOnlyStoreError")
+        except readonly.ReadOnlyStoreError:
+            pass
 
     def setUp(self):
         self.scratch = Path(tempfile.mkdtemp(prefix="zmem-test-readonly-"))

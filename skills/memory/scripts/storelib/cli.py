@@ -1234,7 +1234,8 @@ def _connect_existing_store() -> sqlite3.Connection:
     return conn
 
 
-def _connect_existing_store_readonly() -> "_readonly_store.ReadOnlyHandle":
+def _connect_existing_store_readonly(
+        shallow: bool = False) -> "_readonly_store.ReadOnlyHandle":
     """Open an already-created store strictly read-only (issue #181 review:
     a byte-identity-contracted read surface must not hold a rw handle — on a
     WAL store, an rw connection's last-close checkpoint can rewrite the main
@@ -1244,8 +1245,12 @@ def _connect_existing_store_readonly() -> "_readonly_store.ReadOnlyHandle":
     ``storelib.readonly.open_readonly`` arm A (immutable) on a quiesced
     store, arm B (private residue copy) otherwise. Returns a handle whose
     ``close()`` the caller MUST run in a finally block — close owns the
-    staging-dir cleanup."""
-    return _readonly_store.open_readonly(STORE_PATH)
+    staging-dir cleanup. ``shallow=True`` (per-recall hook probes) refuses
+    a residue store with ReadOnlyStoreError instead of staging a store-sized
+    private copy on the probe's seconds-long budget (PR #422 review
+    422R-003: the 2.0 s probe kill mid-copy leaked the full plaintext
+    staging copy into TEMP with no sweeper on the child side)."""
+    return _readonly_store.open_readonly(STORE_PATH, shallow=shallow)
 
 
 def cmd_embedding_health(as_json: bool = False) -> int:
@@ -1266,7 +1271,12 @@ def cmd_embedding_health(as_json: bool = False) -> int:
     import embeddings as _embeddings
 
     try:
-        ro = _connect_existing_store_readonly()
+        # The per-recall hook probe (ZMEM_EMBEDDING_HEALTH_SHALLOW=1) runs on
+        # a 2.0 s kill budget: shallow mode refuses a residue store instead
+        # of staging a full private copy the kill would leak into TEMP. An
+        # explicit operator run (env unset) keeps the full-fidelity arm.
+        ro = _connect_existing_store_readonly(
+            shallow=os.environ.get("ZMEM_EMBEDDING_HEALTH_SHALLOW", "0") == "1")
         conn = ro.conn
         # sqlite3.connect is lazy: a non-SQLite (corrupt) file opens fine and
         # fails on the first real read. Touch the store HERE so a corrupt file
@@ -5017,11 +5027,12 @@ def main():
                 sys.exit(0)
             if _schema_host is not None:
                 _schema_host.assert_local_fs(STORE_PATH.parent)
-            probe = sqlite3.connect(
-                STORE_PATH.resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0
-            )
+            # Sidecar-free (issue #345 AC1) AND shallow: this probe runs on
+            # every prompt, so a residue store refuses (ReadOnlyStoreError)
+            # rather than staging a store-sized private copy; the existing
+            # fail-open handler below absorbs the refusal.
+            probe = _readonly_store.open_readonly(STORE_PATH, shallow=True)
             try:
-                probe.execute("PRAGMA query_only=1")
                 exists = source_exists(
                     probe, namespace=args.namespace, source_ref=args.source_ref)
             finally:
@@ -5043,11 +5054,10 @@ def main():
                 sys.exit(0)
             if _schema_host is not None:
                 _schema_host.assert_local_fs(STORE_PATH.parent)
-            probe = sqlite3.connect(
-                STORE_PATH.resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0
-            )
+            # Sidecar-free (issue #345 AC1) AND shallow: per-prompt probe,
+            # same residue refusal contract as source-exists above.
+            probe = _readonly_store.open_readonly(STORE_PATH, shallow=True)
             try:
-                probe.execute("PRAGMA query_only=1")
                 exists = source_ref_exists(probe, source_ref=args.source_ref)
             finally:
                 probe.close()

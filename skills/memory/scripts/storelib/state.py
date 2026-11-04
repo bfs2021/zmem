@@ -35,10 +35,45 @@ _TLD_ALLOWLIST = frozenset({
 _SETTING_MODIFIERS = ("current", "active", "configured", "default",
                       "enabled", "disabled")
 _SETTING_NOUNS = ("timeout", "version")
+# The bare-host branch matches the dotted-host SHAPE linearly (no TLD
+# alternation inside the repetition — an alternation there backtracks the
+# loop across every label split per start position, quadratic on a dotted
+# run whose last label is not allowlisted; PR #422 review 422R-009 measured
+# 15 s on a 16 KB row where the base pattern was flat). The allowlist is
+# enforced on the LAST LABEL of the whole dotted run in code
+# (endpoint_host_allowed / _endpoint_first_match). Sharpener over the old
+# alternation: a dotted run whose LAST label is not allowlisted is now
+# rejected as a whole — the old pattern's backtracking could accept a
+# shorter ALLOWLISTED-MID-label prefix (e.g. "note.no" inside
+# "note.no.tldxyz"); that prefix-match was an accident of the alternation,
+# contradicts the #348 narrowing intent, and is unobservable in the pinned
+# #174 golden corpus (verified: zero such rows).
+_BARE_HOST = r"\b(?P<barehost>(?:[a-z0-9-]+\.)+[a-z0-9-]+)(?::[0-9]{1,5})?\b"
 ENDPOINT = re.compile(
     r"(?i)\b(?:https?://(?:[a-z0-9-]+\.)+[a-z]{2,}(?::[0-9]{1,5})?\b"
-    r"|(?:[a-z0-9-]+\.)+(%s)(?::[0-9]{1,5})?\b)"
-    % "|".join(sorted(_TLD_ALLOWLIST)))
+    r"|" + _BARE_HOST + ")")
+
+
+def endpoint_host_allowed(match: "re.Match") -> bool:
+    """True when an ENDPOINT match is an accepted endpoint.
+
+    Scheme-ful URLs accept any dotted host (unchanged). A bare-host match
+    requires its LAST LABEL to be in the allowlist — the same tokens the old
+    TLD alternation accepted, enforced outside the repetition.
+    """
+    bare = match.group("barehost")
+    if bare is None:
+        return True
+    last_label = bare.rstrip(".").rsplit(".", 1)[-1].lower()
+    return last_label in _TLD_ALLOWLIST
+
+
+def _endpoint_first_match(haystack: str):
+    """First ENDPOINT match in *haystack* whose bare-host TLD is allowed."""
+    for m in ENDPOINT.finditer(haystack):
+        if endpoint_host_allowed(m):
+            return m
+    return None
 METRIC = re.compile(
     r"(?i)\b(?:metric|latency|count|rate|percent|p95)\b")
 SETTING = re.compile(
@@ -91,7 +126,14 @@ def classify_state_candidates(
         matched_rule = "none"
         proposed_class = None
         for name, pattern in _RULES:
-            if pattern.search(haystack):
+            if name == "endpoint":
+                # TLD allowlist enforced post-match (ReDoS-free); see
+                # _endpoint_first_match.
+                if _endpoint_first_match(haystack) is not None:
+                    matched_rule = name
+                    proposed_class = name
+                    break
+            elif pattern.search(haystack):
                 matched_rule = name
                 proposed_class = name
                 break

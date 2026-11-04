@@ -25,8 +25,16 @@ from storelib import state
 
 
 def _matched_rule(text):
+    """The PRODUCTION matching path (PR #422 review 422R-009): the ENDPOINT
+    TLD allowlist is enforced in code (``state._endpoint_first_match``)
+    after the raw regex match, so rule resolution must go through the same
+    entry the classifier loop uses — probing ``ENDPOINT.search`` directly
+    would bypass the allowlist and false-green the negative corpus."""
     for name, pattern in state._RULES:
-        if pattern.search(text):
+        if name == "endpoint":
+            if state._endpoint_first_match(text) is not None:
+                return name
+        elif pattern.search(text):
             return name
     return None
 
