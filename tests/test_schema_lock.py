@@ -50,13 +50,28 @@ _HERMETIC_KEYS = ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODELS_DIR",
 _FROZEN_MESSAGE = "the schema lock has no holder-liveness escape at base"
 
 
+def _purge_storelib_modules():
+    """Drop every cached storelib/host module so the NEXT in-process import
+    re-freezes STORE_PATH under the then-current env pins (review PRR-003,
+    reviewer-corrected mechanism: SchemaLockLivenessTest runs AFTER this
+    class; with schema cached under THIS class's frozen tmpdir, Liveness's
+    lock-file write at schema._lock_path resolved into the DELETED bind
+    tmpdir and mkdir(parents=True) recreated it — the litter was not a
+    teardown failure at all)."""
+    for name in list(sys.modules):
+        if name == "storelib" or name.startswith("storelib.") or name == "host":
+            del sys.modules[name]
+
+
 def _rmtree_loud(path, label):
     """Bounded-retry removal that never fails SILENTLY (review PRR-003:
-    a bare ``rmtree(ignore_errors=True)`` left empty ``/tmp/<label>-*``
-    dirs behind on Windows when a transient handle held the freshly
-    created directory). Retries ride out the transient holder; a dir that
-    STILL survives the bound is reported loudly on stderr instead of
-    disappearing into ignore_errors."""
+    a bare ``rmtree(ignore_errors=True)`` would hide even a transient
+    Windows dir-handle hold). Retries ride out transient holders; a dir
+    that STILL survives the bound is reported loudly on stderr instead of
+    disappearing into ignore_errors. (The observed litter's actual
+    mechanism — post-teardown recreation through a frozen STORE_PATH — is
+    prevented by ``_purge_storelib_modules`` in the bind class's
+    teardown.)"""
     for attempt in range(4):
         try:
             shutil.rmtree(path)
@@ -271,6 +286,12 @@ class SchemaGraceBindingTest(unittest.TestCase):
                 else:
                     os.environ[k] = v
             cls._saved_env = None
+        # Purge cached storelib BEFORE rmtree so later in-process imports
+        # (SchemaLockLivenessTest runs after this class) re-freeze
+        # STORE_PATH under their OWN pins — otherwise Liveness's
+        # lock-file write resolves into this deleted tmpdir and recreates
+        # it (review PRR-003, reviewer-corrected mechanism).
+        _purge_storelib_modules()
         if cls._tmpdir is not None:
             _rmtree_loud(cls._tmpdir, "zmem-ac430-bind")
             cls._tmpdir = None
