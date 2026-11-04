@@ -30,6 +30,7 @@ from storelib import beliefs as _beliefs
 from storelib.schema import CONFIDENCE_FLOOR, GLOBAL_NAMESPACE, STORE_PATH, _as_of_temporal_predicate, _commit, _embeddings, _env_float, _format_recency, _normalize_content, _parse_iso_to_epoch, _vec0_create_sql, now_iso, set_meta
 from storelib.write import _has_injection_risk_tag, _has_prompt_injection_risk, _source_hash
 from storelib.inject import (_lane_floors, _row_trust, _trust_floor,
+                             _indent_continuations,
                              apply_score_margin, apply_token_budget, budget_note,
                              classify_silent_reason, contested_marker,
                              estimate_tokens,
@@ -2503,9 +2504,13 @@ def _format_fenced_recall(rows: list[dict], header: str,
             # id/type bullet only — the credential text must not reach the
             # fence (the only text the hook delivers to the model).
             continue
-        lines.append(f"    {r['content']}")
+        lines.append(_indent_continuations(r["content"]))
         if r.get("source_ref"):
-            lines.append(f"    source_ref: {r['source_ref']}")
+            # Continuation lines of stored free-form fields keep the 4-space
+            # indent so no stored byte can pose as a column-0 fence bullet
+            # (issue #352 AC1; see inject._indent_continuations).
+            lines.append("    source_ref: "
+                         + _indent_continuations(r["source_ref"])[4:])
         if (source_hint and source_hint_namespaces is not None
                 and r.get("namespace") in source_hint_namespaces):
             lines.append(f"    -> source {r['id']} (store.py source --id {r['id']})")
@@ -2521,7 +2526,7 @@ def _format_fenced_recall(rows: list[dict], header: str,
                 if isinstance(_values, (list, tuple)) and _values:
                     lines.append("    " + _key + ": " + ", ".join(map(str, _values)))
         if r.get("tags"):
-            lines.append(f"    tags: {r['tags']}")
+            lines.append("    tags: " + _indent_continuations(r["tags"])[4:])
         # v10 (issue #60, 5.4): at most THREE entity NAMES per row (never
         # ids) so the injected surface stays attribution-light. Rows without
         # entities (e.g. every `recent` row) omit the line entirely.
@@ -2565,6 +2570,56 @@ def _classify_credential(item: dict) -> bool:
     return any(pat.search(blob) for pat in (
         SECRET_CREDENTIAL_PATTERNS + SECRET_COMMAND_PATTERNS
         + SECRET_REFUSAL_PATTERNS))
+
+
+def _credential_shaped_text(text: str) -> bool:
+    """True when free-form TEXT matches the credential registry — the same
+    pattern lists ``_classify_credential`` applies to the
+    content/source_ref/tags blob, here applied to ONE field. Used only to
+    blank an already-withheld stub's own namespace (#352 claim 3); the
+    classification INPUT set itself is never widened."""
+    from redaction import (
+        SECRET_COMMAND_PATTERNS,
+        SECRET_CREDENTIAL_PATTERNS,
+        SECRET_REFUSAL_PATTERNS,
+    )
+    blob = str(text or "")
+    return any(pat.search(blob) for pat in (
+        SECRET_CREDENTIAL_PATTERNS + SECRET_COMMAND_PATTERNS
+        + SECRET_REFUSAL_PATTERNS))
+
+
+def _withhold_credential_stub(item: dict) -> dict:
+    """The content-free stub a credential-shaped row reduces to (#256's
+    passive law; #352 AC3 shares this builder across every explicit surface).
+
+    Classification inputs stay content/source_ref/tags, but a namespace that
+    is ITSELF credential-shaped is blanked — the withheld stub must not
+    re-leak what the content withhold just hid through its own ns field."""
+    ns = item.get("namespace", "") or ""
+    if isinstance(ns, str) and _credential_shaped_text(ns):
+        ns = ""
+    return {"id": item.get("id", ""), "type": item.get("type", ""),
+            "confidence": item.get("confidence", 0.0),
+            "signal": item.get("signal", "none"),
+            "namespace": ns,
+            "content": "", "withheld_for_secret": True}
+
+
+def _withhold_credential_rows(rows: list) -> list:
+    """Apply the credential withhold to a row list (#352 AC3): every row
+    matching ``_classify_credential`` that is not already a stub reduces to
+    the shared stub. Order and length preserved; non-dict rows and
+    already-withheld stubs pass through byte-unchanged. Used by the passive
+    injection lane (pre-budget, #256's truncation rationale), and — new in
+    #352 — by the explicit recall/recent/explain surfaces so a
+    scrub-bypassing row surfaces identically on every lane."""
+    return [
+        (_withhold_credential_stub(r)
+         if isinstance(r, dict) and not r.get("withheld_for_secret")
+         and _classify_credential(r)
+         else r)
+        for r in rows]
 
 
 def _classify_injection(item: dict) -> bool:
@@ -3000,16 +3055,7 @@ def _recall_injection_details(
     # renderer, the session-selector partition (which counts it into
     # secret_withheld), and the JSON envelope all honor the flag. Runs with
     # zero matching rows are untouched (byte-identical).
-    selected_rows = [
-        ({"id": r.get("id", ""), "type": r.get("type", ""),
-          "confidence": r.get("confidence", 0.0),
-          "signal": r.get("signal", "none"),
-          "namespace": r.get("namespace", ""),
-          "content": "", "withheld_for_secret": True}
-         if isinstance(r, dict) and not r.get("withheld_for_secret")
-         and _classify_credential(r)
-         else r)
-        for r in selected_rows]
+    selected_rows = _withhold_credential_rows(selected_rows)
 
     budget_emptied = False
     budget_dropped = 0
@@ -3894,6 +3940,11 @@ def _recall_memory_impl(
         # so a head that never reached the fence suppresses zero rows.
         # Contested heads are delivered but never trusted for suppression.
         results = _suppress_represented_by_head_ns(results, fence_id)
+        # Issue #352 AC3: the explicit lane classifies credential-shaped rows
+        # exactly as the passive lane does — a scrub-bypassing row (sync/
+        # import/sqlite ingest) reduces to the shared withheld stub in the
+        # JSON envelope, the human fence, and the returned rows alike.
+        results = _withhold_credential_rows(results)
 
     if as_json:
         # v13 (issue #65, 10.8/10.9): reads emit an ENVELOPE, not a bare list,
@@ -4134,12 +4185,25 @@ def _explain_nearest_neighbors(
     scored.sort(key=lambda x: (-x[0], x[1]))
     # PRR-005: neighbors carry the row's trust surface explicitly — the same
     # rows the fenced render would mark, so a not_in_db verdict never shows
-    # untrusted content bare.
-    return [
-        {"id": mid, "content": (content or "")[:80], "token_overlap": round(sim, 3),
-         "taint": taint, "prompt_injection_risk": _has_injection_risk_tag(tags)}
-        for sim, mid, content, taint, tags in scored[:k]
-    ]
+    # untrusted content bare. Issue #352 AC3: a credential-shaped neighbour
+    # never shows its content slice at all — the verdict payload carries the
+    # withheld stub shape (content="" + withheld_for_secret), and the human
+    # blameline renders the [WITHHELD: SECRET] marker in its place.
+    out: list[dict] = []
+    for sim, mid, content, taint, tags in scored[:k]:
+        entry = {
+            "id": mid,
+            "content": (content or "")[:80],
+            "token_overlap": round(sim, 3),
+            "taint": taint,
+            "prompt_injection_risk": _has_injection_risk_tag(tags),
+        }
+        if _classify_credential({"content": content or "",
+                                 "tags": tags or ""}):
+            entry["content"] = ""
+            entry["withheld_for_secret"] = True
+        out.append(entry)
+    return out
 
 
 def _explain_run_pipeline(
@@ -4443,6 +4507,7 @@ def _format_explain_blameline(v: dict) -> str:
         extras.append("nearest: " + "; ".join(
             (("[UNTRUSTED WEB] " if n.get("taint") == "untrusted_web" else "")
              + ("[INJECTION RISK] " if n.get("prompt_injection_risk") else "")
+             + ("[WITHHELD: SECRET] " if n.get("withheld_for_secret") else "")
              + f"{n['id']} {n['content'][:40]!r}")
             for n in detail["neighbors"]))
     if extras:
@@ -4658,6 +4723,17 @@ def explain_recall(
                 }
             selected_rows = [r for r in selected_rows
                              if r["id"] not in set(margin_pruned_ids)]
+            # Issue #352 AC3 (plan-critic round 2, item 1): classify BEFORE
+            # the token budget — budget/truncation can clip the credential
+            # shape off a row's tail before a post-budget scan would see it
+            # (the passive lane's own rationale at its 2995-3012 seam), and
+            # protected-row truncation would then serve the raw fragment.
+            # Regression guard: ExplicitLaneCredentialTest
+            # .test_injection_replay_pre_budget_withholds_protected_row pins
+            # this placement — a post-budget withhold fails it with the
+            # budget-truncated padding rendered and no [WITHHELD: SECRET]
+            # stub (review round 2, finding 5; mutant-proven both ways).
+            selected_rows = _withhold_credential_rows(selected_rows)
             if selected_rows:
                 pre_budget_rows = list(selected_rows)
                 selected_rows, _est, _dropped, injection_budget_stats = (
@@ -4809,6 +4885,12 @@ def explain_recall(
                      "score": None, "detail": {}}]
 
     results = presented
+    if not for_injection:
+        # Issue #352 AC3: plain explain is an explicit surface — credential-
+        # shaped rows reduce to the shared stub in the envelope, the fence,
+        # and the returned rows. (The for_injection replay already withheld
+        # pre-budget above; already-stubbed rows pass through unchanged.)
+        results = _withhold_credential_rows(results)
     explain_obj = {
         "query": query,
         # Issue #112: record what the FTS lane ACTUALLY matched — the
@@ -5345,6 +5427,11 @@ def _recent_memory_impl(
         # too, or a future zero-write caller would silently mutate).
         _bump_telemetry(conn, ids, no_bump=no_bump,
                         disabled=no_telemetry)
+    if not for_injection:
+        # Issue #352 AC3: recent is an explicit surface like recall — the
+        # credential withhold runs after telemetry (bump law unchanged) and
+        # before every output branch (JSON envelope, fence, return value).
+        results = _withhold_credential_rows(results)
     if as_json:
         # v13 (issue #65, 10.8/10.9): read envelope, same shape as recall.
         if not for_injection:

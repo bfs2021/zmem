@@ -213,6 +213,27 @@ def contested_marker(row: dict[str, Any]) -> str:
     return "[CONTESTED LINK: %s]" % token
 
 
+def _indent_continuations(text: Any, indent: str = "    ") -> str:
+    """Render stored free-form text so no continuation line starts at
+    column 0 (issue #352 AC1).
+
+    The delivery ledger's ``rows_present_in`` bullet grammar
+    (delivery_ledger.py) honours column-0 ``- [<id>]`` lines, and the fence
+    renders stored ``content``/``source_ref``/``tags`` with a first-line-only
+    indent — so a stored value containing a newline followed by a renderer-
+    shaped bullet forged delivery credit for a row that never rendered
+    (executed probe, PR #350 review; re-executed at base 7b9d871). Indenting
+    every continuation line with the same prefix as the field's first line
+    closes the class for EVERY consumer of the rendered fence: no byte of
+    stored free-form text can ever begin a line at column 0. Single-line
+    values are byte-identical (``split``/``join`` round-trip on a newline-free
+    string is the string itself). ``fence_row_cost`` applies this same
+    transformation before ``estimate_tokens`` so admission accounting cannot
+    diverge from the rendered bytes.
+    """
+    return "\n".join(indent + part for part in str(text or "").split("\n"))
+
+
 def fence_row_cost(row: dict[str, Any], *,
                    legacy_injection_wire: bool = False) -> int:
     """Admission-control token cost of one row's FULL fence contribution
@@ -263,10 +284,18 @@ def fence_row_cost(row: dict[str, Any], *,
     lines = [header]
     # Credential-withheld rows render only their marked id/type bullet.  Keep
     # admission cost exact so a marker never becomes unbudgeted fence text.
+    # Issue #352 AC1: content/source_ref/tags continuation lines carry the
+    # same 4-space indent as their first line in the renderer, and admission
+    # measures the SAME indented bytes (a fixed margin cannot absorb
+    # unbounded continuations — plan-critic round 1, blocker 5).
     if not row.get("withheld_for_secret"):
-        lines.append("    " + (row.get("content", "") or ""))
+        lines.append(_indent_continuations(row.get("content", "") or ""))
     if not row.get("withheld_for_secret") and row.get("source_ref"):
-        lines.append("    source_ref: {}".format(row["source_ref"]))
+        # First line rides after the "source_ref: " label; continuation lines
+        # keep the 4-space indent (the [4:] strips only the first line's
+        # prefix, which the label line already provides).
+        lines.append("    source_ref: "
+                     + _indent_continuations(row["source_ref"])[4:])
     # Page provenance is intentionally a narrow, page-only extension of the
     # common fence.  Ordinary rows retain their historical bytes.
     if row.get("type") == "page" and not row.get("withheld_for_secret"):
@@ -278,7 +307,7 @@ def fence_row_cost(row: dict[str, Any], *,
             if isinstance(values, (list, tuple)) and values:
                 lines.append("    {}: {}".format(key, ", ".join(map(str, values))))
     if not row.get("withheld_for_secret") and row.get("tags"):
-        lines.append("    tags: {}".format(row["tags"]))
+        lines.append("    tags: " + _indent_continuations(row["tags"])[4:])
     ents = row.get("entities") or []
     if not row.get("withheld_for_secret") and ents:
         lines.append(
@@ -1223,6 +1252,7 @@ def select_and_budget_for_injection(
     # and making duplicate ids deterministic across callers.
     exclusions = _ordered_unique(list(exclude_ids or []) + delivered_ids)
     if moment == "pretool" and ops_tokens is None and effective_ops:
+        strong: set = set()
         try:
             strong = {
                 rid for rid, entry in delivered_by_id.items()
@@ -1231,6 +1261,48 @@ def select_and_budget_for_injection(
             exclusions = [rid for rid in exclusions if rid not in strong]
         except Exception:
             pass
+        # Issue #307 (decision comment 6639125597): a hazard neighbour that
+        # was ledgered as this parent's CONTRADICTS expansion child stays
+        # excluded above — its own text never strong-matches, and nothing
+        # modelled the delivery relationship — so its [CONTESTED LINK] marker
+        # silently vanished from exactly the re-delivery envelope that
+        # matters (the operator is about to run the hazardous op the parent
+        # describes). Release the ledgered contradicts neighbours of the
+        # strong-released parents: delivered-derived ids only (never widens
+        # to a row the session has not seen), minus explicit exclude_ids
+        # (caller exclusions always apply), contradicts-only (a related/
+        # supports neighbour carries no marker and re-delivering it is pure
+        # budget noise — out of the issue's scope), ONE batched query over
+        # all released parents. This block sits in its OWN try, isolated
+        # from the parent release above: a pre-v11 store without
+        # memory_link (or any failure here) degrades to parent-only release
+        # — today's behaviour, never worse. No-op on bridged pulls
+        # (delivered_ids was emptied above). The release un-suppresses; it
+        # never force-includes — the parent must still be retrieved, and
+        # the neighbour re-renders through the expansion walk that stamps
+        # contested_link/link_of (a direct-retrieved neighbour renders
+        # unmarked by design: the marker is expansion provenance).
+        if strong and delivered_ids:
+            try:
+                _ph = ",".join("?" * len(strong))
+                _edges = conn.execute(
+                    "SELECT src_id, dst_id FROM memory_link "
+                    f"WHERE relation = 'contradicts' "
+                    f"AND (src_id IN ({_ph}) OR dst_id IN ({_ph}))",
+                    (*strong, *strong),
+                ).fetchall()
+                _parents = set(strong)
+                _release = {
+                    (e["src_id"] if e["dst_id"] in _parents else e["dst_id"])
+                    for e in _edges
+                }
+                _release &= set(delivered_ids)
+                _release -= set(exclude_ids or [])
+                if _release:
+                    exclusions = [rid for rid in exclusions
+                                  if rid not in _release]
+            except Exception:
+                pass  # fail-open: parent-only release (see comment above)
 
     # Discover and gate page candidates before invoking ordinary recall so its
     # budget stays byte-identical on calls where no usable page exists. Only a

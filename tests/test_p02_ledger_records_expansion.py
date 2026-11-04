@@ -1,15 +1,19 @@
-"""Issue #250 acceptance checks: expansion-arrival rows render but are never
+"""Issue #250 acceptance checks: expansion-arrival rows render and ARE
 ledgered as delivered.
 
-In ``storelib/inject.py`` the list of rendered rows (``present``) is filtered
+In ``storelib/inject.py`` the list of rendered rows (``present``) was filtered
 to drop rows carrying ``link_relation`` or ``_graph_arrival_only`` before it
-is passed to BOTH ``_bump_telemetry`` and ``ledger.record``. That filter is
+was passed to BOTH ``_bump_telemetry`` and ``ledger.record``. That filter is
 the correct popularity law (expansion rows must never be bumped — popularity
-rewards query-matched rows only), but it is the wrong delivery law: a row
-that arrives only through budgeted 1-hop link expansion, or only through the
-graph-seed arm, still renders every event in a session and therefore IS
-delivered — so it must be recorded in the session's delivery ledger, or
-nothing ever suppresses its re-delivery on the next call.
+rewards query-matched rows only), but it was the wrong delivery law — the
+#250 fix split the two sinks so a row that arrives only through budgeted
+1-hop link expansion, or only through the graph-seed arm, still renders every
+event in a session and IS delivered — so it is recorded in the session's
+delivery ledger, which is what suppresses its re-delivery on the next call.
+(This module docstring previously described the PRE-fix world — "render but
+are never ledgered" — which #311 AC2 flagged as stale; corrected with the
+#250 fix's actual law. The structure guardrail lives in
+``test_p02_ledger_bump_split.py``.)
 
 Fixture (the two rows the issue names, built through the real CLI):
   parent P     "keep the flange calibrated before every launch" (query-matched)
@@ -247,9 +251,12 @@ class GraphArmNeighbourTest(_LedgerBase):
             f"link_relation: {row!r}")
 
     def test_graph_neighbour_renders_once_across_three_calls(self):
-        """Once a rendered graph-arm neighbour is ledgered, later calls in
-        the same session must not re-deliver it: N renders exactly once
-        across three calls (at base it renders on every call)."""
+        """SEED-SKIP ARM ONLY (#311 AC2 scope note): once a rendered
+        graph-arm neighbour is ledgered, later calls in the same session must
+        not re-deliver it: N renders exactly once across three calls. As with
+        the expansion sibling, this pins the exclusion-side skip; the ledger
+        arm is carried by ``test_rendered_graph_neighbour_recorded_in_ledger``
+        (issue #311: do not read this name as pinning both arms)."""
         payloads = [self._call() for _ in range(CALLS)]
         self._assert_arrival_precondition(payloads[0])
         rendered_calls = sum(
@@ -287,9 +294,15 @@ class LinkExpansionNeighbourTest(_LedgerBase):
             f"_graph_arrival_only: {row!r}")
 
     def test_expansion_neighbour_renders_once_across_three_calls(self):
-        """Once a rendered link-expansion neighbour is ledgered, later calls
-        in the same session must not re-deliver it: N renders exactly once
-        across three calls (at base it renders on every call)."""
+        """SEED-SKIP ARM ONLY (#311 AC2 scope note): once a rendered
+        link-expansion neighbour is ledgered, later calls in the same session
+        must not re-deliver it — N renders exactly once across three calls.
+        This test pins the exclusion-side skip alone: reverting the ledger
+        SPLIT (one list for both accounting sinks) leaves it green, because
+        the seed skip alone stops the re-pull. The ledger arm — a rendered
+        neighbour being RECORDED at all — is carried by
+        ``test_rendered_expansion_neighbour_recorded_in_ledger`` (issue #311:
+        the "renders once" name must not be read as pinning both arms)."""
         payloads = [self._call() for _ in range(CALLS)]
         self._assert_arrival_precondition(payloads[0])
         rendered_calls = sum(
@@ -551,6 +564,91 @@ class ContestedNeighbourLedgerTest(_LedgerBase):
             1 for payload in payloads
             if f"[{self.nid}]" in (payload.get("rendered") or ""))
         self.assertEqual(rendered_calls, 1)
+
+
+class PartialExclusionExpansionTest(_LedgerBase):
+    """#311 AC1: the partial-exclusion invariant of ``expand_recall_links``
+    is pinned — under an ``exclude_ids`` that excludes SOME candidate rows,
+    expansion still runs from every KEPT seed, and an excluded row never
+    re-enters through a kept seed's edge (the ``have``-from-``results``
+    re-entry guard, links.py). The seeds-derived-``have`` mutant (deriving
+    ``have`` from the filtered seeds instead of the full result set) survived
+    the whole suite at base (executed, trace 307-311-352 probe P2) — this
+    test dies under it.
+
+    Fixture (rows linked A—N and A—B, both ``related``): with no exclusions
+    the walk returns N (positive control — the fixture demonstrably reaches
+    the neighbour through the kept seed A, the blocker #311 recorded); with
+    ``exclude_ids=[B]`` the walk must return exactly ``[N]`` — B is excluded,
+    so it is not a seed, and being in ``results`` it is barred from
+    re-entering as A's neighbour. The mutant's smaller ``have`` lets B back
+    in and returns ``[N, B]``.
+
+    In-process call with an EXPLICIT connection (precedent
+    ``test_memory_links.py``): storelib is already imported by this module's
+    process, so env pinning cannot steer it — but ``expand_recall_links``
+    never resolves a store itself, it takes ``conn``. No STORE_PATH freeze
+    is involved.
+    """
+
+    def _apply_class_fixture(self):
+        """Third row B — a second PLAIN result row (no tags) linked to A, so
+        the excluded-arm has a real row to exclude that is also reachable as
+        A's neighbour through the edge walk."""
+        self.nid2 = self._add_row("okapi crossing guard rotation notes")
+        self._run_cli("links", "--add", "--id", self.pid, "--id", self.nid2,
+                      "--relation", "related")
+
+    def _row_dict(self, rid: str) -> dict:
+        import sqlite3
+        conn = sqlite3.connect(str(Path(self.env["ZMEM_STORE"]).resolve()))
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT * FROM memory WHERE id=?", (rid,)).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row, f"fixture row {rid} missing from scratch store")
+        return dict(row)
+
+    def _expand(self, exclude_ids):
+        import sqlite3 as _s3
+        sys.path.insert(0, str(STORE_PY.parent))
+        from storelib.links import expand_recall_links
+        conn = _s3.connect(str(Path(self.env["ZMEM_STORE"]).resolve()))
+        conn.row_factory = _s3.Row
+        try:
+            # The base fixture seeds rows under the module-level NAMESPACE
+            # constant (its _add_row reads it directly), so the containment
+            # set passed to the walk must be that same namespace.
+            return expand_recall_links(
+                conn,
+                results=[self._row_dict(self.pid), self._row_dict(self.nid2)],
+                exclude_ids=exclude_ids,
+                ns_list=[NAMESPACE],
+                budget=8)
+        finally:
+            conn.close()
+
+    def test_partial_exclusion_still_expands_from_kept_seeds(self):
+        """Positive control: the fixture reaches the neighbour through a
+        kept seed (the gap #311 recorded — three fixture shapes were
+        attempted in the #250 round and none discriminated)."""
+        out = self._expand(None)
+        self.assertEqual([r["id"] for r in out], [self.nid],
+                         "positive control: expansion from [A, B] must return "
+                         "the neighbour N, or this fixture proves nothing")
+
+    def test_partial_exclusion_never_reintroduces_an_excluded_row(self):
+        """The discriminating pin: with B excluded, exactly N returns — N
+        (kept-seed arm) and never B (excluded rows cannot re-enter through a
+        kept seed's edge). The seeds-derived-have mutant returns [N, B]."""
+        out = self._expand([self.nid2])
+        self.assertEqual(
+            [r["id"] for r in out], [self.nid],
+            "partial exclusion must expand from every non-excluded row "
+            "(N, via kept seed A) while an excluded result row (B) never "
+            "re-enters as A's neighbour (#311 AC1)")
 
 
 if __name__ == "__main__":
