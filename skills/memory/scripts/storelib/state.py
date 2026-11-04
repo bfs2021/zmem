@@ -24,10 +24,11 @@ import sqlite3
 #   host family for this repo's fleet surfaces).   Everything else below
 #   matches the original audit's "not a filename extension" finding — NOTE
 #   (PR #422 review 422R-014): "ru" is also a filename extension
-#   (config.ru, app.ru); it is KEPT because dropping it would re-classify
-#   .ru-host rows and drift the pinned #174 golden, and the audit's
-#   not-a-filename claim is wrong for it — an accepted narrowing residual,
-#   recorded in the PR body's Considered table.
+#   (config.ru, app.ru), so the audit's not-a-filename claim is wrong for
+#   it; the label is KEPT because dropping it would re-classify .ru-host
+#   rows (example.ru stops matching as an endpoint) — an accepted narrowing
+#   residual, recorded in the PR body's Considered table (the #174 golden
+#   itself carries no .ru row, so golden bytes are not the reason).
 _TLD_ALLOWLIST = frozenset({
     "com", "org", "net", "io", "dev", "edu", "gov", "info", "biz", "xyz",
     "uk", "de", "fr", "jp", "ca", "ru", "eu", "nl", "se", "no", "fi", "ch",

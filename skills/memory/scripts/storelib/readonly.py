@@ -215,21 +215,28 @@ def open_readonly(store_path: Path | str,
 
     has_residue = _residue_exists()
 
-    if lock_aware and has_residue:
-        # Fail-closed contract (issue #342): a lock-observable read must not
-        # silently degrade to a private snapshot when a holder/residue is
-        # present — surface it instead.
-        raise ReadOnlyStoreError(
-            "store has WAL/journal residue; the lock-aware fail-closed "
-            "read refuses to serve a private snapshot (retry when the "
-            "store is quiet)")
-    if shallow and has_residue:
-        # Shallow callers (per-recall probe) must never stage a store-sized
-        # copy on a seconds-long budget; refuse and let the caller report
-        # degraded.
-        raise ReadOnlyStoreError(
-            "store has WAL/journal residue; the shallow read refuses to "
-            "stage a full private copy (retry when the store is quiet)")
+    def _refuse_on_residue() -> None:
+        # Reads the CURRENT has_residue, so the re-check fall-throughs below
+        # re-apply the same contracts the pre-open checks made (review
+        # delta re-gate: a late-residue race must not bypass shallow or
+        # lock_aware by falling through to arm B).
+        if lock_aware and has_residue:
+            # Fail-closed contract (issue #342): a lock-observable read must
+            # not silently degrade to a private snapshot when a
+            # holder/residue is present — surface it instead.
+            raise ReadOnlyStoreError(
+                "store has WAL/journal residue; the lock-aware fail-closed "
+                "read refuses to serve a private snapshot (retry when the "
+                "store is quiet)")
+        if shallow and has_residue:
+            # Shallow callers (per-recall probe) must never stage a
+            # store-sized copy on a seconds-long budget; refuse and let the
+            # caller report degraded.
+            raise ReadOnlyStoreError(
+                "store has WAL/journal residue; the shallow read refuses to "
+                "stage a full private copy (retry when the store is quiet)")
+
+    _refuse_on_residue()
 
     if (lock_aware and not has_residue and not _is_wal_store(store)):
         conn = sqlite3.connect(
@@ -245,9 +252,11 @@ def open_readonly(store_path: Path | str,
         # The residue re-check is load-bearing: a writer that created
         # -wal/-journal between the first probe and this open would make the
         # immutable read silently miss committed rows, so fall through to
-        # arm B instead (issue-review 422R-005).
+        # arm B instead (issue-review 422R-005) — re-applying the shallow /
+        # lock_aware refusals at the new state first (delta re-gate).
         if _residue_exists():
             has_residue = True
+            _refuse_on_residue()
         else:
             conn = sqlite3.connect(
                 store.resolve().as_uri() + "?mode=ro&immutable=1",
@@ -264,10 +273,15 @@ def open_readonly(store_path: Path | str,
             # After-open residue re-check (422R-005 residual, final-critic):
             # a writer that created -wal/-journal between the pre-open probe
             # and this connection would be invisible to the immutable read.
-            # Fall through to arm B instead of serving possibly-stale rows.
+            # Fall through to arm B instead of serving possibly-stale rows —
+            # re-applying the shallow / lock_aware refusals at the new state
+            # first (delta re-gate: the guards key on has_residue, so a
+            # fall-through without them would stage a store-sized copy on a
+            # shallow per-prompt caller or let lock_aware serve a snapshot).
             if _residue_exists():
                 conn.close()
                 has_residue = True
+                _refuse_on_residue()
             else:
                 return ReadOnlyHandle(conn, None)
 

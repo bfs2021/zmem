@@ -1,9 +1,10 @@
 """Read-only opens create no WAL/journal sidecars (issue #345).
 
 Covers storelib.readonly.open_readonly (arm A immutable / arm B private
-residue copy), the converted cli and doctor surfaces end to end, and the
-load-bearing reason the deliberately-kept WAL-aware opens (query-rewrite,
-source scans) are NOT converted: a plain ``mode=ro`` connection sees
+residue copy), the converted cli and doctor surfaces end to end (query-rewrite
+included, shallow mode), and the load-bearing reason the deliberately-kept
+WAL-aware opens (source scans and the other documented keeps) are NOT
+converted: a plain ``mode=ro`` connection sees
 committed-but-uncheckpointed WAL rows, and those surfaces need exactly that.
 
 Scratch stores are built through the production cold-open path
@@ -389,9 +390,10 @@ class ReadonlyNoSidecarsTest(unittest.TestCase):
         self.assertNotIn("private snapshot", err.getvalue())
 
     def test_deliberate_mode_ro_open_still_sees_live_wal_rows(self):
-        """PRESERVING pin for the kept WAL-aware surfaces (query-rewrite,
-        source scans): a plain mode=ro connection observes committed WAL
-        rows, which is exactly why those sites are not converted."""
+        """PRESERVING pin for the kept WAL-aware surfaces (source scans and
+        the other documented keeps): a plain mode=ro connection observes
+        committed WAL rows, which is exactly why those sites are not
+        converted."""
         import sqlite3
 
         store = _build_store(self.scratch / "live-visibility")
@@ -414,6 +416,74 @@ class ReadonlyNoSidecarsTest(unittest.TestCase):
                 conn.close()
         finally:
             writer.close()
+
+
+    def _open_with_late_residue(self, **kwargs):
+        import contextlib
+        import glob
+        import io
+        import os
+        import sqlite3 as real_sqlite3
+
+        from storelib import readonly
+
+        store = _build_store(self.scratch / "late-residue")
+        armed = {"fired": False}
+
+        class _LateWalSqlite3:
+            def __getattr__(self, name):
+                return getattr(real_sqlite3, name)
+
+            def connect(self, *args, **kwargs):
+                if (not armed["fired"] and args and isinstance(args[0], str)
+                        and "immutable=1" in args[0]):
+                    armed["fired"] = True
+                    Path(str(store) + "-wal").write_bytes(b"")
+                return real_sqlite3.connect(*args, **kwargs)
+
+        before = set(glob.glob(os.path.join(
+            tempfile.gettempdir(), "zmem-readonly-copy-*")))
+        shim = _LateWalSqlite3()
+        err = io.StringIO()
+        outcome = {}
+        with mock.patch.object(readonly, "sqlite3", shim), \
+                contextlib.redirect_stderr(err):
+            try:
+                handle = readonly.open_readonly(store, **kwargs)
+                outcome["handle"] = handle
+            except readonly.ReadOnlyStoreError as exc:
+                outcome["error"] = exc
+        outcome["stage"] = set(glob.glob(os.path.join(
+            tempfile.gettempdir(), "zmem-readonly-copy-*"))) - before
+        outcome["stderr"] = err.getvalue()
+        return outcome
+
+    def test_default_falls_through_to_arm_b(self):
+        outcome = self._open_with_late_residue()
+        self.assertNotIn("error", outcome,
+                         "default callers fall through to arm B")
+        handle = outcome["handle"]
+        self.assertIsNotNone(handle._stage, "arm B must have staged a copy")
+        self.assertIn("private snapshot", outcome["stderr"])
+        stage_dir = handle._stage
+        handle.close()
+        self.assertFalse(
+            stage_dir.exists(),
+            "close() must remove the staging copy: %s" % stage_dir)
+
+    def test_shallow_late_residue_refuses_and_stages_nothing(self):
+        outcome = self._open_with_late_residue(shallow=True)
+        self.assertIn("error", outcome, "shallow must refuse late residue")
+        self.assertIn("shallow read refuses", str(outcome["error"]))
+        self.assertEqual(
+            outcome["stage"], set(),
+            "a refused shallow open must stage no directory")
+
+    def test_lock_aware_late_residue_refuses(self):
+        outcome = self._open_with_late_residue(lock_aware=True)
+        self.assertIn("error", outcome, "lock_aware must refuse late residue")
+        self.assertIn("lock-aware fail-closed", str(outcome["error"]))
+        self.assertEqual(outcome["stage"], set())
 
 
 if __name__ == "__main__":
