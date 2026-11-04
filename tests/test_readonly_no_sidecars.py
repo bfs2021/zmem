@@ -441,20 +441,30 @@ class ReadonlyNoSidecarsTest(unittest.TestCase):
                     Path(str(store) + "-wal").write_bytes(b"")
                 return real_sqlite3.connect(*args, **kwargs)
 
-        before = set(glob.glob(os.path.join(
-            tempfile.gettempdir(), "zmem-readonly-copy-*")))
+        # Hermeticity (delta re-gate r2): assert ONLY the staging this call
+        # performed — a spy on mkdtemp, never a glob of the global
+        # zmem-readonly-copy-* namespace (a concurrent process's legitimate
+        # staging dir must not false-fail these legs).
+        made_stages = []
+        real_mkdtemp = readonly.tempfile.mkdtemp
+
+        def spy_mkdtemp(*args, **kwargs):
+            path = real_mkdtemp(*args, **kwargs)
+            made_stages.append(Path(path))
+            return path
+
         shim = _LateWalSqlite3()
         err = io.StringIO()
         outcome = {}
         with mock.patch.object(readonly, "sqlite3", shim), \
+                mock.patch.object(readonly.tempfile, "mkdtemp", spy_mkdtemp), \
                 contextlib.redirect_stderr(err):
             try:
                 handle = readonly.open_readonly(store, **kwargs)
                 outcome["handle"] = handle
             except readonly.ReadOnlyStoreError as exc:
                 outcome["error"] = exc
-        outcome["stage"] = set(glob.glob(os.path.join(
-            tempfile.gettempdir(), "zmem-readonly-copy-*"))) - before
+        outcome["stages"] = made_stages
         outcome["stderr"] = err.getvalue()
         return outcome
 
@@ -463,7 +473,13 @@ class ReadonlyNoSidecarsTest(unittest.TestCase):
         self.assertNotIn("error", outcome,
                          "default callers fall through to arm B")
         handle = outcome["handle"]
+        self.assertEqual(
+            len(outcome["stages"]), 1,
+            "arm B must stage exactly one copy for this call")
         self.assertIsNotNone(handle._stage, "arm B must have staged a copy")
+        self.assertEqual(
+            Path(handle._stage), outcome["stages"][0],
+            "the recorded stage must be this call's own staging dir")
         self.assertIn("private snapshot", outcome["stderr"])
         stage_dir = handle._stage
         handle.close()
@@ -476,28 +492,31 @@ class ReadonlyNoSidecarsTest(unittest.TestCase):
         self.assertIn("error", outcome, "shallow must refuse late residue")
         self.assertIn("shallow read refuses", str(outcome["error"]))
         self.assertEqual(
-            outcome["stage"], set(),
+            outcome["stages"], [],
             "a refused shallow open must stage no directory")
 
     def test_lock_aware_late_residue_refuses(self):
         outcome = self._open_with_late_residue(lock_aware=True)
         self.assertIn("error", outcome, "lock_aware must refuse late residue")
         self.assertIn("lock-aware fail-closed", str(outcome["error"]))
-        self.assertEqual(outcome["stage"], set())
+        self.assertEqual(outcome["stages"], [])
 
     def test_stale_staging_sweep_reaps_aged_dirs_only(self):
         """Delta re-gate (final-critic pin a): the staging sweeper must reap
         an aged zmem-readonly-copy-* dir at open (the hard-kill residue the
         close/except cleanup never sees) while leaving fresh dirs alone —
         a no-op _sweep_stale_stages mutant went 12/12 green before this."""
-        import glob
         import os as _os
         import time
+        import uuid
         store = _build_store(self.scratch / "sweep.sqlite")
         (Path(str(store) + "-wal")).write_bytes(b"")
         tmp = Path(tempfile.gettempdir())
-        aged = tmp / "zmem-readonly-copy-zzz-aged"
-        fresh = tmp / "zmem-readonly-copy-zzz-fresh"
+        # Per-process unique names (delta re-gate r2): two concurrent runs
+        # of this leg must not collide on the shared TEMP namespace.
+        tag = uuid.uuid4().hex[:8]
+        aged = tmp / ("zmem-readonly-copy-%s-aged" % tag)
+        fresh = tmp / ("zmem-readonly-copy-%s-fresh" % tag)
         aged.mkdir(parents=True, exist_ok=True)
         fresh.mkdir(parents=True, exist_ok=True)
         old = time.time() - 2 * 3600
