@@ -187,6 +187,30 @@ def _redact_failure_text(text, limit: int = 200) -> str:
                   "text is UNREDACTED this run", file=sys.stderr)
     return _collapse_line_breaks(redacted)[:limit].strip()
 
+def _redact_command_text(text, limit: int) -> str:
+    """issue #439 AC0 command/path renderer: redact and cap WITHOUT the
+    line-break collapse. The classifier downstream must see the command's
+    line/separator structure (a reader line followed by a runner line is
+    NOT a read-only miss), so unlike _redact_failure_text the newlines
+    survive; the redaction primitive and the degrade counter are shared.
+    """
+    global _REDACT_DEGRADE_WARNED
+    if not text:
+        return ""
+    try:
+        redacted, _redactions = redact_text(str(text))
+    except Exception:
+        redacted = str(text)
+        _REDACT_DEGRADE_COUNT[0] += 1
+        if not _REDACT_DEGRADE_WARNED:
+            _REDACT_DEGRADE_WARNED = True
+            print("[zmem] failures: secret redaction degraded — command "
+                  "text is UNREDACTED this run", file=sys.stderr)
+    if len(redacted) > limit:
+        redacted = redacted[:limit]
+    return redacted
+
+
 def _sanitize_pack_content(text) -> str:
     """Make a stored memory field safe to render as one export-pack bullet.
 
@@ -397,10 +421,10 @@ def _failures_from_transcript(path: str, text: str | None = None):
                         # issue #439 AC0: redacted + capped at
                         # MAX_COMMAND_CHARS (shared constant), empty string
                         # when the call carried no such field.
-                        "command": _redact_failure_text(
+                        "command": _redact_command_text(
                             command if isinstance(command, str) else "",
                             MAX_COMMAND_CHARS),
-                        "path": _redact_failure_text(
+                        "path": _redact_command_text(
                             path if isinstance(path, str) else "",
                             MAX_COMMAND_CHARS),
                     })
@@ -585,10 +609,10 @@ def _failures_from_db(db_path: str, session_id: str, *,
                 "error_type": _redact_failure_text(r["error_type"] or "", 100),
                 "retry_count": r["retry_count"] or 0,
                 "destructive": bool(r["destructive"]),
-                "command": _redact_failure_text(
+                "command": _redact_command_text(
                     command if isinstance(command, str) else "",
                     MAX_COMMAND_CHARS),
-                "path": _redact_failure_text(
+                "path": _redact_command_text(
                     path if isinstance(path, str) else "",
                     MAX_COMMAND_CHARS),
             })

@@ -112,6 +112,15 @@ def classify_failure(detail: Mapping[str, object]) -> str:
         command = "" if detail.get("command") is None else str(
             detail.get("command"))
         error = _normalized(detail.get("error"))
+        # Structural conservatism (implementation-review r1 F3): a
+        # command the segment rules cannot fully enumerate is NEVER
+        # trivial. Multi-line commands (the detail carries the raw line
+        # structure) and any single "&" (backgrounding — not the "&&"
+        # separator) are rejected outright: a reader line followed by a
+        # runner or destructive line must not be filtered.
+        if command and ("\n" in command or "\r" in command
+                        or re.search(r"(?<!&)&(?!&)", command)):
+            return "other"
         segments = re.split(r"&&|;|\|", command) if command else []
         if infer_signal(command) in ("test", "compile", "lint"):
             return "signal"

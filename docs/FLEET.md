@@ -392,7 +392,7 @@ keeps the historical `empty-pool` — only a connect-level failure claims
 an outage.
 
 Host-gate evidence (AC7, HOST_ONLY): CAPTURED 2026-10-24 — the operator
-ran the T-01 harnesses against the vsan hub (http://192.168.1.148:8765/mcp,
+ran the T-01 harnesses against the vsan hub (http://<hub-host>:<port>/mcp,
 zmem 0.120.0, schema 19). Per-harness model-visible injection at
 SessionStart, UserPromptSubmit and PreToolUse for claude, codex and zcode
 is recorded in `docs/host-gate-evidence/287-ac7/`: launcher-contract

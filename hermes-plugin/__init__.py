@@ -4246,6 +4246,11 @@ class ZmemMemoryProvider(MemoryProvider):
         # decision fields below; the hub's own include-global policy gate
         # (global-limit 2 under _include_global_allowed) is the disclosed
         # remote semantic for the local --include-global/--global-limit.
+        # Issue #435: bound BEFORE both branches — the remote path never
+        # runs the local decode, and the reason ladder below reads the
+        # flag on every silent outcome (an unbound read crashed remote
+        # mode; implementation-review round 1 F1).
+        envelope_error = False
         if self._remote_active():
             t0 = time.monotonic()
             envelope = self._transport.session_start(
@@ -4302,10 +4307,10 @@ class ZmemMemoryProvider(MemoryProvider):
                     legacy = {}
                 payload = legacy if isinstance(legacy, dict) else {}
                 envelope_error = bool(
-                    stdout
-                    and isinstance(result, dict)
+                    isinstance(result, dict)
                     and result.get("ok")
-                    and (not parsed_ok
+                    and (not stdout
+                         or not parsed_ok
                          or not isinstance(legacy, dict)))
         rendered = payload.get("rendered")
         if not isinstance(rendered, str):

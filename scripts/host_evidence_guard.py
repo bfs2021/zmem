@@ -10,8 +10,11 @@ key (e.g. ``{}``) or malformed JSON under a launcher-capture name is
 unsafe. Malformed JSON under any other name is ignored (a
 claude-run2-shaped file is JSON plus trailing text with no stdout_raw).
 
-Imported by tests/test_host_evidence_redaction.py; reports relative posix
-filenames only, never evidence content.
+Imported by tests/test_host_evidence_redaction.py as its enforcement
+seam (a test-imported module under scripts/ by design — there is no
+runtime caller; CI runs the importing test file per the repo's
+direct-python loop); reports relative posix filenames only, never
+evidence content.
 """
 from __future__ import annotations
 

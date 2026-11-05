@@ -1109,7 +1109,7 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
     query_source = {"operation": 0, "ring": 0, "none": 0}
     missed_all_only = 0
     legacy_attributions = 0
-    counts_disabled_store_error = 0
+    counts_disabled_transport_error = 0
     in_period = 0
     no_timestamp = 0
     recall_errors = 0
@@ -1221,7 +1221,7 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
                     and ln.get("reason") in ("store-error",
                                              "envelope-error")
                     for ln in disabled_lines):
-                counts_disabled_store_error += 1
+                counts_disabled_transport_error += 1
         else:
             counts["missed"] += 1
             tool = f.get("tool") or "?"
@@ -1321,7 +1321,7 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
             "sid-less bg-log lines (time-window + id overlap only); "
             "miss_rate_strict_sid excludes them.")
     if counts["disabled"]:
-        _kw = counts["disabled"] - counts_disabled_store_error
+        _kw = counts["disabled"] - counts_disabled_transport_error
         if _kw:
             caveats.append(
                 f"{_kw} failure(s) fell in deliberate-silence windows "
@@ -1330,9 +1330,9 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
                 "transport refused by design, so nothing could have been "
                 "injected; excluded from miss_rate and miss_rate_strict_sid."
                 " Read this as deliberate silence, not as misses.")
-        if counts_disabled_store_error:
+        if counts_disabled_transport_error:
             caveats.append(
-                f"{counts_disabled_store_error} failure(s) fell in "
+                f"{counts_disabled_transport_error} failure(s) fell in "
                 "store-transport-failure windows (bg-log reason=store-error"
                 " or reason=envelope-error — the store child exited "
                 "nonzero, e.g. a partial-upgrade store rejecting an "

@@ -94,6 +94,50 @@ class ProviderEnvelopeErrorTest(unittest.TestCase):
                                     "reason": ""}))
         self.assertEqual(out.get("reason"), "empty-pool")
 
+    def test_empty_stdout_is_transport_classified(self):
+        # Twin parity with the hook (implementation-review r1 F4): a
+        # succeeded child printing NOTHING is a corrupted channel, not a
+        # healthy no-match.
+        out = self._run("")
+        self.assertEqual(out.get("reason"), "envelope-error")
+
+    def test_remote_mode_silent_envelope_does_not_raise(self):
+        # Implementation-review r1 F1: envelope_error must be bound on the
+        # REMOTE path too — a silent hub envelope (hub-unreachable, or an
+        # ok envelope with no rendered text) must return a JSON envelope,
+        # never UnboundLocalError.
+        dep = self.dep
+        dep._remote_active = lambda: True
+
+        class _Transport:
+            def session_start(self, ns, session_id, lane=None, limit=None):
+                return {"reason": "hub-unreachable"}
+
+        dep._transport = _Transport()
+        orig = self.mod.ZmemMemoryProvider._tool_session_start
+        out = json.loads(orig(dep, {"namespace": "user:global",
+                                    "session_id": "s1"}))
+        self.assertIsInstance(out, dict)
+        self.assertIn(out.get("reason"),
+                      ("hub-unreachable", "empty-pool", "envelope-error"))
+
+    def test_remote_mode_ok_envelope_no_rendered_does_not_raise(self):
+        dep = self.dep
+        dep._remote_active = lambda: True
+
+        class _Transport:
+            def session_start(self, ns, session_id, lane=None, limit=None):
+                return {"ok": True, "ids": [], "omitted": 1}
+
+        dep._transport = _Transport()
+        orig = self.mod.ZmemMemoryProvider._tool_session_start
+        out = json.loads(orig(dep, {"namespace": "user:global",
+                                    "session_id": "s1"}))
+        self.assertIsInstance(out, dict)
+        # The envelope carries omitted=1, a legitimate store-side silent
+        # reason: the ladder keeps it (no transport classification).
+        self.assertEqual(out.get("reason"), "omitted")
+
 
 if __name__ == "__main__":
     unittest.main()
