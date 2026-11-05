@@ -199,7 +199,8 @@ class TestRejectionExtraction(unittest.TestCase):
             details, rejections = store._failures_from_transcript(path)
             # The malformed id's failure is still detected (tool name unknown),
             # and the normal rejection is extracted; no crash.
-            self.assertEqual(details, [{"tool": "?", "error": "boom"}])
+            self.assertEqual(details, [{"tool": "?", "error": "boom",
+                                 "command": "", "path": ""}])
             self.assertEqual(len(rejections), 1)
             self.assertEqual(rejections[0]["tool"], "Edit")
             self.assertEqual(rejections[0]["reason"], "no need")
