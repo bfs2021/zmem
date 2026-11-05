@@ -4281,6 +4281,11 @@ class ZmemMemoryProvider(MemoryProvider):
             ), timing=timing)
             elapsed = timing.get("t_ms", 0)
             payload = _decode_rendered_envelope(result)
+            # Issue #435 (provider twin): a store child that SUCCEEDED
+            # (ok) whose stdout never parses as a JSON dict is a corrupted
+            # output channel, not an empty pool. Track the shape so the
+            # reason ladder below can classify it as a transport failure.
+            envelope_error = False
             if payload is None:
                 # A legacy or mixed-version envelope without a rendered member
                 # still feeds the structured response and the decision line;
@@ -4289,11 +4294,19 @@ class ZmemMemoryProvider(MemoryProvider):
                 # rendering).
                 stdout = ((result.get("stdout") or "").strip()
                           if isinstance(result, dict) else "")
+                parsed_ok = False
                 try:
                     legacy = json.loads(stdout) if stdout else {}
+                    parsed_ok = True
                 except (TypeError, json.JSONDecodeError):
                     legacy = {}
                 payload = legacy if isinstance(legacy, dict) else {}
+                envelope_error = bool(
+                    stdout
+                    and isinstance(result, dict)
+                    and result.get("ok")
+                    and (not parsed_ok
+                         or not isinstance(legacy, dict)))
         rendered = payload.get("rendered")
         if not isinstance(rendered, str):
             rendered = ""
@@ -4325,6 +4338,12 @@ class ZmemMemoryProvider(MemoryProvider):
         allowed = reasons["INJECT_SILENT_REASONS"]
         if has_rendered:
             reason = reasons["INJECT_REASON_INJECTED"]
+        elif envelope_error:
+            # Issue #435: the zero-exit transport token — same
+            # classification as the hook body's ladder. Deliberately
+            # OUTSIDE the closed set (route c, mirroring store-error):
+            # the rewrite below must not fold it back into empty-pool.
+            reason = "envelope-error"
         else:
             budget_dropped = payload.get("budget_dropped", 0)
             if (isinstance(budget_dropped, bool)

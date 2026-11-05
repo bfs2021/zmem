@@ -1004,10 +1004,13 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
     # store-error joins the set at 0.139.0 (PR #427 closeout D-2b): a store
     # child that exited nonzero is a transport failure, not a retrieval
     # miss — counting it as missed would keep the old empty-pool line's
-    # headline effect under a new name.
+    # headline effect under a new name. envelope-error joins at this
+    # release (issue #435): the zero-exit twin — a child that exited zero
+    # with stdout that is not a JSON envelope is the same transport
+    # failure class, not a healthy no-match.
     disabled_lines = [ln for ln in lines if ln.get("reason") in (
         "disabled", "protocol-incompatible", "deadline-exceeded",
-        "store-error")]
+        "store-error", "envelope-error")]
     decision_ts = [ln["ts"] for ln in lines]
     period = [min(decision_ts), max(decision_ts)] if decision_ts else None
     sid_lines = sum(1 for ln in lines if ln.get("sid") is not None)
@@ -1215,7 +1218,8 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
                     lo <= ln["ts"] <= hi
                     and (ln.get("sid") == f_sid
                          or ln.get("sid") in (None, "unknown"))
-                    and ln.get("reason") == "store-error"
+                    and ln.get("reason") in ("store-error",
+                                             "envelope-error")
                     for ln in disabled_lines):
                 counts_disabled_store_error += 1
         else:
@@ -1330,19 +1334,23 @@ def run_miss_report(store_path, db_path=None, transcripts=(),
             caveats.append(
                 f"{counts_disabled_store_error} failure(s) fell in "
                 "store-transport-failure windows (bg-log reason=store-error"
-                " — the store child exited nonzero, e.g. a partial-upgrade"
-                " store rejecting an unknown hook flag); excluded from "
-                "miss_rate and miss_rate_strict_sid. Fix the store "
-                "transport — this is not a retrieval miss and not the "
-                "inject switch.")
+                " or reason=envelope-error — the store child exited "
+                "nonzero, e.g. a partial-upgrade store rejecting an "
+                "unknown hook flag, or exited zero with stdout that is "
+                "not a JSON envelope, a corrupted output channel); "
+                "excluded from miss_rate and miss_rate_strict_sid. Fix "
+                "the store transport — this is not a retrieval miss and "
+                "not the inject switch.")
     if disabled_lines and not counts["disabled"]:
         _se_lines = sum(1 for ln in disabled_lines
-                        if ln.get("reason") == "store-error")
+                        if ln.get("reason") in ("store-error",
+                                                "envelope-error"))
         if _se_lines:
             caveats.append(
                 f"{_se_lines} store-transport-failure decision line(s) "
-                "(reason=store-error) present in the bg log, but no "
-                "examined failure fell inside those windows.")
+                "(reason=store-error or reason=envelope-error) present "
+                "in the bg log, but no examined failure fell inside "
+                "those windows.")
         if len(disabled_lines) - _se_lines:
             caveats.append(
                 f"{len(disabled_lines) - _se_lines} deliberate-silence "
