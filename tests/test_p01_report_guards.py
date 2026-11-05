@@ -418,15 +418,19 @@ class WalResidueTest(_ReportCase):
     """Guardrail 2: the residue path the frozen checks never reach."""
 
     def _make_residue(self):
-        """Leave -wal/-shm beside the store, exactly as the shipped
-        `store.py source-exists` read-only command does."""
+        """Leave -wal/-shm beside the store. PR #422 (issue #345): the
+        shipped `store.py source-exists` read is shallow now and creates
+        nothing by design, so the fixture writes the residue directly
+        instead of relying on the probe's old bare mode=ro side-effect."""
         r = self._run_cli("source-exists", "--namespace", "project:p01guard",
                           "--source-ref", "guard")
         self.assertEqual(r.returncode, 0, r.stderr)
         store = Path(self.tmp, "store.sqlite")
+        Path(str(store) + "-wal").write_bytes(b"")
+        Path(str(store) + "-shm").write_bytes(b"")
         self.assertTrue(Path(str(store) + "-wal").exists(),
-                        "fixture precondition: source-exists must leave "
-                        "-wal residue, else this test proves nothing")
+                        "fixture precondition: residue must exist, else "
+                        "this test proves nothing")
 
     def test_residue_path_is_read_only_and_correctly_tiered(self):
         self._write_log([
@@ -518,6 +522,11 @@ class StoreErrorContractTest(_ReportCase):
         r = self._run_cli("source-exists", "--namespace", "project:p01guard",
                           "--source-ref", "guard")
         self.assertEqual(r.returncode, 0, r.stderr)
+        # PR #422 (issue #345): the shallow probe creates nothing by design;
+        # write the residue the staging path keys on directly.
+        store = Path(self.tmp, "store.sqlite")
+        Path(str(store) + "-wal").write_bytes(b"")
+        Path(str(store) + "-shm").write_bytes(b"")
 
     def _write_one_line(self):
         self._write_log([
