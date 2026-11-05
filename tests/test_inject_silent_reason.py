@@ -491,7 +491,11 @@ class StorelibClassifierContractTests(unittest.TestCase):
 
 class HookBodyBareListEnvelopeTest(unittest.TestCase):
     """A pre-v13 store.py that prints a BARE LIST (not the v13 envelope)
-    classifies as empty-pool — omitted=0 because there was no envelope."""
+    classifies as envelope-error (issue #435): zero-exit stdout that is
+    not a JSON dict envelope is the version-skew transport class — the
+    pre-#435 empty-pool classification masqueraded a legacy/foreign
+    channel as a healthy no-match. omitted stays 0 (no envelope was
+    read); miss-rate excludes the token as transport."""
 
     def test_6_bare_list_empty_is_empty_pool(self):
         tmp = tempfile.mkdtemp(prefix="zmem-silent-bare-")
@@ -521,8 +525,9 @@ class HookBodyBareListEnvelopeTest(unittest.TestCase):
             ctx = json.loads(r.stdout.strip()).get("additionalContext", "")
             self.assertEqual(ctx, "")
             line = _read_last_hook_line(tmp)
-            self.assertIn("status=silent reason=empty-pool", line)
+            self.assertIn("status=silent reason=envelope-error", line)
             self.assertNotIn("reason=omitted", line)
+            self.assertNotIn("reason=empty-pool", line)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
