@@ -139,6 +139,11 @@ class FeedbackCase(unittest.TestCase):
         r = self._run_cli("source-exists", "--namespace", "project:p01fb",
                           "--source-ref", "feedback")
         self.assertEqual(r.returncode, 0, r.stderr)
+        # PR #422 (issue #345): the source-exists probe is a shallow
+        # read-only open now and creates nothing by design — build the
+        # residue the staging path keys on directly instead of relying on
+        # the probe's old bare mode=ro side-effect.
+        Path(str(Path(self.tmp) / "store.sqlite") + "-wal").write_bytes(b"")
         self.assertTrue(Path(str(Path(self.tmp) / "store.sqlite") + "-wal").exists())
 
 
