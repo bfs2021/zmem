@@ -126,20 +126,30 @@ class CounterLockTest(unittest.TestCase):
         self.assertEqual(obj.get("filtered_trivial"), 3)
 
     def test_orphaned_lock_is_reclaimed(self):
+        # Final-critic round 1 F1: the holder must be a REAL process that
+        # existed and died (a never-existed pid raises on every platform
+        # and hides a Windows-dead liveness probe — construction theater).
+        import subprocess as _sp
+        import sys as _sys
+        holder = _sp.Popen(
+            [_sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        holder.wait() if False else holder.terminate()
+        holder.wait(timeout=10)
         key = hashlib.sha256(b"s-orphan").hexdigest()[:32]
         ring = _ring(self._tmp)
         ring.mkdir(parents=True, exist_ok=True)
         lock = ring / ("." + key + ".filtered.lock")
-        # Aged 60 s, holder pid provably dead (pid 1 is not this process;
-        # os.kill on a dead-or-foreign pid raises OSError on POSIX and is
-        # refused on Windows builds where the age+token path applies).
-        lock.write_text("999999:deadbeef", encoding="ascii")
+        lock.write_text("%d:deadbeef" % holder.pid, encoding="ascii")
         old = time.time() - 60.0
         os.utime(lock, (old, old))
         out = _run_hook(self._tmp, "s-orphan", "a1", _TRIVIALS[:1])
         self.assertNotIn("additionalContext", out)
         obj = _counter(self._tmp, "s-orphan")
-        self.assertIsNotNone(obj)
+        self.assertIsNotNone(
+            obj,
+            "an orphaned lock (real dead holder, aged) must be reclaimed "
+            "and the increment must land")
         self.assertEqual(obj.get("filtered_trivial"), 1)
 
     def test_live_holder_past_grace_is_not_reclaimed(self):

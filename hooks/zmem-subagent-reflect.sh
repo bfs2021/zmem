@@ -268,13 +268,16 @@ import tempfile  # noqa: E402
 import time  # noqa: E402
 import uuid  # noqa: E402
 _classify = None
+_process_alive = None
 try:
     _scripts_dir2 = os.path.dirname(store_py)
     if _scripts_dir2 not in sys.path:
         sys.path.insert(0, _scripts_dir2)
     from capture_quality import classify_failure as _classify
+    from host import process_alive as _process_alive
 except Exception:
     _classify = None
+    _process_alive = None
 
 def _verdict(d):
     v = d.get("verdict") if isinstance(d, dict) else None
@@ -326,26 +329,26 @@ if count > 0 and trivial_count == count and not rej_msg:
                     continue
                 age = time.time() - lock_stat.st_mtime
                 if age > 5.0:
-                    # Reclaim only when the holder is provably dead: the
-                    # recorded pid is gone (or not our recorded token
-                    # anymore — re-read immediately before unlinking).
+                    # Reclaim only when the holder is provably dead. The
+                    # liveness probe is host.process_alive — raw os.kill is
+                    # NOT a Windows liveness probe (signal 0 maps to
+                    # GenerateConsoleCtrlEvent and returns None for a
+                    # killed-but-unreaped holder, misclassifying it alive;
+                    # final-critic round 1 F1). Uncertain (None) fails
+                    # closed toward NOT reclaiming (a live-but-slow writer
+                    # is never broken into), and the owner token is
+                    # re-read immediately before the unlink.
                     try:
                         holder_pid = int(str(lock_text).split(":", 1)[0])
                     except (ValueError, AttributeError):
                         holder_pid = -1
-                    holder_alive = False
-                    try:
-                        if holder_pid > 0:
-                            os.kill(holder_pid, 0)
-                            holder_alive = True
-                    except OSError:
-                        holder_alive = False
-                    except AttributeError:
-                        # Windows os.kill(pid, 0) raises AttributeError on
-                        # some builds; treat as provably dead only when the
-                        # token matches what we just read.
-                        holder_alive = False
-                    if not holder_alive and age > 5.0:
+                    holder_alive = None
+                    if holder_pid > 0 and _process_alive is not None:
+                        try:
+                            holder_alive = _process_alive(holder_pid)
+                        except Exception:
+                            holder_alive = None
+                    if holder_alive is False and age > 5.0:
                         try:
                             if open(lock_path, "r",
                                     encoding="ascii").read() == lock_text:

@@ -269,6 +269,70 @@ class RefreshRefusalBackoffTest(_Base):
             fsnap.stamp_present(self.env),
             "the stamp must stay armed while every refresh keeps failing")
 
+    def test_hub_answered_refusal_backs_off_despite_fresh_pair(self):
+        # The reconciled refused-arm (final-critic round 1 F3): a fresh
+        # pair plus a hub-ANSWERED refusal (poisoned payload) suppresses
+        # re-fetches — the transport eager-retry exemption must NOT cover
+        # hub-answered refusals. Pins the arm protecting the original
+        # #437 complaint (per-moment re-fetch + scratch rebuild).
+        import json as _json
+        from storelib.schema import init_db, migrate
+
+        src = os.path.join(self._tmp, "src-fresh.sqlite")
+        conn = sqlite3.connect(src)
+        try:
+            init_db(conn)
+            migrate(conn)
+        finally:
+            conn.close()
+        env = dict(self.env)
+        fsnap.build_snapshot(source_store=src, env=env, revision=1)
+        fsnap.write_stamp(env)  # arm the transition so refreshes fire
+
+        class _RefusingHttp:
+            def __init__(self):
+                self.calls = 0
+
+            def snapshot(self, deadline_ms=None):
+                self.calls += 1
+                return {"ok": False, "error": "hub answered refusal"}
+
+        http = _RefusingHttp()
+        for _ in range(3):
+            fsnap._maybe_refresh(http, env, None)
+        self.assertLessEqual(
+            http.calls, 1,
+            "a hub-ANSWERED refusal with a fresh pair must back off too "
+            "(%d attempts for 3 live moments)" % http.calls)
+        self.assertTrue(
+            fsnap.stamp_present(env),
+            "the stamp must stay armed while the refusal persists")
+
+    def test_non_dict_marker_fails_open(self):
+        # Final-critic round 1 F2: a backoff marker holding valid JSON
+        # that is not an object (torn/foreign write) must fail OPEN — the
+        # refresh attempts normally instead of raising AttributeError
+        # into the caller's blanket except and wedging every later
+        # refresh.
+        import json as _json
+        marker = fsnap._snapshot_paths(self.env)[1].parent / \
+            "refresh-backoff.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        for bad in ("[1, 2, 3]", '"x"', "5", "null"):
+            marker.write_text(bad, encoding="utf-8")
+            http = self._CountingRaisingHttp()
+            fsnap.write_stamp(self.env)
+            # Must not raise for ANY of the shapes; the attempt happens
+            # (calls >= 1 proves no wedge), and the refusal is named.
+            buf = io.StringIO()
+            with redirect_stderr(buf):
+                accepted = fsnap._maybe_refresh(http, self.env, None)
+            self.assertFalse(accepted)
+            self.assertGreaterEqual(
+                http.calls, 1,
+                "a %s marker must fail open to an attempt, not wedge" % bad)
+            self.assertIn("hub-unreachable", buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

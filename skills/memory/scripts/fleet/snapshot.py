@@ -670,6 +670,13 @@ def _maybe_refresh(http: Any, env: dict[str, str],
     marker = _snapshot_paths(env)[1].parent / "refresh-backoff.json"
     try:
         backoff = json.loads(marker.read_text(encoding="utf-8"))
+        if not isinstance(backoff, dict):
+            # Valid JSON that is not an object (a torn or foreign write)
+            # must fail OPEN exactly like unparseable bytes — a non-dict
+            # raises AttributeError from .get below and would wedge every
+            # subsequent refresh inside the caller's blanket except
+            # (final-critic round 1 F2).
+            raise ValueError("backoff marker is not a JSON object")
         failed_at = float(backoff.get("failed_at", 0) or 0)
         failure_kind = str(backoff.get("kind") or "")
     except (OSError, ValueError, TypeError):

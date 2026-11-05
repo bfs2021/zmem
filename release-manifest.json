@@ -1,6 +1,6 @@
 {
   "algorithm": "sha256-crlf-norm",
-  "digest": "f24748c26f9f96fd697fce1520c721a1213c26ceceab45905276313df91e6821",
+  "digest": "ae638795b899ffd804bfdf1487c16ffcf37f45e1e09d16f6ff2d36e7116b7f16",
   "files": {
     ".agents/plugins/marketplace.json": "926cce26a68d13b700395cd4a24175921d9b158ab5c46d4b375e686b4e75b40f",
     ".claude-plugin/marketplace.json": "cc45d65b9b2b7c6f49391753124c88099e0701b55ab52b9d458cf5496c68b894",
@@ -55,7 +55,7 @@
     "hooks/zmem-session-end.sh": "19e3e99b639cdaee2e4ea88c7c5d20f9fe591add01826b5eb9f1988deb8dc830",
     "hooks/zmem-session-start.sh": "7340cb3f9c0ef37a2ee8ff9bdabf33ea9d555ee7d2d7cfe63f75af1f999fd2dd",
     "hooks/zmem-subagent-recall.sh": "6583c49f292b03b943e7501d7a000921fa8e99dce9a6958cfd2feae65fcb0474",
-    "hooks/zmem-subagent-reflect.sh": "7e5e2a926448468062c3466a296fcffcc79decc6916e9ef70c7d9e8a8789310e",
+    "hooks/zmem-subagent-reflect.sh": "a094f009d264490686be35592963d2d5d8ad30f56fba83088c7ea2c972e03a9a",
     "marketplace.json": "eaf527981141ebffecfdf34a0790bebeb01636f4d7fbe70b581c22a326872582",
     "scripts/bench_hook_latency.py": "ed77a76b54b97faab045c90a04acb3673651b3243967f1ebb6833c631e1b16be",
     "scripts/canary-schema.json": "63218125b9a09d88be1153fd450f397035804dd56d2a9637faff3e06edc939c0",
@@ -97,7 +97,7 @@
     "skills/memory/scripts/fleet/broker_cli.py": "3fff83f4fe59922cb3b5bedc4ad7fa4e0fdec25c506e3ba584f95754efba6e2d",
     "skills/memory/scripts/fleet/map_perms.py": "0a2b4f4ab7c9dd274ff24f63ddc0717338ea85e691fcb8673e041e6104a2aab3",
     "skills/memory/scripts/fleet/opqueue.py": "a42444214c5a8dbe3237f103b83677c2b923896caff14b9ace7a52de4dbaf650",
-    "skills/memory/scripts/fleet/snapshot.py": "9964fbd5589afcb951b8b3c07f1d2589987f1278849571dcd1b89aa861a3fe49",
+    "skills/memory/scripts/fleet/snapshot.py": "91b22530612ea3d74743e9945926753b91a0d8d313387477aa0b3b644d925816",
     "skills/memory/scripts/fleet/transport.py": "f321dc5682f82317f18158b4fa624594fdaefd0abbd0beef79568bca8a53b818",
     "skills/memory/scripts/history_mining.py": "83cf4930a502fb581818ef174a17753bc525e28e7295cf7d3d48292ca42f6672",
     "skills/memory/scripts/host.py": "a44b9b783c0c681e9674f32ad8a18a6f7e6c7b1de0c017902848b4b977950465",
