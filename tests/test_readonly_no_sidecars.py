@@ -2,7 +2,8 @@
 
 Covers storelib.readonly.open_readonly (arm A immutable / arm B private
 residue copy), the converted cli and doctor surfaces end to end (query-rewrite
-included, shallow mode), and the load-bearing reason the deliberately-kept
+on the default snapshot arm; the hook's source-exists probes shallow), and
+the load-bearing reason the deliberately-kept
 WAL-aware opens (source scans and the other documented keeps) are NOT
 converted: a plain ``mode=ro`` connection sees
 committed-but-uncheckpointed WAL rows, and those surfaces need exactly that.

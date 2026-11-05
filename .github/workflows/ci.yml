@@ -707,7 +707,11 @@ jobs:
   # CI input; the test itself never installs or downloads it.
   test-source-hermes:
     name: test-source-hermes
-    runs-on: ubuntu-latest
+    # Pinned image (PR #422 CI round): the rolling ubuntu-latest image moved
+    # to Ubuntu 26.04, where setup-python has no 3.14.5 build (the manifest
+    # carries only 22.04-labeled linux builds) and the REQUIRED job dies at
+    # setup in ~14s before running anything.
+    runs-on: ubuntu-24.04
     # Successful-run max 1.4 min; 15 = floor covering checkout/install variance.
     timeout-minutes: 15
     permissions:

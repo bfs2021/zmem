@@ -1654,14 +1654,18 @@ def cmd_query_rewrite(*, prompt: str, session_id: str, namespace: str) -> int:
     try:
         if _schema_host is not None:
             _schema_host.assert_local_fs(STORE_PATH.parent)
-        # Sidecar-free (issue #345 AC1) AND shallow (PR #422 422R-007): the
-        # bare mode=ro open previously materialized a 0-byte -wal on every
-        # prompt — persistent residue that routed every later read-only open
-        # to the copy arm. Shallow: quiesced stores take the immutable arm
-        # (no sidecars); a residue store refuses (ReadOnlyStoreError) and
-        # query-rewrite fails open below, like its other probe failures —
-        # advisory surface, never a store-sized copy per prompt.
-        handle = _readonly_store.open_readonly(STORE_PATH, shallow=True)
+        # Sidecar-free (issue #345 AC1) via the WAL-aware helper: the bare
+        # mode=ro open previously materialized a 0-byte -wal on every prompt
+        # — persistent residue that routed every later read-only open to the
+        # copy arm (PR #422 422R-007). Default arm (NOT shallow): the CI
+        # #183 contract pins live-committed visibility on a residue store —
+        # the quiesced store takes the immutable arm (no sidecars, no
+        # staging), and a residue store reads a private staged snapshot,
+        # which sees committed-but-uncheckpointed rows. (The interim shallow
+        # choice refused there and broke test_live_wal_reader_sees_only_
+        # committed_latest_edit; the per-prompt snapshot cost on residue
+        # stores is the accepted 422R-006 class.)
+        handle = _readonly_store.open_readonly(STORE_PATH)
         conn = handle.conn
         conn.execute("BEGIN")
         if not _query_rewrite_has_evidence(conn):

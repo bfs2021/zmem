@@ -19,10 +19,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   lock-observable open on non-WAL stores and fails closed with the
   documented expiry read error on residue stores (the #342 contract,
   oracle-pinned); the doctor report's other opens read a disclosed private
-  snapshot on residue stores. Query-rewrite and the
+  snapshot on residue stores. The
   session-start hook's source-exists probes read through the same helper in
   shallow mode (residue refuses instead of staging a copy), as do backup's
-  integrity check and import-store's source open. Surfaces that deliberately
+  integrity check and import-store's source open; query-rewrite uses the
+  helper's default arm (quiesced stores open sidecar-free; residue stores
+  read a private staged snapshot, preserving the #183 live-committed
+  visibility contract). Surfaces that deliberately
   need live WAL rows (page refresh, source scans, write-intent guards,
   mining/metrics/snapshot builders, decision_report/rekey) are unchanged and
   pinned by a live-visibility test.
