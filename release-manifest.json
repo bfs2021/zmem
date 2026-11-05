@@ -1,6 +1,6 @@
 {
   "algorithm": "sha256-crlf-norm",
-  "digest": "749bbf10754b215f83e231c7e9493638a63f97b45e4a0d813a13ed65ff12c3d2",
+  "digest": "72203cabef033456fde42cfa90b3df06c749e236c1100e044d0e386e9cfd08cc",
   "files": {
     ".agents/plugins/marketplace.json": "688c84dda06573a334cca987213c1fb4f492168278e7389eddfc37ac42e6648c",
     ".claude-plugin/marketplace.json": "85d76807f1c190d110806681741ff00ab26775db65a4b56981b60e5ea090cd10",
@@ -109,7 +109,7 @@
     "skills/memory/scripts/storelib/__init__.py": "a0935a47debc89e06f9b8f82c830870ed8ba3c898503b8759757aab9a47aa99a",
     "skills/memory/scripts/storelib/backup.py": "cd1b452fd3f3781bc02d57773542b127e31e817f5879b8cf95901c3d38451d29",
     "skills/memory/scripts/storelib/beliefs.py": "ebfc03f9be2b12cddfbad0185b0348406d924d04b2a704b1aebe595048d6ddb4",
-    "skills/memory/scripts/storelib/cli.py": "c2cfe279a5ad1580ba47a0eb2cc170eaec616af27fea3f5e1fb85b1c8d51a4b5",
+    "skills/memory/scripts/storelib/cli.py": "7b7a59afa5927d87dafa6738e84e1790486b8c59e3a9ba3f66f73507f07ee2b0",
     "skills/memory/scripts/storelib/config.py": "36448a1f80cdfc60b5ddd101a679a166f1522ad1e2eb3555139bac351ec7fc38",
     "skills/memory/scripts/storelib/consolidate.py": "f4f30c9d7dcf69cdc17a01235af56f87918000f630c53cc377d28979f72fae82",
     "skills/memory/scripts/storelib/cross_encoder.py": "548b8292ed7c1e0545e3d1d85d10987dca3ff37ac555cff459168230bb1af023",
