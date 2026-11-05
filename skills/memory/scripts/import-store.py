@@ -198,13 +198,19 @@ def _stash_dest_sidecars(dest_store: Path) -> list[tuple[Path, Path]]:
     return stashed
 
 
-def _open_source_readonly(source_store: Path) -> sqlite3.Connection:
-    """Open the source STRICTLY read-only (mode=ro URI + query_only=1)."""
-    src_uri = source_store.resolve().as_uri() + "?mode=ro"
-    conn = sqlite3.connect(src_uri, uri=True)
-    conn.execute("PRAGMA query_only=1")
-    conn.row_factory = sqlite3.Row
-    return conn
+def _open_source_readonly(source_store: Path):
+    """Open the source STRICTLY read-only and sidecar-free (issue #345 AC1).
+
+    Routes through ``storelib.readonly.open_readonly``: a quiesced store
+    takes the immutable arm (no ``-wal``/``-shm`` materialized in the
+    source's directory — the old bare ``?mode=ro`` open created them), a
+    residue store takes a private snapshot copy. Returns the proxying
+    ``ReadOnlyHandle`` — connection attribute access forwards, and
+    ``close()`` also removes any staging directory.
+    """
+    from storelib.readonly import open_readonly  # noqa: PLC0415
+
+    return open_readonly(source_store)
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:

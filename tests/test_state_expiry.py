@@ -14,7 +14,13 @@ BEFORE importing storelib (the operator store is never opened) and passes
 """
 
 from __future__ import annotations
-import _store_guard  # noqa: F401  (issue #244 isolation guard)
+# Pin the store env BEFORE the isolation guard (PR #422 review 422R-014).
+import os as _os
+import tempfile as _tempfile
+_PIN_DIR = _tempfile.mkdtemp(prefix="zmem-state-expiry-pin-")
+_os.environ["ZMEM_STORE"] = _os.path.join(_PIN_DIR, "store.sqlite")
+_os.environ["ZMEM_DATA"] = _PIN_DIR
+import _store_guard  # noqa: F401,E402  (issue #244 isolation guard)
 
 import atexit
 import contextlib
@@ -1439,6 +1445,73 @@ class ReviewFixTest(_StoreCase):
         kinds = [json.loads(l)["kind"]
                  for l in out.read_text(encoding="utf-8").splitlines() if l.strip()]
         self.assertEqual(kinds, ["memory"])
+
+
+class Issue174FixtureDigestPinTest(unittest.TestCase):
+    """Tamper evidence for the four issue-#174 fixtures (issue #346).
+
+    The SHA-256 pins for expiry-input.jsonl / expiry-golden.json and
+    classify.json / classify-expected.json previously lived only inside
+    their generators, so a hand-edited fixture passed unnoticed. Here they
+    are pinned test-side (the repo norm; the #173 pair above is the
+    reference shape), and BOTH generators are executed in their verify
+    modes: asof's default argv-less mode re-derives and byte-compares the
+    committed pair, state's --check regenerates into a throwaway dir and
+    byte-compares. An edit to any of the four files now fails this suite.
+    """
+
+    ASOF_DIR = Path(__file__).resolve().parent / "fixtures" / "asof"
+
+    def test_issue174_fixture_digests_are_pinned(self):
+        import hashlib
+
+        digests = {
+            # asof pair (generator pins at make_fixtures.py:51-53)
+            ("asof", "expiry-input.jsonl"):
+                "160db65a118bfd72b93c756722e03e81fb3f8caeeacbcafe208a93be4533a20e",
+            ("asof", "expiry-golden.json"):
+                "a2218a14e0ea53e645afb59f32b4167b9a4ed09b44d699cad07d6da575cd56d0",
+            # state classify pair (generator pins at make_fixture.py:88-91)
+            ("state", "classify.json"):
+                "cb8ac84e2c6de8a07c5b33e93fc622888043bd7adcb457a010779d2a8f1cf09f",
+            ("state", "classify-expected.json"):
+                "96aa07f7063045e122d6810c89544c6131ea37cedf19299d5dd526b2db053329",
+        }
+        base = {"asof": self.ASOF_DIR, "state": FIXTURE_DIR}
+        for (family, name), want in digests.items():
+            got = hashlib.sha256(
+                (base[family] / name).read_bytes()).hexdigest()
+            self.assertEqual(
+                got, want,
+                f"{family}/{name} digest drift — regenerate deliberately "
+                "with the family generator and update this pin in the same "
+                "commit")
+
+    def test_issue174_generators_verify_committed_bytes(self):
+        import subprocess as sp
+
+        # asof: default argv-less mode verifies the committed pair against
+        # the pinned digests and refuses to overwrite on drift (exit 1).
+        proc = sp.run(
+            [sys.executable, "-X", "utf8",
+             str(self.ASOF_DIR / "make_fixtures.py")],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            capture_output=True, text=True, timeout=300)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("verified", proc.stdout)
+        self.assertIn("expiry-input.jsonl", proc.stdout)
+        self.assertIn("expiry-golden.json", proc.stdout)
+        # state: --check regenerates into a throwaway dir and byte-compares
+        # all four state-dir fixtures (both the #173 and #174 pairs).
+        proc2 = sp.run(
+            [sys.executable, "-X", "utf8",
+             str(FIXTURE_DIR / "make_fixture.py"), "--check"],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            capture_output=True, text=True, timeout=300)
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+        self.assertIn("verified", proc2.stdout)
+        self.assertIn("classify.json", proc2.stdout)
+        self.assertIn("classify-expected.json", proc2.stdout)
 
 
 if __name__ == "__main__":
