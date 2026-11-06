@@ -135,6 +135,106 @@ class HookStoreErrorReasonTest(unittest.TestCase):
         self.assertNotIn(" reason=store-error", line)
 
 
+class ZeroExitTransportTest(unittest.TestCase):
+    """Issue #435 AC2: a store child that exits 0 but does not answer with a
+    JSON dict envelope is a TRANSPORT failure, not a healthy no-match.
+
+    At base the stdout parse gate swallows non-dict stdout into
+    ``envelope = {}`` and the reason ladder falls through to
+    ``reason=empty-pool`` -- indistinguishable from an empty pool. The frozen
+    post-fix contract: such a child logs the single token
+    ``reason=envelope-error`` (never ``empty-pool``), while a VALID dict
+    envelope with no reason and nothing rendered stays ``empty-pool`` (the
+    healthy no-match shape from the selector).
+
+    Stub bodies are deliberately backslash-free (Git-Bash heredoc safety).
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp(prefix="zmem-hook-envelope-error-")
+        self.addCleanup(_rmtree, self._tmp)
+        self.env = _clean_env(self._tmp)
+
+    def _run_body(self, store_py: Path):
+        return subprocess.run(
+            [sys.executable, str(BODY), str(store_py), "project:stub",
+             "25000", "user_prompt"],
+            input=json.dumps({"prompt": "anything", "session_id": "s1"}),
+            capture_output=True, text=True, env=self.env, timeout=120,
+        )
+
+    def test_zero_exit_non_json_stdout_is_envelope_error(self):
+        stub = Path(self._tmp) / "store_stub.py"
+        stub.write_text("print('store child says hello, not json')\n",
+                        encoding="utf-8")
+        r = self._run_body(stub)
+        # Fail-open: the hook still exits 0 and emits an envelope.
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = _last_hook_line(self._tmp)
+        self.assertIn(" reason=envelope-error", line)
+        self.assertNotIn(" reason=empty-pool", line)
+
+    def test_zero_exit_json_non_dict_stdout_is_envelope_error(self):
+        # Valid JSON, but not a dict envelope (e.g. a list) -- the child
+        # succeeded as a process while its output channel was not an
+        # envelope. Same transport token as the non-JSON shape.
+        stub = Path(self._tmp) / "store_stub.py"
+        stub.write_text("import json\nprint(json.dumps([1, 2]))\n",
+                        encoding="utf-8")
+        r = self._run_body(stub)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = _last_hook_line(self._tmp)
+        self.assertIn(" reason=envelope-error", line)
+        self.assertNotIn(" reason=empty-pool", line)
+
+    def test_zero_exit_healthy_envelope_keeps_empty_pool(self):
+        # The changed arm guards the unchanged one: a dict envelope with no
+        # reason and nothing rendered is the healthy no-match shape and must
+        # stay reason=empty-pool.
+        stub = Path(self._tmp) / "store_stub.py"
+        stub.write_text(
+            "import json\n"
+            "print(json.dumps({'ok': True, 'results': [], 'reason': ''}))\n",
+            encoding="utf-8")
+        r = self._run_body(stub)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = _last_hook_line(self._tmp)
+        self.assertIn(" reason=empty-pool", line)
+        self.assertNotIn(" reason=envelope-error", line)
+        self.assertNotIn(" reason=store-error", line)
+
+
+class EnvelopeErrorReaderParityTest(unittest.TestCase):
+    """Issue #435 AC3 (the additive leg; the store-error reader-parity replay
+    stays in HookStoreErrorReasonTest): the ``envelope-error`` token must
+    parse through the decision-log reader with the reason field intact.
+
+    The reader's reason slot is a single ``\\S+`` token, so a synthesized
+    post-fix writer line (the exact emitted field shape: status, reason,
+    ids/all, sid, moment) must come back as-is with NO reader change. This
+    pins that parity now, ahead of the writer wiring."""
+
+    def test_envelope_error_line_parses_through_reader(self):
+        with tempfile.TemporaryDirectory(
+                prefix="zmem-envelope-error-reader-") as tmp:
+            path = Path(tmp) / "zmem-decisions.log"
+            ts = 1770000000
+            path.write_text(
+                "[%d] zmem-hook status=silent reason=envelope-error"
+                " ids=[] all=[] sid=s1 moment=user_prompt\n" % ts,
+                encoding="utf-8")
+            sys.path.insert(0, str(SCRIPTS))
+            try:
+                from storelib.miss_rate import parse_bg_log
+            finally:
+                sys.path.pop(0)
+            rows = parse_bg_log(path)
+        self.assertTrue(rows)
+        self.assertEqual(rows[-1]["reason"], "envelope-error")
+        self.assertEqual(rows[-1]["sid"], "s1")
+        self.assertEqual(rows[-1]["moment"], "user_prompt")
+
+
 def _rmtree(path: str) -> None:
     import shutil
     shutil.rmtree(path, ignore_errors=True)

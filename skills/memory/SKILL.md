@@ -527,9 +527,12 @@ Silent reasons are exactly `empty-pool`, `omitted`, `below-bar`, `budget-drop`,
 `below-relevance`, `already-delivered`, and `expired` (`expired` names a pool
 that was eligible before the live-expiry gate drained it — issue #174's
 producer; every other condition keeps its precedence). The decision line can
-additionally carry the hook-side transport token `reason=store-error` — a
-store child that exited nonzero (e.g. a partial-upgrade store rejecting an
-unknown flag); miss-rate reporting excludes it from the missed count like the
+additionally carry the transport tokens `reason=store-error` — a store
+child that exited nonzero (e.g. a partial-upgrade store rejecting an
+unknown flag) — and `reason=envelope-error` — a store child that exited
+zero whose stdout was not a JSON envelope (issue #435); both are emitted
+by the hook body and the hermes-provider lane, and miss-rate reporting
+excludes both from the missed count like the
 other negotiation refusals. `reason=injected` is a
 successful decision and `reason=disabled` is the separate kill-switch marker.
 

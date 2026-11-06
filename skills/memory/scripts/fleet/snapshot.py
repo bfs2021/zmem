@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -543,12 +544,49 @@ def _build_from_payload(payload: dict, env: dict[str, str]) -> Path:
     return result
 
 
+_REFUSAL_LINE_CHARS = 200
+
+
+def _refuse_refresh(refusal_class: str, detail: object) -> None:
+    """Issue #437: one bounded stderr line naming the refresh refusal
+    class (broker.py's PRR-009 pattern). The detail is normalized to one
+    line BEFORE the cap so hub-exception newlines cannot split it; the
+    write is guarded so a closed stderr never breaks the fail-open ladder.
+    """
+    try:
+        text = " ".join(str(detail or "").split())
+        if len(text) > _REFUSAL_LINE_CHARS:
+            text = text[:_REFUSAL_LINE_CHARS]
+        print("[zmem] snapshot refresh refused (%s): %s"
+              % (refusal_class, text), file=sys.stderr)
+    except Exception:
+        pass
+
+
+_BACKOFF_KIND_TRANSPORT = "transport"
+_BACKOFF_KIND_REFUSED = "refused"
+
+
+def _write_backoff_marker(env: dict[str, str], kind: str) -> None:
+    """Best-effort failure marker for the refresh backoff (issue #437);
+    never raises, never blocks the ladder."""
+    try:
+        marker = _snapshot_paths(env)[1].parent / "refresh-backoff.json"
+        marker.write_text(
+            json.dumps({"failed_at": time.time(), "kind": kind}),
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _refresh(http: Any, env: dict[str, str],
              deadline_ms: int | None) -> bool:
     """Pull a fresh snapshot from the hub's `snapshot` tool."""
     try:
         payload = http.snapshot(deadline_ms=deadline_ms)
-    except Exception:  # noqa: BLE001 - refresh is best-effort
+    except Exception as exc:  # noqa: BLE001 - refresh is best-effort
+        _refuse_refresh("hub-unreachable", exc)
+        _write_backoff_marker(env, _BACKOFF_KIND_TRANSPORT)
         return False
     # Affirmative-success gate: every hub-ANSWERED refusal ({error: ...}
     # from the 64 MB cap, an unreadable store, a deadline response, or a
@@ -557,7 +595,26 @@ def _refresh(http: Any, env: dict[str, str],
     # clear the reconnect stamp while destroying a good pair.  Only an
     # explicit ok=True proceeds (a legitimately empty scoped store is
     # ok=True with rows == [] and IS a valid refresh).
+    #
+    # PR #441 review PRR-001/B1: the production transport (McpHttp
+    # snapshot) NEVER raises — every connect/timeout/hang failure
+    # returns a {ok: False, reason: <transport reason>} DICT, so the
+    # except arm above is dead in production and these dicts previously
+    # fell into the hub-refused arm: the operator line claimed the hub
+    # "answered", and kind=refused suppressed the eager reconnect even
+    # with a fresh pair. Route on the payload's OWN reason field: a
+    # transport reason (hub-unreachable | empty-pool executor-timeout or
+    # hang shape) is a transport failure — eager-retry class, label
+    # names the real cause; only a hub-ANSWERED refusal (error key, no
+    # transport reason) is kind=refused.
     if not isinstance(payload, dict) or payload.get("ok") is not True:
+        failure_reason = payload.get("reason") if isinstance(payload, dict) else None
+        if isinstance(failure_reason, str) and failure_reason:
+            _refuse_refresh("hub-unreachable", failure_reason)
+            _write_backoff_marker(env, _BACKOFF_KIND_TRANSPORT)
+            return False
+        _refuse_refresh("hub-refused", "hub answered without ok=True")
+        _write_backoff_marker(env, _BACKOFF_KIND_REFUSED)
         return False
     # Implementation-review round 1: a non-int-like payload_bytes raised
     # TypeError HERE — outside the _build_from_payload ValueError gate and
@@ -565,14 +622,28 @@ def _refresh(http: Any, env: dict[str, str],
     # degrade (keep the previous pair) rather than crashing the caller.
     try:
         _payload_bytes = int(payload.get("payload_bytes", 0))
-    except (TypeError, ValueError, OverflowError):
-        return False
+    except (TypeError, ValueError, OverflowError) as exc:
+        _refuse_refresh("payload-invalid", exc)
+        _write_backoff_marker(env, _BACKOFF_KIND_REFUSED)
+        return False  # hub-answered nonsense: operator/hub condition
     if _payload_bytes > MAX_SNAPSHOT_BYTES:
+        _refuse_refresh(
+            "payload-invalid",
+            "payload_bytes %d over cap %d" % (_payload_bytes,
+                                              MAX_SNAPSHOT_BYTES))
+        _write_backoff_marker(env, _BACKOFF_KIND_REFUSED)
         return False
     try:
         _build_from_payload(payload, env)
         return True
-    except (ValueError, OSError, sqlite3.Error):
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        # The id-gate ValueError text already names the offending row
+        # index and id value (issue #437 AC6). A BUILD failure is a
+        # transient LOCAL condition (torn scratch, locked db — PRR-010f):
+        # transport kind, so recovery is retried at the next moment
+        # instead of suppressing refresh for the whole interval.
+        _refuse_refresh("payload-invalid", exc)
+        _write_backoff_marker(env, _BACKOFF_KIND_TRANSPORT)
         return False
 
 
@@ -602,8 +673,53 @@ def _maybe_refresh(http: Any, env: dict[str, str],
     transition = stamp_present(env)
     if not stale and not transition:
         return False
+    # Issue #437 AC7: a repeatedly failing refresh backs off to at most
+    # one re-fetch per interval window while the stamp stays armed —
+    # RECONCILED with the shipped T-11 reconnect contract
+    # (test_failed_refresh_leaves_stamp_armed): when a VALID, fresh pair
+    # exists and the last failure was a transport outage (hub
+    # unreachable), the armed transition keeps retrying eagerly at the
+    # next moment so a recovered hub is picked up immediately. The
+    # backoff suppresses re-fetches when the broker has NO usable pair
+    # (fresh fetches are the expensive scratch-schema rebuilds) or when
+    # the hub ANSWERED but the payload was refused (a poisoned row is an
+    # operator condition, not an outage that recovers on retry). The
+    # marker is best-effort and fail-open: malformed or future-stamped
+    # data fails the bounds check below and the refresh attempts
+    # normally — a bad marker can never wedge the broker offline.
+    marker = _snapshot_paths(env)[1].parent / "refresh-backoff.json"
+    try:
+        backoff = json.loads(marker.read_text(encoding="utf-8"))
+        if not isinstance(backoff, dict):
+            # Valid JSON that is not an object (a torn or foreign write)
+            # must fail OPEN exactly like unparseable bytes — a non-dict
+            # raises AttributeError from .get below and would wedge every
+            # subsequent refresh inside the caller's blanket except
+            # (final-critic round 1 F2).
+            raise ValueError("backoff marker is not a JSON object")
+        failed_at = float(backoff.get("failed_at", 0) or 0)
+        failure_kind = str(backoff.get("kind") or "")
+    except (OSError, ValueError, TypeError, OverflowError):
+        # OverflowError: an in-range-JSON but out-of-float-range integer
+        # failed_at (torn/foreign write) must fail open like every other
+        # malformed shape (PRR-002) — matches the payload_bytes arm at
+        # the refresh gate.
+        failed_at = 0.0
+        failure_kind = ""
+    pair_is_fresh = bool(meta) and (
+        now - float(meta.get("issued_at", 0) or 0) <= interval)
+    suppress = (
+        0.0 <= now - failed_at < interval
+        and (not pair_is_fresh
+             or failure_kind == _BACKOFF_KIND_REFUSED))
+    if suppress:
+        return False
     if _refresh(http, env, budget_ms):
         clear_stamp(env)
+        try:
+            marker.unlink()
+        except OSError:
+            pass
         return True
     return False
 

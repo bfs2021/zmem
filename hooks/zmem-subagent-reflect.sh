@@ -256,6 +256,176 @@ except Exception:
 # break out. Same single source of truth as zmem-reflect.sh.
 rej_msg = _render_rejs(rejections) if _render_rejs else ""
 
+# 2b. Trivial-miss filter (issue #439): a subagent whose EVERY failure is a
+#     read-only search miss (grep or Glob error, Read of a nonexistent path,
+#     reader-only Bash pipeline) must not cost the parent a reflection
+#     turn. The verdict comes from the annotated failures payload
+#     (capture_quality.classify_failure - the one classifier shared by the
+#     transcript and db paths); a missing verdict is re-derived locally,
+#     fail-open to "other" (the existing sidecar behavior).
+import hashlib  # noqa: E402  (issue #439 counter lock ring key)
+import tempfile  # noqa: E402
+import time  # noqa: E402
+import uuid  # noqa: E402
+_classify = None
+_process_alive = None
+try:
+    _scripts_dir2 = os.path.dirname(store_py)
+    if _scripts_dir2 not in sys.path:
+        sys.path.insert(0, _scripts_dir2)
+    from capture_quality import classify_failure as _classify
+    from host import process_alive as _process_alive
+except Exception:
+    _classify = None
+    _process_alive = None
+
+def _verdict(d):
+    v = d.get("verdict") if isinstance(d, dict) else None
+    if v in ("trivial", "signal", "other"):
+        return v
+    if _classify is not None:
+        try:
+            out = _classify(d)
+            if out in ("trivial", "signal", "other"):
+                return out
+        except Exception:
+            pass
+    return "other"
+
+trivial_count = 0
+for d in details:
+    if isinstance(d, dict) and _verdict(d) == "trivial":
+        trivial_count += 1
+
+if count > 0 and trivial_count == count and not rej_msg:
+    # Every failure is a trivial read-only miss: count what was filtered
+    # into the per-session counter and do NOT write the hand-off sidecar.
+    # The read-modify-write is serialized by an O_EXCL lockfile with the
+    # delivery-ledger stale-grace semantics: reclamation requires BOTH
+    # the age threshold AND a provably dead owner (recorded pid no longer
+    # alive, owner token re-read immediately before the unlink), so a
+    # live-but-slow writer is never broken into.
+    try:
+        ring_dir = os.path.join(data_dir, "subagent-reflections")
+        os.makedirs(ring_dir, exist_ok=True)
+        # PRR-008b: the retention sweep must also run on the filtered
+        # path — an only-filtered session otherwise never ages out its
+        # counters, locks, or interrupted .tmp files (the sidecar-write
+        # sweep below never executes for it). Same 14-day rule.
+        now_s = time.time()
+        for stale_name in os.listdir(ring_dir):
+            if not (stale_name.endswith(".json")
+                    or stale_name.endswith(".tmp")
+                    or stale_name.endswith(".lock")):
+                continue
+            stale_p = os.path.join(ring_dir, stale_name)
+            try:
+                if (now_s - os.stat(stale_p).st_mtime) / 86400.0 > 14.0:
+                    os.unlink(stale_p)
+            except OSError:
+                pass
+        key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
+        counter_path = os.path.join(ring_dir, key + ".filtered.json")
+        lock_path = os.path.join(ring_dir, "." + key + ".filtered.lock")
+        token = "%d:%s" % (os.getpid(), uuid.uuid4().hex)
+        deadline = time.time() + 5.0
+        held = False
+        while time.time() < deadline:
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                with os.fdopen(fd, "w", encoding="ascii") as lf:
+                    lf.write(token)
+                held = True
+                break
+            except FileExistsError:
+                try:
+                    lock_stat = os.stat(lock_path)
+                    lock_text = open(lock_path, "r", encoding="ascii").read()
+                except OSError:
+                    continue
+                age = time.time() - lock_stat.st_mtime
+                if age > 5.0:
+                    # Reclaim only when the holder is provably dead. The
+                    # liveness probe is host.process_alive — raw os.kill is
+                    # NOT a Windows liveness probe (signal 0 maps to
+                    # GenerateConsoleCtrlEvent and returns None for a
+                    # killed-but-unreaped holder, misclassifying it alive;
+                    # final-critic round 1 F1). Uncertain (None) fails
+                    # closed toward NOT reclaiming (a live-but-slow writer
+                    # is never broken into), and the owner token is
+                    # re-read immediately before the unlink.
+                    try:
+                        holder_pid = int(str(lock_text).split(":", 1)[0])
+                    except (ValueError, AttributeError):
+                        holder_pid = -1
+                    if holder_pid <= 0:
+                        # PRR-003: an empty/unparseable token aged past the
+                        # grace has no possible live owner — a live writer
+                        # writes its token within milliseconds of create —
+                        # so this is the died-between-create-and-write
+                        # orphan. Reclaim and retry acquisition.
+                        try:
+                            if open(lock_path, "r",
+                                    encoding="ascii").read() == lock_text:
+                                os.unlink(lock_path)
+                                continue
+                        except OSError:
+                            pass
+                        continue
+                    holder_alive = None
+                    if holder_pid > 0 and _process_alive is not None:
+                        try:
+                            holder_alive = _process_alive(holder_pid)
+                        except Exception:
+                            holder_alive = None
+                    if holder_alive is False and age > 5.0:
+                        try:
+                            if open(lock_path, "r",
+                                    encoding="ascii").read() == lock_text:
+                                os.unlink(lock_path)
+                                continue
+                        except OSError:
+                            pass
+                time.sleep(0.05)
+        try:
+            if held:
+                current = {}
+                try:
+                    current = json.loads(
+                        open(counter_path, "r", encoding="utf-8").read())
+                except (OSError, ValueError):
+                    current = {}
+                if not isinstance(current, dict):
+                    current = {}
+                n = current.get("filtered_trivial")
+                current["filtered_trivial"] = (n if isinstance(n, int)
+                                               else 0) + trivial_count
+                tmp_fd, tmp_path = tempfile.mkstemp(
+                    dir=ring_dir, prefix=".filtered-", suffix=".tmp")
+                with os.fdopen(tmp_fd, "w", encoding="utf-8",
+                               newline="\n") as tf:
+                    tf.write(json.dumps(current) + "\n")
+                os.replace(tmp_path, counter_path)
+        finally:
+            if held:
+                try:
+                    if open(lock_path, "r",
+                            encoding="ascii").read() == token:
+                        os.unlink(lock_path)
+                except OSError:
+                    pass
+    except Exception as exc:
+        # PRR-008c: a silent counter-write failure made the filtered
+        # count unobservable. One bounded stderr line (guarded like the
+        # other hook diagnostics); fail-open unchanged.
+        try:
+            text = " ".join(str(exc).split())[:200]
+            print("[zmem] filtered counter update failed: %s" % text,
+                  file=sys.stderr)
+        except Exception:
+            pass
+    emit({})
+
 # No failures and no rendered rejections → no-op (subagent reflection is
 # failure-driven only; a stopped subagent is not an interactive turn to nag).
 # But a user rejection that RENDERED (rej_msg non-empty) is the highest-signal
@@ -339,7 +509,9 @@ try:
     try:
         now_s = time.time()
         for stale_name in os.listdir(ring_dir):
-            if not (stale_name.endswith(".json") or stale_name.endswith(".tmp")):
+            if not (stale_name.endswith(".json")
+                    or stale_name.endswith(".tmp")
+                    or stale_name.endswith(".lock")):
                 continue
             stale = os.path.join(ring_dir, stale_name)
             try:

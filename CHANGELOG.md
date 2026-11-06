@@ -5,6 +5,53 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.143.0] - 2026-11-05
+
+### Fixed
+
+- **Zero-exit transport masquerade classified (issue #435).** A store
+  child that exits zero whose stdout is not a JSON envelope (wrapper/shim
+  stdout pollution of the version-skew family) no longer logs
+  `reason=empty-pool`: the hook's decision line carries the transport
+  token `reason=envelope-error` (the zero-exit twin of 0.139.0's
+  `store-error`), miss-rate reporting excludes it from the retrieval-miss
+  count with the transport-failure caveat, the README/SKILL vocabulary
+  names it, and the hermes PROVIDER twin's own decode-to-empty-pool
+  masquerade is fixed the same way (regression-pinned). By design the
+  token never joins `INJECT_SILENT_REASONS` — the twins' closed sets are
+  unreachable for hook transport tokens by construction (the 0.139.0
+  precedent).
+- **Snapshot refresh refusals are loud and back off (issue #437).** Every
+  refusal branch of the broker's refresh ladder now writes one bounded,
+  line-normalized stderr line naming the class
+  (`hub-unreachable` / `hub-refused` / `payload-invalid`; the id-gate
+  detail names the offending row index and id value) while still
+  returning False, and repeated failures back off via a best-effort
+  `refresh-backoff.json` marker — reconciled with the shipped T-11
+  reconnect contract: suppression applies when the broker has no fresh
+  pair or the hub ANSWERED a refusal; a transport outage with a fresh
+  pair keeps the eager next-moment reconnect retry.
+- **Published host-gate evidence redacted; guard widened (issue #438).**
+  The six 287-ac7 launcher captures were redacted one way (stdout_raw ->
+  the fixed notice, remote_url -> `redacted-hub-url`; structural proof
+  fields untouched, README discloses), and the stdout_raw guard moved to
+  the production seam `scripts/host_evidence_guard.py`: filename-
+  independent for the payload rule, launcher-capture names require a
+  well-formed dict carrying the marker (a `{}` is unsafe). Credential
+  rotation and the refs/pull/402/head purge remain recorded owner
+  actions on the issue.
+- **Subagent reflection no longer prompts for trivial read-only misses
+  (issue #439).** Failure details on both substrates (transcript and the
+  ZCode db path, with command/path recovered via the part-table join)
+  are annotated by one shared `capture_quality.classify_failure`
+  (trivial / signal / other, conservative read-only-miss rules); a
+  subagent whose every failure is trivial writes no parent hand-off
+  sidecar and counts into a per-session `filtered_trivial` counter
+  (stale-aware lock), which the closeout skill reports. Runner
+  failures, user rejections, and unrecognized failures keep today's
+  sidecar behavior.
+
+
 ## [0.142.0] - 2026-11-05
 
 Fence-content and delivery-accounting hardening, collated: issues #307 +
@@ -75,6 +122,7 @@ canary→release diff touches only the two evidence reports plus
 test-only commits — no runtime surface; the release manifest digests
 of the runtime files match the release commit), and the support report's `generated_at` is its own
 post-canary write time.
+
 
 ## [0.141.0] - 2026-11-04
 

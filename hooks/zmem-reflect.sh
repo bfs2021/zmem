@@ -312,6 +312,10 @@ pending_subagents = []
 try:
     ring_dir = os.path.join(data_dir, "subagent-reflections")
     for sidecar_path in sorted(glob.glob(os.path.join(ring_dir, "*.json"))):
+        if sidecar_path.endswith(".filtered.json"):
+            # issue #439: the per-session filtered_trivial counter shares
+            # the ring but is machine data, never a hand-off sidecar.
+            continue
         try:
             scan_mtime_ns = os.stat(sidecar_path).st_mtime_ns
         except OSError:

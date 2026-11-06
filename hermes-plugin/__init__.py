@@ -4246,6 +4246,11 @@ class ZmemMemoryProvider(MemoryProvider):
         # decision fields below; the hub's own include-global policy gate
         # (global-limit 2 under _include_global_allowed) is the disclosed
         # remote semantic for the local --include-global/--global-limit.
+        # Issue #435: bound BEFORE both branches — the remote path never
+        # runs the local decode, and the reason ladder below reads the
+        # flag on every silent outcome (an unbound read crashed remote
+        # mode; implementation-review round 1 F1).
+        envelope_error = False
         if self._remote_active():
             t0 = time.monotonic()
             envelope = self._transport.session_start(
@@ -4266,7 +4271,11 @@ class ZmemMemoryProvider(MemoryProvider):
                 payload["candidate_ids"] = [str(mid) for mid in ids
                                             if isinstance(mid, str)]
             else:
-                payload = {}
+                # PRR-007a: preserve the hub's own silent reason
+                # (hub-unreachable is a closed-set member) instead of
+                # flattening an outage to empty-pool.
+                _r = envelope.get("reason") if isinstance(envelope, dict) else None
+                payload = {"reason": _r} if isinstance(_r, str) and _r else {}
             elapsed = timing.get("t_ms", 0)
         else:
             result = _run_passive_store(_passive_store_args(
@@ -4281,6 +4290,11 @@ class ZmemMemoryProvider(MemoryProvider):
             ), timing=timing)
             elapsed = timing.get("t_ms", 0)
             payload = _decode_rendered_envelope(result)
+            # Issue #435 (provider twin): a store child that SUCCEEDED
+            # (ok) whose stdout never parses as a JSON dict is a corrupted
+            # output channel, not an empty pool. Track the shape so the
+            # reason ladder below can classify it as a transport failure.
+            envelope_error = False
             if payload is None:
                 # A legacy or mixed-version envelope without a rendered member
                 # still feeds the structured response and the decision line;
@@ -4289,11 +4303,19 @@ class ZmemMemoryProvider(MemoryProvider):
                 # rendering).
                 stdout = ((result.get("stdout") or "").strip()
                           if isinstance(result, dict) else "")
+                parsed_ok = False
                 try:
                     legacy = json.loads(stdout) if stdout else {}
+                    parsed_ok = True
                 except (TypeError, json.JSONDecodeError):
                     legacy = {}
                 payload = legacy if isinstance(legacy, dict) else {}
+                envelope_error = bool(
+                    isinstance(result, dict)
+                    and result.get("ok")
+                    and (not stdout
+                         or not parsed_ok
+                         or not isinstance(legacy, dict)))
         rendered = payload.get("rendered")
         if not isinstance(rendered, str):
             rendered = ""
@@ -4325,6 +4347,12 @@ class ZmemMemoryProvider(MemoryProvider):
         allowed = reasons["INJECT_SILENT_REASONS"]
         if has_rendered:
             reason = reasons["INJECT_REASON_INJECTED"]
+        elif envelope_error:
+            # Issue #435: the zero-exit transport token — same
+            # classification as the hook body's ladder. Deliberately
+            # OUTSIDE the closed set (route c, mirroring store-error):
+            # the rewrite below must not fold it back into empty-pool.
+            reason = "envelope-error"
         else:
             budget_dropped = payload.get("budget_dropped", 0)
             if (isinstance(budget_dropped, bool)

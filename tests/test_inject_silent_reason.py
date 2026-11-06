@@ -10,7 +10,7 @@ Proves the #87 contract end to end on every silent surface:
   (schema_meta.INJECT_SILENT_REASONS), never blame the session inject bar for
   an empty prefetch, and keep the budget-drop sentence byte-identical;
 - classification fails open (classifier exception ⇒ retrieved-empty one-liner,
-  exit 0, no traceback) and a pre-v13 bare-list envelope classifies empty-pool,
+  exit 0, no traceback) and a pre-v13 bare-list envelope classifies envelope-error (issue #435),
   not omitted.
 
 All stores are throwaway temp stores (ZMEM_STORE/ZMEM_DATA point at a temp
@@ -491,9 +491,13 @@ class StorelibClassifierContractTests(unittest.TestCase):
 
 class HookBodyBareListEnvelopeTest(unittest.TestCase):
     """A pre-v13 store.py that prints a BARE LIST (not the v13 envelope)
-    classifies as empty-pool — omitted=0 because there was no envelope."""
+    classifies as envelope-error (issue #435): zero-exit stdout that is
+    not a JSON dict envelope is the version-skew transport class — the
+    pre-#435 empty-pool classification masqueraded a legacy/foreign
+    channel as a healthy no-match. omitted stays 0 (no envelope was
+    read); miss-rate excludes the token as transport."""
 
-    def test_6_bare_list_empty_is_empty_pool(self):
+    def test_6_bare_list_is_envelope_error(self):
         tmp = tempfile.mkdtemp(prefix="zmem-silent-bare-")
         try:
             scripts_dir = Path(tmp) / "stub-scripts"
@@ -521,8 +525,9 @@ class HookBodyBareListEnvelopeTest(unittest.TestCase):
             ctx = json.loads(r.stdout.strip()).get("additionalContext", "")
             self.assertEqual(ctx, "")
             line = _read_last_hook_line(tmp)
-            self.assertIn("status=silent reason=empty-pool", line)
+            self.assertIn("status=silent reason=envelope-error", line)
             self.assertNotIn("reason=omitted", line)
+            self.assertNotIn("reason=empty-pool", line)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

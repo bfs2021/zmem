@@ -41,13 +41,19 @@ except ImportError:
 # containment: a syntactically-broken capture_quality must degrade the
 # same way, not kill the CLI.
 try:
+    from capture_quality import classify_failure as _classify_failure
     from capture_quality import infer_signal as _infer_signal
+    from capture_quality import MAX_COMMAND_CHARS
 except Exception:
     try:
         sys.path.insert(0, os.path.dirname(__file__))
+        from capture_quality import classify_failure as _classify_failure  # type: ignore
         from capture_quality import infer_signal as _infer_signal  # type: ignore
+        from capture_quality import MAX_COMMAND_CHARS  # type: ignore
     except Exception:
         _infer_signal = None
+        _classify_failure = None
+        MAX_COMMAND_CHARS = 240
 import storelib.schema as _schema
 from storelib.schema import _host
 from storelib.write import _normalize_capture_mode, redact_text
@@ -181,6 +187,32 @@ def _redact_failure_text(text, limit: int = 200) -> str:
                   "text is UNREDACTED this run", file=sys.stderr)
     return _collapse_line_breaks(redacted)[:limit].strip()
 
+def _redact_command_text(text, limit: int | None = None) -> str:
+    """issue #439 AC0 command/path renderer: redact WITHOUT the line-break
+    collapse and, by default, WITHOUT a cap — classification runs on the
+    FULL redacted text (PRR-004: a destructive/runner segment past a cap
+    must stay visible to the classifier); the render cap is applied
+    afterwards by _cap_commands. Pass limit only for callers that need a
+    bounded field directly. The redaction primitive and the degrade
+    counter are shared with _redact_failure_text.
+    """
+    global _REDACT_DEGRADE_WARNED
+    if not text:
+        return ""
+    try:
+        redacted, _redactions = redact_text(str(text))
+    except Exception:
+        redacted = str(text)
+        _REDACT_DEGRADE_COUNT[0] += 1
+        if not _REDACT_DEGRADE_WARNED:
+            _REDACT_DEGRADE_WARNED = True
+            print("[zmem] failures: secret redaction degraded — command "
+                  "text is UNREDACTED this run", file=sys.stderr)
+    if limit is not None and len(redacted) > limit:
+        redacted = redacted[:limit]
+    return redacted
+
+
 def _sanitize_pack_content(text) -> str:
     """Make a stored memory field safe to render as one export-pack bullet.
 
@@ -304,8 +336,13 @@ def _failures_from_transcript(path: str, text: str | None = None):
         except Exception:
             continue  # skip malformed lines, keep scanning
 
-    # Pass 1: map tool_use_id -> tool name from assistant tool_use blocks.
+    # Pass 1: map tool_use_id -> tool name AND input dict from assistant
+    # tool_use blocks. The input (command for Bash, file_path/path for
+    # Read/Grep/Glob) rides along so pass 2 can enrich each failure detail
+    # (issue #439 AC0): without it, nothing downstream can tell a grep miss
+    # from a failed test run.
     tool_names = {}
+    tool_inputs = {}
     for o in records:
         msg = o.get("message") if isinstance(o, dict) else None
         content = msg.get("content") if isinstance(msg, dict) else None
@@ -319,6 +356,9 @@ def _failures_from_transcript(path: str, text: str | None = None):
                     # "?"), consistent with the fail-open contract.
                     if isinstance(tid, str) and tid:
                         tool_names[tid] = b.get("name") or "?"
+                    inp = b.get("input")
+                    if isinstance(tid, str) and tid and isinstance(inp, dict):
+                        tool_inputs[tid] = inp
 
     # Pass 2: collect failed tool_result blocks (deduped by tool_use_id so the
     # is_error flag and the sibling toolUseResult "Error…" string on the same
@@ -372,9 +412,23 @@ def _failures_from_transcript(path: str, text: str | None = None):
                         "reason": _redact_failure_text(_rejection_reason(effective)),
                     })
                 else:
+                    inp = tool_inputs.get(tid) if tid else None
+                    if not isinstance(inp, dict):
+                        inp = {}
+                    call_command = inp.get("command")
+                    call_path = inp.get("file_path", inp.get("path"))
                     details.append({
                         "tool": _sanitize_tool_name(tool_names.get(tid, "?")),
                         "error": _redact_failure_text(effective),
+                        # issue #439 AC0: redacted, classified on the FULL
+                        # text, capped only for output (see _cap_commands) —
+                        # a destructive/runner segment past the cap must
+                        # stay visible to the classifier (PRR-004).
+                        "command": _redact_command_text(
+                            call_command if isinstance(call_command, str)
+                            else ""),
+                        "path": _redact_command_text(
+                            call_path if isinstance(call_path, str) else ""),
                     })
         # Pure sibling-string form: the top-level toolUseResult is itself a
         # rejection but no tool_result block classified this record (e.g. the
@@ -489,8 +543,17 @@ def _failures_from_db(db_path: str, session_id: str, *,
     details = []
     try:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
+        _QUERY_WITH_CALL_ID = """
+            SELECT tool_name, error_message, error_type, retry_count,
+                   COALESCE(destructive, 0) AS destructive, tool_call_id
+            FROM tool_usage
+            WHERE session_id = ?
+              AND COALESCE(read_only, 0) = 0
+              AND (status = 'error' OR (exit_code IS NOT NULL AND exit_code != 0))
+            ORDER BY completed_at DESC
+            LIMIT 50
             """
+        _QUERY_WITHOUT_CALL_ID = """
             SELECT tool_name, error_message, error_type, retry_count,
                    COALESCE(destructive, 0) AS destructive
             FROM tool_usage
@@ -499,10 +562,46 @@ def _failures_from_db(db_path: str, session_id: str, *,
               AND (status = 'error' OR (exit_code IS NOT NULL AND exit_code != 0))
             ORDER BY completed_at DESC
             LIMIT 50
-            """,
-            (session_id,),
-        ).fetchall()
+            """
+        try:
+            rows = conn.execute(_QUERY_WITH_CALL_ID,
+                                (session_id,)).fetchall()
+        except sqlite3.Error:
+            # A db with the enrichment columns but no tool_call_id (older
+            # schema drift) still gets full enrichment; only the input
+            # recovery degrades to empty strings.
+            rows = [
+                {**dict(r), "tool_call_id": None}
+                for r in conn.execute(_QUERY_WITHOUT_CALL_ID,
+                                      (session_id,)).fetchall()
+            ]
+        # issue #439: tool_usage has no command column — the call's input
+        # lives in the separate ``part`` table as JSON keyed by callID
+        # (the miss_rate._failures_from_part_inputs precedent). Fail-open:
+        # any error (table absent, drift) degrades to empty inputs without
+        # discarding the other detail fields.
+        inputs = {}
+        try:
+            for row in conn.execute(
+                    "SELECT data FROM part WHERE session_id = ?",
+                    (session_id,)):
+                try:
+                    obj = json.loads(row[0])
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                call_id = obj.get("callID")
+                state = obj.get("state")
+                inp = state.get("input") if isinstance(state, dict) else None
+                if isinstance(call_id, str) and call_id and isinstance(inp, dict):
+                    inputs[call_id] = inp
+        except Exception:
+            inputs = {}
         for r in rows:
+            inp = inputs.get(r["tool_call_id"] or "") or {}
+            command = inp.get("command")
+            path = inp.get("file_path", inp.get("path"))
             details.append({
                 "tool": _sanitize_tool_name(r["tool_name"] or "?"),
                 "error": _redact_failure_text(r["error_message"] or ""),
@@ -512,11 +611,17 @@ def _failures_from_db(db_path: str, session_id: str, *,
                 "error_type": _redact_failure_text(r["error_type"] or "", 100),
                 "retry_count": r["retry_count"] or 0,
                 "destructive": bool(r["destructive"]),
+                "command": _redact_command_text(
+                    command if isinstance(command, str) else ""),
+                "path": _redact_command_text(
+                    path if isinstance(path, str) else ""),
             })
     except Exception:
         # Enrichment columns absent — detection already succeeded, so surface
-        # bare placeholders so the count is still actionable.
-        details = [{"tool": "?", "error": ""} for _ in range(count)]
+        # bare placeholders (with the AC0 keys and a verdict) so the count is
+        # still actionable.
+        details = [{"tool": "?", "error": "", "command": "", "path": ""}
+                   for _ in range(count)]
     finally:
         try:
             conn.close()
@@ -538,6 +643,43 @@ def _sanitize_exc_text(text: str, limit: int = 300) -> str:
         s = s[:limit] + "..."
     return s
 
+def _annotate_verdicts(details: list) -> list:
+    """issue #439 AC17: one shared classifier annotates every failure
+    detail with its verdict on BOTH substrates (transcript and db) —
+    on the FULL redacted command, before the render cap (PRR-004: a
+    destructive/runner segment past MAX_COMMAND_CHARS must stay visible
+    to the classifier). A degraded classifier import fails open to
+    ``other`` — today's behavior (the sidecar still fires), never
+    silence. The db path's ``destructive`` flag is a forcing signal: a
+    destructive failure is never trivial (automation review B2)."""
+    for d in details:
+        verdict = None
+        if _classify_failure is not None:
+            try:
+                verdict = _classify_failure(d)
+            except Exception:
+                verdict = None
+        if verdict not in ("trivial", "signal", "other"):
+            verdict = "other"
+        if verdict == "trivial" and d.get("destructive"):
+            verdict = "other"
+        d["verdict"] = verdict
+    _cap_commands(details)
+    return details
+
+
+def _cap_commands(details: list) -> None:
+    """Render cap: trim the stored command/path to MAX_COMMAND_CHARS
+    AFTER classification so the wire shape keeps the AC0 contract."""
+    for d in details:
+        command = d.get("command")
+        if isinstance(command, str) and len(command) > MAX_COMMAND_CHARS:
+            d["command"] = command[:MAX_COMMAND_CHARS]
+        path = d.get("path")
+        if isinstance(path, str) and len(path) > MAX_COMMAND_CHARS:
+            d["path"] = path[:MAX_COMMAND_CHARS]
+
+
 def cmd_failures(session: str, transcript: str, db: str,
                  db_timeout: float | None = None) -> int:
     """Print {"count":N,"details":[...],"rejections":[...]} for the session's
@@ -558,9 +700,11 @@ def cmd_failures(session: str, transcript: str, db: str,
     try:
         if transcript and os.path.isfile(transcript):
             details, rejections = _failures_from_transcript(transcript)
+            details = _annotate_verdicts(details)
             result = {"count": len(details), "details": details, "rejections": rejections}
         else:
             count, details = _failures_from_db(db, session, timeout_s=db_timeout)
+            details = _annotate_verdicts(details)
             result = {"count": count, "details": details, "rejections": []}
         if _REDACT_DEGRADE_COUNT[0]:
             # Degraded redaction is observable, never silent (PRR-009).

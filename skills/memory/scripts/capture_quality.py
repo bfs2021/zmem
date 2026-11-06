@@ -68,6 +68,109 @@ def infer_signal(command: str, *, exit_code: int | None = None) -> str:
     return "none"
 
 
+# issue #439: read-only search misses that should never cost the parent a
+# reflection turn. Bash is trivial only when EVERY &&/;/| segment's first
+# token is one of these readers AND nothing in the line can write or
+# execute (no redirection/substitution characters, no write-capable or
+# command-executing option -- including attached --opt=value forms).
+_READ_ONLY_HEADS = frozenset(
+    {"grep", "rg", "find", "ls", "head", "tail", "wc", "cat"})
+_WRITE_EXEC_OPTION_PREFIXES = (
+    "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0",
+    "-fprintf", "-fls", "-shred", "-truncate", "--pre", "-pre",
+    "--pre-exec",
+)
+# A Read failure is a read-only miss only when the error names a missing
+# path; permission/IO failures keep today's sidecar behavior (issue #439
+# AC1/AC3 boundary, plan-critic round 2).
+_NONEXISTENT_PATH_MARKERS = (
+    "does not exist", "no such file", "not found", "enoent",
+)
+
+
+def classify_failure(detail: Mapping[str, object]) -> str:
+    """Classify one failure detail as ``"trivial"``, ``"signal"``, or
+    ``"other"`` (issue #439).
+
+    Shared by the transcript path (zmem-subagent-reflect.sh) and the ZCode
+    database path (storelib/mine.py verdict annotation) so both substrates
+    agree per failure. Dependencies stay local to this module: no storelib
+    import (importing storelib pulls the whole store package), runner
+    detection is infer_signal's, and the reader/option sets live here.
+
+    - signal: a recognized runner failure (infer_signal test/compile/lint
+      on the whole command or any one segment);
+    - trivial: a Grep/Glob error; a Read whose error names a nonexistent
+      path; a Bash non-zero whose every segment is a bare reader command
+      with no redirection, substitution, or write/exec option;
+    - other: everything else (unrecognized runners like ``npx vitest
+      run``, Edit/Write failures, conservative rejections). ``other``
+      preserves today's behavior -- the sidecar still fires.
+    """
+    try:
+        tool = _normalized(detail.get("tool"))
+        command = "" if detail.get("command") is None else str(
+            detail.get("command"))
+        error = _normalized(detail.get("error"))
+        # Structural conservatism (implementation-review r1 F3): a
+        # command the segment rules cannot fully enumerate is NEVER
+        # trivial. Multi-line commands (the detail carries the raw line
+        # structure) and any single "&" (backgrounding — not the "&&"
+        # separator) are rejected outright: a reader line followed by a
+        # runner or destructive line must not be filtered.
+        if command and ("\n" in command or "\r" in command
+                        or re.search(r"(?<!&)&(?!&)", command)):
+            return "other"
+        segments = re.split(r"&&|;|\|", command) if command else []
+        if infer_signal(command) in ("test", "compile", "lint"):
+            return "signal"
+        for segment in segments:
+            if infer_signal(segment) in ("test", "compile", "lint"):
+                return "signal"
+        if tool in ("grep", "glob"):
+            return "trivial"
+        if tool == "read":
+            # PRR-010a: the marker must not be satisfied by a path or a
+            # permission/network diagnostic that merely CONTAINS the
+            # phrase ("The network path was not found", "permission
+            # denied, open '<path containing not found>'"). Require the
+            # phrase outside any echoed path and reject diagnostic
+            # families that are real failures.
+            if any(marker in error for marker in _NONEXISTENT_PATH_MARKERS):
+                if not any(word in error for word in
+                           ("permission", "denied", "eacces", "eio",
+                            "network path", "errno")):
+                    path_text = _normalized(detail.get("path"))
+                    if not (path_text and path_text in error
+                            and error.index(path_text)
+                            < min(error.index(m)
+                                  for m in _NONEXISTENT_PATH_MARKERS
+                                  if m in error)):
+                        return "trivial"
+            return "other"
+        if tool == "bash" and command:
+            if any(ch in command for ch in ("$", "`", ">", "<")):
+                return "other"
+            for segment in segments:
+                try:
+                    tokens = shlex.split(segment, posix=True)
+                except (TypeError, ValueError):
+                    return "other"
+                if not tokens or tokens[0] not in _READ_ONLY_HEADS:
+                    return "other"
+                for token in tokens[1:]:
+                    lowered = token.lower()
+                    if any(lowered.startswith(prefix) for prefix in
+                           _WRITE_EXEC_OPTION_PREFIXES):
+                        return "other"
+            return "trivial"
+        return "other"
+    except Exception:
+        # Fail-open is the conservative direction: an unexpected shape
+        # keeps today's behavior (sidecar written), never silence.
+        return "other"
+
+
 def _normalized(value: object, limit: int | None = None) -> str:
     """Normalize untrusted descriptor text to one bounded lower-case line."""
 

@@ -951,11 +951,17 @@ def main() -> int:
                             env_overrides=private_env)
     attribution_t_ms = _rounded_elapsed_ms(_attempt_started)
     envelope = {}
+    # Issue #435: a store child that SUCCEEDS as a process but whose stdout
+    # is not a JSON dict envelope is a corrupted output channel (wrapper/
+    # shim stdout pollution of the version-skew class), not an empty pool.
+    # Track the parse shape so the reason ladder below can classify it.
+    envelope_ok = False
     if result is not None and result.returncode == 0:
         try:
             parsed = json.loads(result.stdout)
             if isinstance(parsed, dict):
                 envelope = parsed
+                envelope_ok = True
         except (TypeError, ValueError):
             pass
     rendered = envelope.get("rendered")
@@ -982,6 +988,7 @@ def main() -> int:
     if not isinstance(reason, str) or not reason:
         reason = ("omitted" if result is None else
                   "store-error" if result.returncode != 0 else
+                  "envelope-error" if not envelope_ok else
                   "injected" if rendered else "empty-pool")
     candidate_ids = envelope.get("candidate_ids")
     if not isinstance(candidate_ids, list):

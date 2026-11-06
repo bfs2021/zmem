@@ -199,7 +199,8 @@ class TestRejectionExtraction(unittest.TestCase):
             details, rejections = store._failures_from_transcript(path)
             # The malformed id's failure is still detected (tool name unknown),
             # and the normal rejection is extracted; no crash.
-            self.assertEqual(details, [{"tool": "?", "error": "boom"}])
+            self.assertEqual(details, [{"tool": "?", "error": "boom",
+                                    "command": "", "path": ""}])
             self.assertEqual(len(rejections), 1)
             self.assertEqual(rejections[0]["tool"], "Edit")
             self.assertEqual(rejections[0]["reason"], "no need")
@@ -258,6 +259,32 @@ class TestFailuresShape(unittest.TestCase):
             self.assertEqual(set(out.keys()), {"count", "details", "rejections", "error"})
         finally:
             os.remove(junk)
+
+    def test_transcript_failures_carry_verdicts(self):
+        # PRR-009g: the transcript-side _annotate_verdicts wiring —
+        # cmd_failures output details carry classify_failure verdicts
+        # computed on the full redacted command (the parity suite pins
+        # the pure function; this pins the production wiring).
+        tpath = _write_jsonl([
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t9", "name": "Bash",
+                 "input": {"command": "grep -r needle /nope"}},
+                {"type": "tool_use", "id": "t10", "name": "Bash",
+                 "input": {"command": "pytest tests/test_example.py"}}]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t9",
+                 "is_error": True, "content": "Exit code 1"},
+                {"type": "tool_result", "tool_use_id": "t10",
+                 "is_error": True, "content": "Exit code 1"}]}},
+        ])
+        rc, out = self._run_failures(session="s", transcript=tpath)
+        self.assertEqual(rc, 0)
+        by_command = {d.get("command"): d for d in out["details"]}
+        self.assertEqual(by_command["grep -r needle /nope"]["verdict"],
+                         "trivial")
+        self.assertEqual(
+            by_command["pytest tests/test_example.py"]["verdict"], "signal")
+        os.remove(tpath)
 
     def test_rejections_present_in_transcript_output(self):
         tpath = _write_jsonl([
