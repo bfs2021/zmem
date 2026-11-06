@@ -21,7 +21,9 @@ env-var parsing.
 
 from __future__ import annotations
 
+import json
 import re
+import time
 
 
 # Namespace admission grammar (issue #166). Project and user values preserve
@@ -43,6 +45,82 @@ NAMESPACE_NEAR_MISS_RE = re.compile(
 def has_namespace_control(namespace: str) -> bool:
     """Return whether a namespace contains C0 or DEL characters."""
     return any(ord(char) < 0x20 or ord(char) == 0x7F for char in namespace)
+
+
+# ---------------------------------------------------------------------------
+# Per-session convention counter value (issue #128, release 0.144.0)
+#
+# The ``meta`` rows ``hermes_convention_count_<session>`` (the live writer:
+# storelib/cli.py cmd_hermes_convention; the live reader:
+# hermes-plugin/hooks/zmem-hermes-verify.py) carry a canonical JSON value
+# ``{"count": <int>, "last_seen": "<YYYY-MM-DDTHH:MM:SSZ>"}`` so the sweep
+# can age-prune stale sessions. Pre-0.144.0 rows are bare decimal integers;
+# they stay readable (legacy shape) and are upgraded in place on the next
+# increment / retained-current-session sweep. Everything else is MALFORMED
+# (parses as 0, retained by the pruner and counted ``unparseable``).
+#
+# hermes-plugin/hooks/zmem-hermes-verify.py keeps a LOCAL twin of
+# ``parse_convention_count`` (``_parse_convention_count``) because the hook
+# must run on a box where this module is not importable; a lockstep test
+# (tests/test_meta_table_bound.py VerifyHookParityTest) pins the two equal
+# over a value matrix. Change them together.
+# ---------------------------------------------------------------------------
+
+CONVENTION_COUNT_TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def classify_convention_count(value: object) -> str:
+    """Classify a counter value: ``"json"`` (canonical shape), ``"legacy"``
+    (bare non-negative decimal integer), or ``"malformed"`` (anything else,
+    including JSON with a missing/wrong-typed ``count`` or ``last_seen``)."""
+    if value is None:
+        return "malformed"
+    text = value if isinstance(value, str) else str(value)
+    stripped = text.strip()
+    if stripped.isdigit():
+        return "legacy"
+    try:
+        obj = json.loads(stripped)
+    except (ValueError, TypeError):
+        return "malformed"
+    if not isinstance(obj, dict):
+        return "malformed"
+    count = obj.get("count")
+    last_seen = obj.get("last_seen")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return "malformed"
+    if not isinstance(last_seen, str) or not last_seen:
+        return "malformed"
+    return "json"
+
+
+def parse_convention_count(value: object) -> int:
+    """The counter's integer count: canonical JSON ``count``, a legacy bare
+    integer, or 0 for a malformed value. Twin: zmem-hermes-verify.py
+    ``_parse_convention_count`` (keep byte-equivalent in behaviour)."""
+    kind = classify_convention_count(value)
+    if kind == "legacy":
+        return int(str(value).strip())
+    if kind == "json":
+        return int(json.loads(str(value).strip())["count"])
+    return 0
+
+
+def convention_count_last_seen(value: object) -> str | None:
+    """The canonical JSON value's ``last_seen`` string, or None for legacy/
+    malformed shapes (which carry no age evidence)."""
+    if classify_convention_count(value) != "json":
+        return None
+    return str(json.loads(str(value).strip())["last_seen"])
+
+
+def convention_count_value(count: int, now_iso: str | None = None) -> str:
+    """Render the canonical JSON counter value (sorted keys, compact
+    separators -- byte-stable for the sweep's byte-identity pins)."""
+    if now_iso is None:
+        now_iso = time.strftime(CONVENTION_COUNT_TS_FORMAT, time.gmtime())
+    return json.dumps({"count": int(count), "last_seen": now_iso},
+                      sort_keys=True, separators=(",", ":"))
 
 
 def is_valid_namespace(namespace: object) -> bool:

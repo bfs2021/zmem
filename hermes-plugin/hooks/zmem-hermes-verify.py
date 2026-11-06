@@ -32,6 +32,37 @@ _CONVENTION_COUNT_KEY = "hermes_convention_count_{session}"
 _VERIFY_PROMPTED_KEY = "hermes_verify_prompted_{session}"
 
 
+def _parse_convention_count(value) -> int:
+    """Counter count from a meta value: canonical JSON {"count": N,
+    "last_seen": <ISO-Z>} first, legacy bare integer digits fallback, 0 for
+    anything malformed (issue #128, release 0.144.0).
+
+    LOCAL TWIN of schema_meta.parse_convention_count: this hook must also run
+    on a box where the storelib tree is not importable (see _resolve_store_path's
+    fallback), so it carries its own copy instead of importing. A lockstep test
+    (tests/test_meta_table_bound.py VerifyHookParityTest.test_parser_lockstep_matrix)
+    pins this equal to schema_meta's over a value matrix -- change both together."""
+    if value is None:
+        return 0
+    text = value if isinstance(value, str) else str(value)
+    stripped = text.strip()
+    if stripped.isdigit():
+        return int(stripped)
+    try:
+        obj = json.loads(stripped)
+    except (ValueError, TypeError):
+        return 0
+    if not isinstance(obj, dict):
+        return 0
+    count = obj.get("count")
+    last_seen = obj.get("last_seen")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return 0
+    if not isinstance(last_seen, str) or not last_seen:
+        return 0
+    return count
+
+
 def _resolve_store_path() -> Path:
     """Resolve the store path via the SAME authoritative resolver as the
     provider and store.py (host.resolve_store_path). Previously this hook
@@ -145,7 +176,7 @@ def main() -> int:
         row = conn.execute(
             "SELECT value FROM meta WHERE key = ?", (count_key,)
         ).fetchone()
-        count = int(row[0]) if row and str(row[0]).isdigit() else 0
+        count = _parse_convention_count(row[0]) if row else 0
         if count <= 0:
             _emit_empty()
             return 0

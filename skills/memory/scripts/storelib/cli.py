@@ -2136,17 +2136,28 @@ def cmd_hermes_convention(
                     (f"hermes_pending_failure_{session}",),
                 )
         else:
+            # Issue #128 (release 0.144.0): the counter value is the canonical
+            # JSON shape {"count": N, "last_seen": <ISO-Z>} so the sweep can
+            # age-prune stale sessions. The read-parse-write runs inside ONE
+            # BEGIN IMMEDIATE transaction (the old single UPSERT was atomic;
+            # replacing it with Python-side parsing must not lose concurrent
+            # ring increments), and legacy bare-integer values upgrade in
+            # place. Malformed values parse as 0 (schema_meta law).
             key = f"hermes_convention_count_{session}"
-            conn.execute(
-                "INSERT INTO meta(key, value) VALUES (?, '1') "
-                "ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
-                (key,),
+            from schema_meta import (  # noqa: PLC0415
+                convention_count_value,
+                parse_convention_count,
             )
-            row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-            try:
-                count = int(row[0]) if row else 0
-            except (TypeError, ValueError):
-                count = 0
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+            count = parse_convention_count(row[0]) if row else 0
+            count += 1
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, convention_count_value(count)),
+            )
             try:
                 interval = max(1, int(os.environ.get("ZMEM_CONVENTION_INTERVAL", "10")))
             except (TypeError, ValueError):
@@ -4651,11 +4662,35 @@ def main():
     _cadence_sweep: tuple[str, bool] | None = None
     if args.cmd == "session-cadence":
         try:
-            with (contextlib.redirect_stdout(sys.stderr)
-                  if getattr(args, "as_json", False)
-                  else contextlib.nullcontext()):
-                rc_s = cmd_sweep()
-            _cadence_sweep = (f"sweep: {'ok' if rc_s == 0 else f'exit {rc_s}'}", rc_s != 0)
+            # Issue #128: thread the cadence's own session id into the sweep
+            # (ZMEM_SESSION is what cmd_sweep reads for current-session
+            # retention + legacy upgrade) and restore the ambient value
+            # afterwards. Saved/restored rather than set-and-left so an
+            # in-process caller's environment is not permanently mutated.
+            _saved_zmem_session = os.environ.get("ZMEM_SESSION")
+            _cadence_sid = getattr(args, "session_id", None) or ""
+            if _cadence_sid:
+                os.environ["ZMEM_SESSION"] = str(_cadence_sid)
+            try:
+                with (contextlib.redirect_stdout(sys.stderr)
+                      if getattr(args, "as_json", False)
+                      else contextlib.nullcontext()):
+                    rc_s = cmd_sweep()
+            finally:
+                if _cadence_sid:
+                    if _saved_zmem_session is None:
+                        os.environ.pop("ZMEM_SESSION", None)
+                    else:
+                        os.environ["ZMEM_SESSION"] = _saved_zmem_session
+            _step = f"sweep: {'ok' if rc_s == 0 else f'exit {rc_s}'}"
+            # Fold the meta counts into the cadence summary (issue #128
+            # design 5: pass the sweep's own meta line through).
+            from storelib import backup as _backup_mod
+            if _backup_mod.last_meta_prune is not None:
+                _m = _backup_mod.last_meta_prune
+                _step += (f"; meta convention rows removed={_m[0]} "
+                          f"retained={_m[1]} unparseable={_m[2]}")
+            _cadence_sweep = (_step, rc_s != 0)
         except Exception as exc:
             _cadence_sweep = (f"sweep: error - {type(exc).__name__}: {exc}", True)
 
