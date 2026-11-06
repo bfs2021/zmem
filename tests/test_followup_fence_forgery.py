@@ -631,12 +631,14 @@ class ExplicitLaneCredentialTest(unittest.TestCase):
         envelope risk counts and fence markers honest on the lanes where a
         withheld row can carry them. Deleting ANY single entry from the
         builder's copy tuple turns this test red. (No lane-wiring test
-        exists for ``prompt_injection_risk``/``taint`` because the
-        selective gate omits injection-tagged and untrusted-taint rows from
-        EVERY pool — passive omitted_injection and the explicit lanes alike
-        (probes in the trace) — so those keys cannot co-occur with a
-        delivered row; the contested-expansion-child fence test covers the
-        wired carriage for the marker that CAN arrive.)"""
+        exists for ``prompt_injection_risk``/``taint`` on the probed
+        lanes: injection-tagged rows are omitted_injection on the passive
+        and explain lanes, and untrusted-taint rows are omitted on plain
+        explicit recall (executed probes in the trace); the plain recall
+        lane's injection_risk count is computed pre-withhold, so the
+        tuple probe is the accepted falsifier. The
+        contested-expansion-child fence test covers the wired carriage
+        for the marker that CAN arrive.)"""
         if str(SCRIPTS) not in sys.path:
             sys.path.insert(0, str(SCRIPTS))
         _old_store = os.environ.get("ZMEM_STORE")
@@ -650,6 +652,9 @@ class ExplicitLaneCredentialTest(unittest.TestCase):
         row = {"id": "r1", "type": "fact", "confidence": 0.9,
                "signal": "test", "namespace": "project:ns",
                "content": "api_key=AKIAIOSFODNN7EXAMPLE",
+               "source_ref": "https://x.example/api_key=AKIAIOSFODNN7EXAMPLE",
+               "tags": "prompt-injection-risk", "score": 0.7,
+               "entities": ["Example Corp"],
                "tier": "user_global", "taint": "untrusted_web",
                "contested_link": True, "link_of": "parent-1",
                "prompt_injection_risk": True, "unfold_hop": 2}

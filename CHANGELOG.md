@@ -70,9 +70,9 @@ non-re-delivery paths are byte-identical.
 
 **Evidence note (0.142.0 final)**: the committed canary report records the
 pre-publication tree that carries this release's exact runtime code (the
-canary→release diff touches only the two evidence files plus test-only
-commits; the release manifest digests of the runtime files match the
-release commit), and the support report's `generated_at` is its own
+canary→release diff touches only the two evidence reports plus
+test-only commits — no runtime surface; the release manifest digests
+of the runtime files match the release commit), and the support report's `generated_at` is its own
 post-canary write time.
 
 ## [0.141.0] - 2026-11-04
