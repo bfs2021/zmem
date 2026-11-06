@@ -571,6 +571,7 @@ class CredentialPageStubTest(unittest.TestCase):
             root = Path(tmp)
             with _isolated_env(root):
                 db, pages = _seed_store(root)
+                self.addCleanup(db.close)
                 ns = "project:AKIAIOSFODNN7EXAMPLE"
                 db.execute(
                     "UPDATE memory SET namespace=? WHERE namespace=?",

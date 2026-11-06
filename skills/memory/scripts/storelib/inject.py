@@ -236,8 +236,8 @@ def _indent_continuations(text: Any, indent: str = "    ") -> str:
     since this PR's review round) for rows admitted through the validated
     paths; legacy rows predating that validation, and the
     import-store/dataset import paths, which do not run the control-char
-    check, remain a disclosed residual (follow-up). Single-line behaviour
-    is CALL-SITE
+    check, remain a disclosed residual (issue #443). Single-line
+    behaviour is CALL-SITE
     dependent: the canonical content call site already supplies the first
     line's indent via this prefix (byte-identical to the pre-PR
     ``"    {content}"`` form); a caller that renders the first line inline

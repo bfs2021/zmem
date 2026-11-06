@@ -33,7 +33,8 @@ Fence-content and delivery-accounting hardening, collated: issues #307 +
   credit for an unrendered row on the validated ingest paths (writer
   namespace validation; sync ingest refuses control-character namespaces
   since this review round) — legacy rows predating validation and the
-  import-store/dataset import paths are the disclosed residual; `fence_row_cost`
+  import-store/dataset import paths are the disclosed residual (#443);
+  `fence_row_cost`
   measures the indented bytes (admission covers unbounded continuations).
 - #352 AC2: the Hermes degraded fence carries the canonical provenance
   markers in canonical order (`[PREVIOUSLY]`, `[INJECTION RISK]`,
@@ -69,9 +70,10 @@ non-re-delivery paths are byte-identical.
 
 **Evidence note (0.142.0 final)**: the committed canary report records the
 pre-publication tree that carries this release's exact runtime code (the
-canary→release diff touches only the two evidence files; the release
-manifest digests of the runtime files match the release commit), and the
-support report's `generated_at` is its own post-canary write time.
+canary→release diff touches only the two evidence files plus test-only
+commits; the release manifest digests of the runtime files match the
+release commit), and the support report's `generated_at` is its own
+post-canary write time.
 
 ## [0.141.0] - 2026-11-04
 

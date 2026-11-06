@@ -327,7 +327,7 @@ class HermesDegradedFenceParityTest(unittest.TestCase):
         os.environ["ZMEM_STORE"] = str(REPO_ROOT / "no-such-store"
                                        / "lockstep.sqlite")
         self.addCleanup(
-            lambda: (os.environ.pop("ZMEM_STORE")
+            lambda: (os.environ.pop("ZMEM_STORE", None)
                      if _old_store is None
                      else os.environ.__setitem__("ZMEM_STORE", _old_store)))
         from storelib.inject import contested_marker
@@ -623,6 +623,56 @@ class ExplicitLaneCredentialTest(unittest.TestCase):
             "AKIAIOSFODNN7EXAMPLE", r2.stdout,
             "the neighbour slice must classify source_ref exactly as it "
             "classifies content/tags (PRR-003)")
+
+    def test_shared_stub_carries_trust_marker_keys(self):
+        """Round 3 (PRR-002 falsifier, re-gate finding 3, tuple-probe shape):
+        the shared stub builder must copy the row's fixed-vocabulary
+        trust/marker keys onto the withheld stub — that is what keeps
+        envelope risk counts and fence markers honest on the lanes where a
+        withheld row can carry them. Deleting ANY single entry from the
+        builder's copy tuple turns this test red. (No lane-wiring test
+        exists for ``prompt_injection_risk``/``taint`` because the
+        selective gate omits injection-tagged and untrusted-taint rows from
+        EVERY pool — passive omitted_injection and the explicit lanes alike
+        (probes in the trace) — so those keys cannot co-occur with a
+        delivered row; the contested-expansion-child fence test covers the
+        wired carriage for the marker that CAN arrive.)"""
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        _old_store = os.environ.get("ZMEM_STORE")
+        os.environ["ZMEM_STORE"] = str(REPO_ROOT / "no-such-store"
+                                       / "stubkeys.sqlite")
+        self.addCleanup(
+            lambda: (os.environ.pop("ZMEM_STORE", None)
+                     if _old_store is None
+                     else os.environ.__setitem__("ZMEM_STORE", _old_store)))
+        from storelib.recall import _withhold_credential_stub
+        row = {"id": "r1", "type": "fact", "confidence": 0.9,
+               "signal": "test", "namespace": "project:ns",
+               "content": "api_key=AKIAIOSFODNN7EXAMPLE",
+               "tier": "user_global", "taint": "untrusted_web",
+               "contested_link": True, "link_of": "parent-1",
+               "prompt_injection_risk": True, "unfold_hop": 2}
+        stub = _withhold_credential_stub(row)
+        self.assertEqual(stub.get("content"), "",
+                         "precondition: the builder withholds the content")
+        for key, want in (("tier", "user_global"),
+                          ("taint", "untrusted_web"),
+                          ("contested_link", True),
+                          ("link_of", "parent-1"),
+                          ("prompt_injection_risk", True),
+                          ("unfold_hop", 2)):
+            self.assertEqual(
+                stub.get(key), want,
+                "the shared stub must copy the %r marker key so fence "
+                "markers and envelope risk counts stay honest (PRR-002/"
+                "F-04); deleting its entry from the builder's copy tuple "
+                "fails this assertion" % (key,))
+        for absent in ("source_ref", "tags", "score", "entities"):
+            self.assertNotIn(
+                absent, stub,
+                "the stub must never carry %r — any of those may be the "
+                "field that matched the credential registry" % (absent,))
 
     def test_passive_fence_keeps_contested_marker_on_withheld_expansion_child(self):
         """Review round 2 (R2-1 / PRR-002 falsifier): the passive hook fence
