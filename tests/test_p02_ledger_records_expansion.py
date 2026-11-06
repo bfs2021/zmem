@@ -466,7 +466,8 @@ class LedgerAccountingBoundTest(_LedgerBase):
         neighbour that was never query-matched -- defeating #136 on a path the
         bump filter never covered.
         """
-        sys.path.insert(0, str(STORE_PY.parent))
+        if str(STORE_PY.parent) not in sys.path:
+            sys.path.insert(0, str(STORE_PY.parent))
         self._call()
         from storelib import feedback as feedback_mod
 
@@ -613,7 +614,8 @@ class PartialExclusionExpansionTest(_LedgerBase):
 
     def _expand(self, exclude_ids):
         import sqlite3 as _s3
-        sys.path.insert(0, str(STORE_PY.parent))
+        if str(STORE_PY.parent) not in sys.path:
+            sys.path.insert(0, str(STORE_PY.parent))
         from storelib.links import expand_recall_links
         conn = _s3.connect(str(Path(self.env["ZMEM_STORE"]).resolve()))
         conn.row_factory = _s3.Row

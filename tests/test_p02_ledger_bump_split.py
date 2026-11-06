@@ -396,7 +396,13 @@ class RenameResilienceTest(_StructuralBase):
         # The derivation must succeed (plain bindings, both sinks, distinct).
         ledger_name, bump_name = _structural_names(func)
         self.assertEqual(ledger_name, self.RENAMED)
-        self.assertEqual(bump_name, "bump_rows")
+        # Round-2b (cubic P2): the bump binding's spelling is compared to the
+        # derivation on the UNRENAMED source — a behaviour-preserving
+        # product-side rename of the bump binding keeps this green while the
+        # renamed-tree laws below still bind by the derived name.
+        _orig_ledger, bump_name_original = _structural_names(
+            _selector_body(source))
+        self.assertEqual(bump_name, bump_name_original)
 
         # Law: seeded from rows_present_in.
         chain = _assignment_chain(func, ledger_name)
