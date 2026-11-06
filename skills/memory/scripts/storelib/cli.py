@@ -4662,26 +4662,15 @@ def main():
     _cadence_sweep: tuple[str, bool] | None = None
     if args.cmd == "session-cadence":
         try:
-            # Issue #128: thread the cadence's own session id into the sweep
-            # (ZMEM_SESSION is what cmd_sweep reads for current-session
-            # retention + legacy upgrade) and restore the ambient value
-            # afterwards. Saved/restored rather than set-and-left so an
-            # in-process caller's environment is not permanently mutated.
-            _saved_zmem_session = os.environ.get("ZMEM_SESSION")
-            _cadence_sid = getattr(args, "session_id", None) or ""
-            if _cadence_sid:
-                os.environ["ZMEM_SESSION"] = str(_cadence_sid)
-            try:
-                with (contextlib.redirect_stdout(sys.stderr)
-                      if getattr(args, "as_json", False)
-                      else contextlib.nullcontext()):
-                    rc_s = cmd_sweep()
-            finally:
-                if _cadence_sid:
-                    if _saved_zmem_session is None:
-                        os.environ.pop("ZMEM_SESSION", None)
-                    else:
-                        os.environ["ZMEM_SESSION"] = _saved_zmem_session
+            # Issue #128: the sweep reads the AMBIENT ZMEM_SESSION for
+            # current-session retention + legacy upgrade — the session
+            # launcher exports it for cadence runs. (session-cadence takes no
+            # --session-id argv of its own; impl-review round 1 finding 2
+            # removed a dead args.session_id branch that could never fire.)
+            with (contextlib.redirect_stdout(sys.stderr)
+                  if getattr(args, "as_json", False)
+                  else contextlib.nullcontext()):
+                rc_s = cmd_sweep()
             _step = f"sweep: {'ok' if rc_s == 0 else f'exit {rc_s}'}"
             # Fold the meta counts into the cadence summary (issue #128
             # design 5: pass the sweep's own meta line through).

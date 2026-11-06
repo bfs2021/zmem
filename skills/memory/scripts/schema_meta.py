@@ -69,10 +69,27 @@ def has_namespace_control(namespace: str) -> bool:
 CONVENTION_COUNT_TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
+def _valid_convention_last_seen(value: object) -> bool:
+    """True when last_seen is an exact canonical UTC timestamp string. A JSON
+    counter with a corrupt timestamp has no age evidence and must classify
+    MALFORMED (retained by the pruner, counted unparseable) rather than
+    parse as epoch 0 and be deleted as ancient — _parse_iso_to_epoch is total
+    and cannot signal failure (impl-review round 1 finding 3)."""
+    if not isinstance(value, str) or not value:
+        return False
+    import time as _time
+    try:
+        _time.strptime(value, CONVENTION_COUNT_TS_FORMAT)
+    except ValueError:
+        return False
+    return True
+
+
 def classify_convention_count(value: object) -> str:
     """Classify a counter value: ``"json"`` (canonical shape), ``"legacy"``
     (bare non-negative decimal integer), or ``"malformed"`` (anything else,
-    including JSON with a missing/wrong-typed ``count`` or ``last_seen``)."""
+    including JSON with a missing/wrong-typed ``count`` or a ``last_seen``
+    that is not an exact canonical timestamp)."""
     if value is None:
         return "malformed"
     text = value if isinstance(value, str) else str(value)
@@ -86,10 +103,9 @@ def classify_convention_count(value: object) -> str:
     if not isinstance(obj, dict):
         return "malformed"
     count = obj.get("count")
-    last_seen = obj.get("last_seen")
     if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         return "malformed"
-    if not isinstance(last_seen, str) or not last_seen:
+    if not _valid_convention_last_seen(obj.get("last_seen")):
         return "malformed"
     return "json"
 

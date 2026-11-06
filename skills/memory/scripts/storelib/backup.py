@@ -555,10 +555,12 @@ def prune_convention_meta(store_path, *, cutoff_epoch: float,
                     conn.execute("DELETE FROM meta WHERE key = ?", (key,))
                 continue
             if kind == "json":
-                last_seen = convention_count_last_seen(value)
-                epoch = (_parse_iso_to_epoch(last_seen)
-                         if last_seen else None)
-                if epoch is not None and epoch < cutoff_epoch:
+                # classify == "json" guarantees last_seen is an exact
+                # canonical timestamp (schema_meta._valid_convention_last_seen,
+                # impl-review round 1 finding 3), so the ISO parse is exact and
+                # a corrupt heartbeat can never fall through to epoch 0.
+                epoch = _parse_iso_to_epoch(convention_count_last_seen(value))
+                if epoch < cutoff_epoch:
                     removed += 1
                     if not dry_run:
                         conn.execute("DELETE FROM meta WHERE key = ?", (key,))
@@ -745,8 +747,8 @@ def cmd_sweep(marker_dir: str | None = None,
     # SAME cutoff. Best-effort and fail-open by contract: an absent, locked,
     # unreadable, or newer-schema store skips the meta phase entirely and
     # preserves the successful file-sweep result above. The current session
-    # rides ZMEM_SESSION (the session-cadence path sets it to the cadence's
-    # own session id so the live session's rows always survive).
+    # rides the AMBIENT ZMEM_SESSION (exported by the session launcher for
+    # cadence runs), so the live session's rows always survive.
     global last_meta_prune
     last_meta_prune = None
     try:

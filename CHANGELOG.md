@@ -46,7 +46,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   transaction with rollback. The sweep reports
   `meta convention rows removed=N retained=N unparseable=N`
   (`would prune` under `--dry-run`) and `session-cadence` folds the counts
-  into its summary while threading its own session id.
+  into its summary (current-session retention rides the ambient
+  `ZMEM_SESSION` the session launcher exports).
 - **The live hermes counter value is canonical JSON (#128 AC5).**
   `hermes_convention_count_<session>` now stores
   `{"count": N, "last_seen": "<ISO-Z>"}` (atomic single-transaction

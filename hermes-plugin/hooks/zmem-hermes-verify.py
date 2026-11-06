@@ -34,8 +34,10 @@ _VERIFY_PROMPTED_KEY = "hermes_verify_prompted_{session}"
 
 def _parse_convention_count(value) -> int:
     """Counter count from a meta value: canonical JSON {"count": N,
-    "last_seen": <ISO-Z>} first, legacy bare integer digits fallback, 0 for
-    anything malformed (issue #128, release 0.144.0).
+    "last_seen": <exact canonical UTC timestamp>} first, legacy bare integer
+    digits fallback, 0 for anything malformed — including a corrupt
+    last_seen, which carries no age evidence (issue #128, release 0.144.0;
+    impl-review round 1 finding 3).
 
     LOCAL TWIN of schema_meta.parse_convention_count: this hook must also run
     on a box where the storelib tree is not importable (see _resolve_store_path's
@@ -55,10 +57,15 @@ def _parse_convention_count(value) -> int:
     if not isinstance(obj, dict):
         return 0
     count = obj.get("count")
-    last_seen = obj.get("last_seen")
     if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         return 0
+    last_seen = obj.get("last_seen")
     if not isinstance(last_seen, str) or not last_seen:
+        return 0
+    try:
+        import time as _time
+        _time.strptime(last_seen, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
         return 0
     return count
 
