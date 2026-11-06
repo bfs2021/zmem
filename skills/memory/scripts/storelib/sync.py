@@ -673,6 +673,14 @@ def _validate_episode_row(obj: dict, lineno: int) -> None:
     ns = str(_need("namespace"))
     if len(ns) > 512:
         raise ValueError("episode namespace over 512 chars")
+    # Issue #443 AC2 (Phase 4.2 class sweep): the memory-row validator
+    # refuses C0/DEL namespaces (the #352 fence-forgery class); episode
+    # records ride the same peer-ingest lane and must not be the bypass.
+    from schema_meta import has_namespace_control
+    if has_namespace_control(ns):
+        raise ValueError(
+            "episode namespace contains a control character; "
+            "the writer path refuses the same class")
     # F10: validate by PARSING (time.strptime, like _validate_sync_row) —
     # an epoch<=0 sentinel rejects legitimate epoch-adjacent timestamps.
     import time as _time
