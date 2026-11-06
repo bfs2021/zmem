@@ -9,10 +9,14 @@ parent's ledgered CONTRADICTS neighbours, so the neighbour re-renders through
 the expansion walk carrying ``[CONTESTED LINK: <parent-id>]`` exactly when
 the operator is about to run the hazardous op the parent describes.
 
-Four arms:
+Five arms:
 
 - ``ContestedLinkRedeliveryTest`` — the contract (red at base 7b9d871: the
   marker vanished from the re-delivery envelope).
+- ``DirectMatchNeighbourRendersUnmarkedTest`` — maintainer F-02: the
+  release un-suppresses, it never force-includes; a neighbour whose own
+  text direct-matches the query re-renders through DIRECT retrieval and
+  carries NO [CONTESTED LINK] marker.
 - ``RelatedNeighbourStaysSuppressedTest`` — the exemption is contradicts-
   ONLY: a ``related`` neighbour carries no marker and stays suppressed
   (green at base; must stay green).
@@ -125,8 +129,8 @@ class _RedeliveryBase(unittest.TestCase):
 
     def _call(self, *extra: str, query: str = "git push --force") -> dict:
         """One pretool injection pull in the class session. ``extra`` rides
-        through (e.g. ``--exclude`` arms); ``query`` overrides the pull's
-        query (the F-02 pin uses a different second-call query)."""
+        through (e.g. ``--exclude`` arms). The F-02 pin varies the class
+        ``NEIGHBOUR`` content instead of the query."""
         return json.loads(self._run_cli(
             "recall", "--query", query,
             "--namespace", self.NAMESPACE, "--no-hybrid", "--no-bump",

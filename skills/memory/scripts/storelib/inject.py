@@ -233,7 +233,11 @@ def _indent_continuations(text: Any, indent: str = "    ") -> str:
     content/source_ref/tags call sites — header fields, page-provenance
     lines, and entity names are interpolated elsewhere and are bounded
     upstream (write-path namespace/enum validation; sync namespace validation
-    since this PR's review round). Single-line behaviour is CALL-SITE
+    since this PR's review round) for rows admitted through the validated
+    paths; legacy rows predating that validation, and the
+    import-store/dataset import paths, which do not run the control-char
+    check, remain a disclosed residual (follow-up). Single-line behaviour
+    is CALL-SITE
     dependent: the canonical content call site already supplies the first
     line's indent via this prefix (byte-identical to the pre-PR
     ``"    {content}"`` form); a caller that renders the first line inline
@@ -1487,26 +1491,16 @@ def select_and_budget_for_injection(
                 for row in page_rows:
                     if (row.get("withheld_for_secret")
                             or recall_module._classify_credential(row)):
-                        # Keep the canonical id/type-only credential marker in
-                        # the envelope, admit its exact fenced cost, and never
+                        # Keep the canonical credential marker in the
+                        # envelope, admit its exact fenced cost, and never
                         # let it suppress its represented canonical sources.
-                        page_secret_markers.append({
-                            "id": row.get("id", ""),
-                            "type": row.get("type", ""),
-                            "confidence": row.get("confidence", 0.0),
-                            "signal": row.get("signal", "none"),
-                            # Review round (maintainer F-04 / auth-001): the
-                            # namespace-blank law applies here too — a
-                            # withheld stub must not re-leak a credential-
-                            # shaped namespace through its own ns field.
-                            "namespace": (
-                                "" if isinstance(row.get("namespace"), str)
-                                and recall_module._credential_shaped_text(
-                                    row["namespace"])
-                                else row.get("namespace", "")),
-                            "content": "",
-                            "withheld_for_secret": True,
-                        })
+                        # Review round 2 (R2-1): the shared stub builder is
+                        # the single source of truth — namespace-blank law
+                        # AND the fixed-vocabulary trust/marker keys (the
+                        # literal copy here had already drifted from it
+                        # once; maintainer F-04 / PRR-002).
+                        page_secret_markers.append(
+                            recall_module._withhold_credential_stub(row))
                     else:
                         safe_page_rows.append(row)
                 page_rows = safe_page_rows
@@ -1601,15 +1595,15 @@ def select_and_budget_for_injection(
                     row.get("withheld_for_secret")
                     or recall_module._classify_credential(row)):
                 withheld_rows.append(row)
-                displayed_rows.append({
-                    "id": row.get("id", ""),
-                    "type": row.get("type", ""),
-                    "confidence": row.get("confidence", 0.0),
-                    "signal": row.get("signal", "none"),
-                    "namespace": row.get("namespace", ""),
-                    "content": "",
-                    "withheld_for_secret": True,
-                })
+                # Review round 2 (R2-1): the passive hook fence renders this
+                # stub — route it through the shared builder so withheld
+                # rows keep their trust markers ([tier=…], [INJECTION
+                # RISK], [UNTRUSTED TOOL/WEB], contested link) on the
+                # model-visible passive surface too, and a credential-shaped
+                # namespace is blanked here exactly as on the explicit lanes
+                # (maintainer F-04 / PRR-002).
+                displayed_rows.append(
+                    recall_module._withhold_credential_stub(row))
             else:
                 displayed_rows.append(row)
         rows = displayed_rows

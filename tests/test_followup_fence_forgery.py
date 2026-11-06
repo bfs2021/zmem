@@ -319,8 +319,17 @@ class HermesDegradedFenceParityTest(unittest.TestCase):
         hardcoded expected literals."""
         if str(SCRIPTS) not in sys.path:
             sys.path.insert(0, str(SCRIPTS))
-        os.environ.setdefault("ZMEM_STORE", str(REPO_ROOT / "no-such-store"
-                                                / "lockstep.sqlite"))
+        # Review round 2 (R2-5): save/restore the pin like ForgeTest — the
+        # storelib import freezes STORE_PATH at import time, so the pin must
+        # exist for the import, and a leaked bogus path would redirect any
+        # lazily-importing consumer later in the process.
+        _old_store = os.environ.get("ZMEM_STORE")
+        os.environ["ZMEM_STORE"] = str(REPO_ROOT / "no-such-store"
+                                       / "lockstep.sqlite")
+        self.addCleanup(
+            lambda: (os.environ.pop("ZMEM_STORE")
+                     if _old_store is None
+                     else os.environ.__setitem__("ZMEM_STORE", _old_store)))
         from storelib.inject import contested_marker
         opponents = [PARENT_ID, 123, 0, "", "[parent", None, "a b", "x]y",
                      "tab\tchar", "line\nbreak", 42, "0", "[", "]x", "ok-id"]
@@ -459,11 +468,24 @@ class ExplicitLaneCredentialTest(unittest.TestCase):
             "not_in_db", r2.stdout,
             "precondition: the absent --target must produce the not_in_db "
             "verdict, or this arm proves nothing")
+        # Round 2 (reviewer Q3): the precondition is scoped to the neighbour
+        # blameline — a marker anywhere in stdout can come from the results
+        # fence (the row also ranks there), which would prove nothing about
+        # the neighbour payload. The nearest: line carries "<id> '<slice>'",
+        # so the marker + blanked slice on THAT line proves the neighbour
+        # arm itself classified and withheld.
+        nearest_line = next(
+            (line for line in r2.stdout.splitlines() if "nearest: " in line),
+            "")
+        self.assertTrue(
+            nearest_line,
+            "precondition: the not_in_db verdict carries a nearest: "
+            "blameline, or this arm proves nothing")
         self.assertIn(
-            "[WITHHELD: SECRET]", r2.stdout,
+            f"[WITHHELD: SECRET] {rid} ''", nearest_line,
             "precondition: the credential-shaped row must rank into the "
-            "nearest-neighbour payload (query overlaps its content), or this "
-            "arm proves nothing")
+            "nearest-neighbour payload AND withhold there, or this arm "
+            "proves nothing")
         self.assertNotIn("AKIAIOSFODNN7EXAMPLE", r2.stdout,
                          "a not_in_db verdict's nearest-neighbour slice must "
                          "not carry the credential (#352 AC3)")
@@ -550,6 +572,112 @@ class ExplicitLaneCredentialTest(unittest.TestCase):
             "AKIAIOSFODNN7EXAMPLE", row.get("namespace", ""),
             "a withheld stub must blank a credential-shaped namespace "
             "(#352 claim 3)")
+
+    def test_neighbour_withhold_covers_source_ref_only_credential(self):
+        """Review round 2 (PRR-003 falsifier): the neighbour classify blob is
+        {content, source_ref, tags} — a credential that lives ONLY in
+        source_ref (benign content/tags) must still withhold in the
+        not_in_db nearest-neighbour payload. Reverting the source_ref SELECT
+        + classify-blob change (recall.py _explain_nearest_neighbors)
+        classifies the row benign, so the payload carries the full row and
+        the assertNotIn fails."""
+        r = self._run("add", "--namespace", "project:p352", "--type", "fact",
+                      "--content", "benign deploy note placeholder",
+                      "--signal", "test", "--confidence", "0.9", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rid = json.loads(r.stdout)["id"]
+        conn = sqlite3.connect(str(self.tmp / "store.sqlite"))
+        conn.execute("UPDATE memory SET source_ref=? WHERE id=?",
+                     ("https://secrets.example.com/api_key=AKIAIOSFODNN7EXAMPLE",
+                      rid))
+        conn.commit()
+        conn.close()
+        r2 = self._run("recall", "--query", "deploy note service",
+                       "--namespace", "project:p352", "--no-hybrid",
+                       "--no-bump", "--explain", "--target",
+                       "00000000-dead-beef-0000-000000000001")
+        self.assertEqual(r2.returncode, 0, r2.stderr[-3000:])
+        self.assertIn(
+            "not_in_db", r2.stdout,
+            "precondition: the absent --target must produce the not_in_db "
+            "verdict, or this arm proves nothing")
+        # Discriminator scoped to the neighbour blameline (round 2): the
+        # explain blameline renders each neighbour as
+        # "[markers] <id> '<content[:40]>'" — on the fixed path the row is
+        # withheld INSIDE the neighbour payload, so its line carries the
+        # marker and a BLANKED content slice; on the mutant (classify blob
+        # without source_ref) the same line prints the benign slice bare.
+        nearest_line = next(
+            (line for line in r2.stdout.splitlines() if "nearest: " in line),
+            "")
+        self.assertTrue(
+            nearest_line,
+            "precondition: the not_in_db verdict carries a nearest: "
+            "blameline, or this arm proves nothing")
+        self.assertIn(
+            f"[WITHHELD: SECRET] {rid} ''", nearest_line,
+            "the source_ref-only credential must withhold INSIDE the "
+            "nearest-neighbour payload — the neighbour classify blob must "
+            "see source_ref exactly as the results lane does (PRR-003)")
+        self.assertNotIn(
+            "AKIAIOSFODNN7EXAMPLE", r2.stdout,
+            "the neighbour slice must classify source_ref exactly as it "
+            "classifies content/tags (PRR-003)")
+
+    def test_passive_fence_keeps_contested_marker_on_withheld_expansion_child(self):
+        """Review round 2 (R2-1 / PRR-002 falsifier): the passive hook fence
+        renders withheld rows through the SAME shared stub builder as the
+        explicit lanes, so a withheld row's trust markers survive. The
+        reachable marker on the passive lane is the CONTESTED one: an
+        expansion child (contradicts link) whose own content is
+        credential-shaped arrives as the withheld stub and must KEEP
+        ``contested_link``/``link_of`` — its [CONTESTED LINK: <parent>]
+        marker must render next to [WITHHELD: SECRET]. The round-1 passive
+        display loop built a 7-key literal that dropped every marker key —
+        this test is red against that mutant. (Injection-risk and
+        untrusted-taint rows are omitted from the passive pool by the
+        selective gate, so those markers cannot co-occur with passive
+        arrival — the contested expansion child is the marker that can.)"""
+        parent_stdout = self._run(
+            "add", "--namespace", "project:p352", "--type", "fact",
+            "--content", "never git push --force to the shared flange branch "
+            "after hours", "--signal", "test", "--confidence", "0.9",
+            "--json").stdout
+        pid = json.loads(parent_stdout)["id"]
+        r = self._run("add", "--namespace", "project:p352", "--type", "fact",
+                      "--content", "deploy note: the service uses "
+                      "api_key=AKIAIOSFODNN7EXAMPLE for staging",
+                      "--signal", "test", "--confidence", "0.9", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rid = json.loads(r.stdout)["id"]
+        self._run("links", "--add", "--id", pid, "--id", rid,
+                  "--relation", "contradicts",
+                  "--reason", "p352 r2 stub-marker fixture")
+        proc = subprocess.run(
+            [sys.executable, str(STORE_PY), "recall", "--query",
+             "git push --force", "--namespace", "project:p352",
+             "--no-hybrid", "--no-bump", "--for-injection", "--json",
+             "--session-id", "sess-p352-markers", "--moment", "pretool"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=self.env, timeout=300)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-3000:])
+        payload = json.loads(proc.stdout)
+        row = next(rw for rw in payload["results"] if rw["id"] == rid)
+        self.assertIs(row.get("withheld_for_secret"), True,
+                      "precondition: the credential-shaped expansion child "
+                      "is withheld on the passive lane")
+        self.assertIs(row.get("contested_link"), True,
+                      "precondition: it arrives as a contradicts expansion "
+                      "child (link stamped), or this test proves nothing")
+        self.assertEqual(row.get("link_of"), pid,
+                         "precondition: the expansion child names its parent")
+        self.assertIn("[WITHHELD: SECRET]", payload.get("rendered") or "")
+        self.assertIn(
+            f"[CONTESTED LINK: {pid}]", payload.get("rendered") or "",
+            "the passive fence must keep the contested marker on a withheld "
+            "expansion child — the shared stub builder carries the marker "
+            "keys the round-1 literal dropped (R2-1 / PRR-002 / F-04)")
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", proc.stdout)
 
 
 if __name__ == "__main__":

@@ -551,5 +551,76 @@ class PagesAcceptanceChecks(unittest.TestCase):
                 if effective is not None:
                     self.assertEqual(tuple(effective()), tuple(schema_meta.ALLOWED_TYPES))
             db.close()
+
+
+class CredentialPageStubTest(unittest.TestCase):
+    """Review round 2 (PR #440 R2-1, page leg): the page-lane credential
+    stub is the SHARED ``_withhold_credential_stub`` builder — a
+    credential-shaped PAGE reduces to the same stub as any row: content
+    blanked AND a credential-shaped namespace blanked (PRR-007 falsifier).
+    Selector discovery requires grounded sources, so the credential reaches
+    the page body through the real refresh pipeline: one fixture source row
+    is made credential-shaped and the page namespace is re-pointed to the
+    credential-shaped namespace before ``page_refresh`` regenerates the
+    body. The fence header legitimately echoes the caller-supplied
+    namespace, so the leak check targets the content form (``api_key=…``),
+    not the bare token."""
+
+    def test_credential_shaped_page_stub_blanks_its_namespace(self):
+        with tempfile.TemporaryDirectory(prefix="zmem-p352-pagestub-") as tmp:
+            root = Path(tmp)
+            with _isolated_env(root):
+                db, pages = _seed_store(root)
+                ns = "project:AKIAIOSFODNN7EXAMPLE"
+                db.execute(
+                    "UPDATE memory SET namespace=? WHERE namespace=?",
+                    (ns, NAMESPACE))
+                db.execute(
+                    "UPDATE memory SET content=content || "
+                    "' api_key=AKIAIOSFODNN7EXAMPLE' WHERE id=?",
+                    ("00000000-0000-4000-8000-000000000502",))
+                db.commit()
+                pages.page_refresh(
+                    db, data_dir=str(root / "data"), page_id=PAGE_ID,
+                    query="fixture topic", namespace=ns,
+                    tags=("fixture-topic",), llm_local=False, now=NOW)
+                page_md = (root / "data" / "pages" / PAGE_ID
+                           / "page.md").read_bytes().decode("utf-8")
+                self.assertIn(
+                    "AKIAIOSFODNN7EXAMPLE", page_md,
+                    "precondition: the generated page body carries the "
+                    "credential pattern (its source row does), or this test "
+                    "proves nothing")
+                _storelib, _beliefs, inject, _schema, _meta, _ledger, _pg = \
+                    _runtime()
+                payload = inject.select_and_budget_for_injection(
+                    db, query="fixture topic", namespace=ns,
+                    moment="user_prompt", session_id="p352-page-stub",
+                    lane="codex", budget_tokens=1500,
+                    data_dir=str(root / "data"))
+                stubs = [r for r in payload["results"]
+                         if r.get("type") == "page"
+                         and r.get("withheld_for_secret")]
+                self.assertTrue(
+                    stubs,
+                    "precondition: the credential-shaped page must reach "
+                    "the page-stub path, or this test proves nothing")
+                stub = stubs[0]
+                self.assertEqual(
+                    stub.get("content"), "",
+                    "a withheld page stub must blank its content")
+                self.assertEqual(
+                    stub.get("namespace"), "",
+                    "a withheld page stub must blank a credential-shaped "
+                    "namespace exactly as row stubs do (PRR-007 / R2-1)")
+                self.assertNotIn(
+                    "api_key=AKIAIOSFODNN7EXAMPLE",
+                    payload.get("rendered") or "",
+                    "the credential as CONTENT must never reach the rendered "
+                    "fence (the header echo of the caller namespace is not a "
+                    "leak)")
+                db.close()
+
+
 if __name__ == "__main__":
     unittest.main()
