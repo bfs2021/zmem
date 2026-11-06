@@ -308,6 +308,22 @@ if count > 0 and trivial_count == count and not rej_msg:
     try:
         ring_dir = os.path.join(data_dir, "subagent-reflections")
         os.makedirs(ring_dir, exist_ok=True)
+        # PRR-008b: the retention sweep must also run on the filtered
+        # path — an only-filtered session otherwise never ages out its
+        # counters, locks, or interrupted .tmp files (the sidecar-write
+        # sweep below never executes for it). Same 14-day rule.
+        now_s = time.time()
+        for stale_name in os.listdir(ring_dir):
+            if not (stale_name.endswith(".json")
+                    or stale_name.endswith(".tmp")
+                    or stale_name.endswith(".lock")):
+                continue
+            stale_p = os.path.join(ring_dir, stale_name)
+            try:
+                if (now_s - os.stat(stale_p).st_mtime) / 86400.0 > 14.0:
+                    os.unlink(stale_p)
+            except OSError:
+                pass
         key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
         counter_path = os.path.join(ring_dir, key + ".filtered.json")
         lock_path = os.path.join(ring_dir, "." + key + ".filtered.lock")

@@ -130,8 +130,23 @@ def classify_failure(detail: Mapping[str, object]) -> str:
         if tool in ("grep", "glob"):
             return "trivial"
         if tool == "read":
+            # PRR-010a: the marker must not be satisfied by a path or a
+            # permission/network diagnostic that merely CONTAINS the
+            # phrase ("The network path was not found", "permission
+            # denied, open '<path containing not found>'"). Require the
+            # phrase outside any echoed path and reject diagnostic
+            # families that are real failures.
             if any(marker in error for marker in _NONEXISTENT_PATH_MARKERS):
-                return "trivial"
+                if not any(word in error for word in
+                           ("permission", "denied", "eacces", "eio",
+                            "network path", "errno")):
+                    path_text = _normalized(detail.get("path"))
+                    if not (path_text and path_text in error
+                            and error.index(path_text)
+                            < min(error.index(m)
+                                  for m in _NONEXISTENT_PATH_MARKERS
+                                  if m in error)):
+                        return "trivial"
             return "other"
         if tool == "bash" and command:
             if any(ch in command for ch in ("$", "`", ">", "<")):

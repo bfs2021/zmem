@@ -1,6 +1,6 @@
 {
   "algorithm": "sha256-crlf-norm",
-  "digest": "8bd0c4c837b7db958105df50463f1b33ff2ed12faa57e0ed7bd8a495002a9292",
+  "digest": "a6f9f48a2e4de47f7f312b6bf2eb9f8ac1571533685e0a40487e62f54c1c565d",
   "files": {
     ".agents/plugins/marketplace.json": "926cce26a68d13b700395cd4a24175921d9b158ab5c46d4b375e686b4e75b40f",
     ".claude-plugin/marketplace.json": "cc45d65b9b2b7c6f49391753124c88099e0701b55ab52b9d458cf5496c68b894",
@@ -55,7 +55,7 @@
     "hooks/zmem-session-end.sh": "19e3e99b639cdaee2e4ea88c7c5d20f9fe591add01826b5eb9f1988deb8dc830",
     "hooks/zmem-session-start.sh": "7340cb3f9c0ef37a2ee8ff9bdabf33ea9d555ee7d2d7cfe63f75af1f999fd2dd",
     "hooks/zmem-subagent-recall.sh": "6583c49f292b03b943e7501d7a000921fa8e99dce9a6958cfd2feae65fcb0474",
-    "hooks/zmem-subagent-reflect.sh": "029070d58d7e60670ce74f8754547452ca7fd3c3a3c319e989c46f4e8b5bc0b9",
+    "hooks/zmem-subagent-reflect.sh": "26f698c5269dea8b25737fde48b339f04311904e37dc332e48475c9ab1b2f9d3",
     "marketplace.json": "eaf527981141ebffecfdf34a0790bebeb01636f4d7fbe70b581c22a326872582",
     "scripts/bench_hook_latency.py": "ed77a76b54b97faab045c90a04acb3673651b3243967f1ebb6833c631e1b16be",
     "scripts/canary-schema.json": "63218125b9a09d88be1153fd450f397035804dd56d2a9637faff3e06edc939c0",
@@ -84,7 +84,7 @@
     "skills/closeout-remote/SKILL.md": "72ef37990a67c16fb1e9b12bd1f5bd0d39d0499036e15a3fd7c77cc40456fdf9",
     "skills/closeout/SKILL.md": "6c4a72fecc39f2b37da7b09365a3c7a5b8cfbe6e20514f905dcaa0a43c48496f",
     "skills/memory/SKILL.md": "06c62462040a260e65ec6f816f4b2715c6cb17a8638e75144c47acdd95ae2743",
-    "skills/memory/scripts/capture_quality.py": "a0958b417aacf17b77674d723aa224b6a5a3c4cca7e30c811bcb984d07792eb3",
+    "skills/memory/scripts/capture_quality.py": "144952fd06464e4164c6e0ea80cc32a90eb77a3d632934528a5b04842cefe19c",
     "skills/memory/scripts/correction_queue.py": "cfeed1f228488fa926eefc7ad4b9c48ac8370f5ceb29340ed02921ef94c9dbfb",
     "skills/memory/scripts/corrections.py": "cf6ac131d092bb319cf9cfcf762b8384105588c8adb968349c804efb50bbaf7a",
     "skills/memory/scripts/cross_encoder_profiles.py": "8fbada332da7c8710ca402cf7a082d903c55a0d6178084bc44a7bee6fd5f1c9a",
