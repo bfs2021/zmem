@@ -92,6 +92,10 @@ class _RedeliveryBase(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="zmem-p307-"))
+        # Review round (PRR-013 / cubic P3): register the cleanup BEFORE any
+        # fixture step that can raise — unittest skips tearDown when setUp
+        # raises, so a failing `store.py add` used to leak the temp store.
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.env = _clean_env(self.tmp)
         self.pid = self._add_row(self.PARENT)
         self.nid = self._add_row(self.NEIGHBOUR)
@@ -119,11 +123,12 @@ class _RedeliveryBase(unittest.TestCase):
             "--confidence", "0.9", "--json")
         return json.loads(stdout)["id"]
 
-    def _call(self, *extra: str) -> dict:
+    def _call(self, *extra: str, query: str = "git push --force") -> dict:
         """One pretool injection pull in the class session. ``extra`` rides
-        through (e.g. ``--exclude`` arms)."""
+        through (e.g. ``--exclude`` arms); ``query`` overrides the pull's
+        query (the F-02 pin uses a different second-call query)."""
         return json.loads(self._run_cli(
-            "recall", "--query", "git push --force",
+            "recall", "--query", query,
             "--namespace", self.NAMESPACE, "--no-hybrid", "--no-bump",
             "--for-injection", "--json", "--session-id", self.SESSION,
             "--moment", "pretool", *extra))
@@ -234,6 +239,51 @@ class ParentStrongReleaseIgnoresExplicitExclusionTest(_RedeliveryBase):
             "PINNED PRE-EXISTING POLICY (#307 decision): a strong-matched "
             "parent is released even when it is also explicitly excluded — "
             "the hazard override. Change this deliberately, with an issue.")
+
+
+class DirectMatchNeighbourRendersUnmarkedTest(_RedeliveryBase):
+    """Maintainer review F-02: the release un-suppresses; it never
+    force-includes. The re-render is retrieval-driven, and a contradicts
+    neighbour whose OWN text direct-matches the query renders WITHOUT the
+    [CONTESTED LINK] marker (the marker is expansion provenance — links.py
+    stamps contested_link only on expansion arrivals). This arm pins that
+    disclosed behaviour so a future change to add force-include or
+    direct-match stamping is deliberate."""
+
+    # The neighbour's own text carries the operation tokens, so it
+    # direct-matches every pull of this session (no expansion arrival) —
+    # exactly the shape the F-02 pin needs: release fires, retrieval is
+    # direct, and the marker must stay OFF.
+    NEIGHBOUR = "git push --force postmortem"
+
+    def test_direct_matched_neighbour_renders_unmarked(self):
+        # Call 1: parent AND neighbour both direct-match the query (the
+        # neighbour's text carries the op tokens) — both render, both land
+        # in the ledger. Precondition: the neighbour is delivered.
+        first = self._call()
+        fence1 = first.get("rendered") or ""
+        self.assertIn(f"[{self.nid}]", fence1,
+                      "precondition: the neighbour direct-matches and "
+                      "renders on call 1")
+        self.assertIn(f"[{self.pid}]", fence1,
+                      "precondition: the parent renders on call 1")
+        # Call 2: same tokens strong-match BOTH ledgered rows — the parent
+        # arm releases them (and the #307 contradicts arm is a no-op here:
+        # the neighbour is itself strong-matched, already released). The
+        # neighbour re-renders via DIRECT retrieval: no expansion walk, so
+        # no contested marker — pinning maintainer F-02.
+        second = self._call()
+        fence2 = second.get("rendered") or ""
+        self.assertIn(f"[{self.pid}]", fence2,
+                      "precondition: the strong match re-releases the parent")
+        self.assertIn(
+            f"[{self.nid}]", fence2,
+            "precondition: the direct-matching neighbour is re-retrieved on "
+            "call 2, or this pin proves nothing")
+        self.assertNotIn(
+            "[CONTESTED LINK", fence2,
+            "a direct-retrieved neighbour re-renders unmarked (the marker "
+            "is expansion provenance; maintainer F-02 pin)")
 
 
 if __name__ == "__main__":

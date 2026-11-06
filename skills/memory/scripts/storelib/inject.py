@@ -193,6 +193,11 @@ def _row_markers(row: dict[str, Any]) -> list:
 # rendered row out of ledger accounting (the #250 re-delivery harm class).
 _MARKER_UNSAFE_CHARS = " \t\r\n]<>"
 
+# One-shot flag for the #307 release-block fail-open warning (maintainer
+# review F-03: the degraded mode must not be indistinguishable from
+# feature-off). Module-level so the nested selector can `global` it.
+_CONTESTED_RELEASE_WARNED = False
+
 
 def contested_marker(row: dict[str, Any]) -> str:
     """The contested-link marker for a row, naming the opposing row.
@@ -214,20 +219,26 @@ def contested_marker(row: dict[str, Any]) -> str:
 
 
 def _indent_continuations(text: Any, indent: str = "    ") -> str:
-    """Render stored free-form text so no continuation line starts at
+    """Render stored free-form text so no CONTINUATION line starts at
     column 0 (issue #352 AC1).
 
     The delivery ledger's ``rows_present_in`` bullet grammar
     (delivery_ledger.py) honours column-0 ``- [<id>]`` lines, and the fence
-    renders stored ``content``/``source_ref``/``tags`` with a first-line-only
-    indent — so a stored value containing a newline followed by a renderer-
-    shaped bullet forged delivery credit for a row that never rendered
-    (executed probe, PR #350 review; re-executed at base 7b9d871). Indenting
-    every continuation line with the same prefix as the field's first line
-    closes the class for EVERY consumer of the rendered fence: no byte of
-    stored free-form text can ever begin a line at column 0. Single-line
-    values are byte-identical (``split``/``join`` round-trip on a newline-free
-    string is the string itself). ``fence_row_cost`` applies this same
+    renders stored ``content``/``source_ref``/``tags`` — so a stored value
+    containing a newline followed by a renderer-shaped bullet forged delivery
+    credit for a row that never rendered (executed probe, PR #350 review;
+    re-executed at base 7b9d871). Prefixing every continuation line with the
+    field's first-line indent closes the class for the fields this helper
+    covers. SCOPE (review round, maintainer F-08): the claim covers the
+    content/source_ref/tags call sites — header fields, page-provenance
+    lines, and entity names are interpolated elsewhere and are bounded
+    upstream (write-path namespace/enum validation; sync namespace validation
+    since this PR's review round). Single-line behaviour is CALL-SITE
+    dependent: the canonical content call site already supplies the first
+    line's indent via this prefix (byte-identical to the pre-PR
+    ``"    {content}"`` form); a caller that renders the first line inline
+    must not route it through here (the Hermes degraded twin uses its own
+    continuations-only helper). ``fence_row_cost`` applies this same
     transformation before ``estimate_tokens`` so admission accounting cannot
     diverge from the rendered bytes.
     """
@@ -486,15 +497,23 @@ def _truncate_protected_row(
         - (overhead * CHARS_PER_TOKEN) - CHARS_PER_TOKEN
     if allowed < MIN_STUB_CHARS:
         return None
-    clipped = row.copy()
-    clipped["content"] = content[:allowed].rstrip() + marker
-    cost = _fence_row_cost_for_wire(
-        clipped, legacy_injection_wire=legacy_injection_wire)
-    if cost > remaining:
-        # Fail-closed: the arithmetic above is conservative, but if the
-        # re-measure ever disagrees, drop instead of breaking the ceiling.
-        return None
-    return clipped, cost
+    while allowed >= MIN_STUB_CHARS:
+        clipped = row.copy()
+        clipped["content"] = content[:allowed].rstrip() + marker
+        cost = _fence_row_cost_for_wire(
+            clipped, legacy_injection_wire=legacy_injection_wire)
+        if cost <= remaining:
+            return clipped, cost
+        # The flat chars/4 model above ignores the per-continuation-line
+        # indent the renderer adds (issue #352 AC1): a clipped slice that
+        # retains K newlines bills K-1 tokens over the flat estimate (the
+        # safety margin absorbs one). Shave one token of content and
+        # re-measure until the stub fits or nothing is left — a protected
+        # row is truncated, never dropped, while it can still carry
+        # information (apply_token_budget's documented policy).
+        allowed -= CHARS_PER_TOKEN
+    # Fail-closed: even a minimal stub does not fit.
+    return None
 
 
 def apply_token_budget(
@@ -1270,18 +1289,25 @@ def select_and_budget_for_injection(
         # describes). Release the ledgered contradicts neighbours of the
         # strong-released parents: delivered-derived ids only (never widens
         # to a row the session has not seen), minus explicit exclude_ids
-        # (caller exclusions always apply), contradicts-only (a related/
-        # supports neighbour carries no marker and re-delivering it is pure
-        # budget noise — out of the issue's scope), ONE batched query over
-        # all released parents. This block sits in its OWN try, isolated
-        # from the parent release above: a pre-v11 store without
+        # (caller exclusions always apply to THIS arm; the parent arm's
+        # strong-match release above deliberately overrides explicit
+        # exclusions — the hazard override pinned by
+        # ParentStrongReleaseIgnoresExplicitExclusionTest), contradicts-only
+        # (a related/supports neighbour carries no marker and re-delivering
+        # it is pure budget noise — out of the issue's scope), ONE batched
+        # query over all released parents. This block sits in its OWN try,
+        # isolated from the parent release above: a pre-v11 store without
         # memory_link (or any failure here) degrades to parent-only release
         # — today's behaviour, never worse. No-op on bridged pulls
         # (delivered_ids was emptied above). The release un-suppresses; it
         # never force-includes — the parent must still be retrieved, and
         # the neighbour re-renders through the expansion walk that stamps
         # contested_link/link_of (a direct-retrieved neighbour renders
-        # unmarked by design: the marker is expansion provenance).
+        # unmarked by design: the marker is expansion provenance; maintainer
+        # review F-02 — re-render is retrieval-driven, and a neighbour that
+        # direct-matches the query renders without the marker, which no
+        # test pins). Failures here warn ONCE per process (maintainer F-03):
+        # the fail-open must not be indistinguishable from feature-off.
         if strong and delivered_ids:
             try:
                 _ph = ",".join("?" * len(strong))
@@ -1301,8 +1327,25 @@ def select_and_budget_for_injection(
                 if _release:
                     exclusions = [rid for rid in exclusions
                                   if rid not in _release]
-            except Exception:
-                pass  # fail-open: parent-only release (see comment above)
+            except Exception as _exc:
+                # Fail-open: parent-only release (see comment above). Warn
+                # ONCE per process (maintainer F-03) so the degraded mode is
+                # not indistinguishable from feature-off; stderr only — the
+                # hook envelope's shape is pinned and must not grow keys.
+                global _CONTESTED_RELEASE_WARNED
+                if not _CONTESTED_RELEASE_WARNED:
+                    _CONTESTED_RELEASE_WARNED = True
+                    try:
+                        import sys as _sys
+                        print(
+                            "[zmem] warning: contested-link re-delivery "
+                            "disabled by a query failure ("
+                            + type(_exc).__name__
+                            + "); falling back to parent-only release",
+                            file=_sys.stderr,
+                        )
+                    except Exception:
+                        pass
 
     # Discover and gate page candidates before invoking ordinary recall so its
     # budget stays byte-identical on calls where no usable page exists. Only a
@@ -1452,7 +1495,15 @@ def select_and_budget_for_injection(
                             "type": row.get("type", ""),
                             "confidence": row.get("confidence", 0.0),
                             "signal": row.get("signal", "none"),
-                            "namespace": row.get("namespace", ""),
+                            # Review round (maintainer F-04 / auth-001): the
+                            # namespace-blank law applies here too — a
+                            # withheld stub must not re-leak a credential-
+                            # shaped namespace through its own ns field.
+                            "namespace": (
+                                "" if isinstance(row.get("namespace"), str)
+                                and recall_module._credential_shaped_text(
+                                    row["namespace"])
+                                else row.get("namespace", "")),
                             "content": "",
                             "withheld_for_secret": True,
                         })

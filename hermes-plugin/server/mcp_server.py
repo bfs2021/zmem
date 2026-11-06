@@ -819,12 +819,19 @@ def _degraded_row_markers(row) -> list:
     return markers
 
 
-def _degraded_indent_continuations(text, indent: str = "    ") -> str:
-    """Continuation lines of stored free-form text keep the field's indent so
-    no stored byte can pose as a column-0 fence bullet (issue #352 AC1; the
-    ledger's rows_present_in grammar honours column-0 ``- [<id>]`` lines).
-    Lockstep with inject._indent_continuations."""
-    return "\n".join(indent + part for part in str(text or "").split("\n"))
+def _degraded_inline_content(text) -> str:
+    """Degraded-lane content slot: the FIRST line stays inline exactly as
+    base rendered it (single-line rows are byte-identical to 0.141.0);
+    CONTINUATION lines carry the 4-space indent so no stored byte can pose
+    as a column-0 fence bullet (issue #352 AC1; the ledger's rows_present_in
+    grammar honours column-0 ``- [<id>]`` lines). Review round (maintainer
+    F-07): indenting the first line too changed every single-line degraded
+    row's bytes and left a trailing pad on empty content."""
+    text = str(text or "")
+    if "\n" not in text:
+        return text
+    first, *rest = text.split("\n")
+    return "\n".join([first] + ["    " + part for part in rest])
 
 
 def _local_fenced_recall(rows, header: str, budget_note: str = "",
@@ -841,8 +848,9 @@ def _local_fenced_recall(rows, header: str, budget_note: str = "",
     same markers, same order, same withheld behaviour (a withheld row shows
     its marker and no content). The degraded layout otherwise stands: content
     stays inline on the bullet (canonical puts it on a separate indented
-    line), and multi-line content continuation lines are indented so they
-    cannot forge delivery bullets (#352 AC1)."""
+    line), multi-line content CONTINUATION lines are indented so they cannot
+    forge delivery bullets (#352 AC1), and single-line rows are byte-identical
+    to 0.141.0 (maintainer review F-07)."""
     if header and len(header) > 240:
         header = header[:237] + "..."
     lines = ["<<<ZMEM_UNTRUSTED_FENCE>>>", header,
@@ -864,17 +872,21 @@ def _local_fenced_recall(rows, header: str, budget_note: str = "",
         markers = _degraded_row_markers(r)
         marker_prefix = (" " + " ".join(markers)) if markers else ""
         withheld = bool(r.get("withheld_for_secret"))
-        content = "" if withheld else _degraded_indent_continuations(
+        content = "" if withheld else _degraded_inline_content(
             r.get("content", ""))
-        lines.append(
+        bullet = (
             "{mp}- {tp}[{id}] [conf={conf}] [signal={sig}] [ns={ns}]"
-            "{tt} [type={t}] {c}".format(
+            "{tt} [type={t}]".format(
                 mp=marker_prefix, tp=tier_prefix, tt=tier_token,
                 id=r.get("id", "?"), conf=r.get("confidence", 0),
                 sig=r.get("signal", "none"), ns=r.get("namespace", "?"),
-                t=r.get("type", "?"), c=content,
+                t=r.get("type", "?"),
             )
         )
+        if content:
+            # No trailing pad on empty/withheld content (maintainer F-07).
+            bullet += " " + content
+        lines.append(bullet)
     if budget_note:
         lines.append("# " + budget_note)
     lines.append("<<<END_ZMEM_UNTRUSTED_FENCE>>>")

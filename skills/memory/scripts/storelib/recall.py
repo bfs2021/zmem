@@ -2595,15 +2595,27 @@ def _withhold_credential_stub(item: dict) -> dict:
 
     Classification inputs stay content/source_ref/tags, but a namespace that
     is ITSELF credential-shaped is blanked — the withheld stub must not
-    re-leak what the content withhold just hid through its own ns field."""
+    re-leak what the content withhold just hid through its own ns field.
+
+    Review round (maintainer F-04 / PRR-002): the stub CARRIES the row's
+    fixed-vocabulary trust/marker keys so the fence keeps rendering
+    [tier=…], [INJECTION RISK], [UNTRUSTED TOOL/WEB], [CONTESTED LINK: …]
+    and [PREVIOUSLY] on withheld rows and the envelopes' risk counts stay
+    honest. It never carries source_ref/tags/entities/score — any of those
+    may be the field that matched the credential registry."""
     ns = item.get("namespace", "") or ""
     if isinstance(ns, str) and _credential_shaped_text(ns):
         ns = ""
-    return {"id": item.get("id", ""), "type": item.get("type", ""),
+    stub = {"id": item.get("id", ""), "type": item.get("type", ""),
             "confidence": item.get("confidence", 0.0),
             "signal": item.get("signal", "none"),
             "namespace": ns,
             "content": "", "withheld_for_secret": True}
+    for _key in ("tier", "taint", "contested_link", "link_of",
+                 "prompt_injection_risk", "unfold_hop"):
+        if item.get(_key) is not None:
+            stub[_key] = item[_key]
+    return stub
 
 
 def _withhold_credential_rows(rows: list) -> list:
@@ -4172,7 +4184,8 @@ def _explain_nearest_neighbors(
         scope_clause = f"AND namespace IN ({ph})"
         params = list(scope)
     rows = conn.execute(
-        f"""SELECT id, content, content_norm, taint, tags FROM memory
+        f"""SELECT id, content, content_norm, taint, tags, source_ref
+            FROM memory
             WHERE superseded_at IS NULL {scope_clause}""",
         params,
     ).fetchall()
@@ -4181,7 +4194,8 @@ def _explain_nearest_neighbors(
         sim = _explain_jaccard(
             tokens, _explain_token_set(r["content_norm"] or r["content"]))
         if sim > 0.0:
-            scored.append((sim, r["id"], r["content"], r["taint"], r["tags"]))
+            scored.append((sim, r["id"], r["content"], r["taint"], r["tags"],
+                           r["source_ref"]))
     scored.sort(key=lambda x: (-x[0], x[1]))
     # PRR-005: neighbors carry the row's trust surface explicitly — the same
     # rows the fenced render would mark, so a not_in_db verdict never shows
@@ -4189,8 +4203,11 @@ def _explain_nearest_neighbors(
     # never shows its content slice at all — the verdict payload carries the
     # withheld stub shape (content="" + withheld_for_secret), and the human
     # blameline renders the [WITHHELD: SECRET] marker in its place.
+    # Review round (maintainer F-06 / PRR-003): the classify blob matches the
+    # canonical input set — source_ref is classified too, so a credential
+    # shape living only in source_ref withholds here like every other lane.
     out: list[dict] = []
-    for sim, mid, content, taint, tags in scored[:k]:
+    for sim, mid, content, taint, tags, source_ref in scored[:k]:
         entry = {
             "id": mid,
             "content": (content or "")[:80],
@@ -4199,6 +4216,7 @@ def _explain_nearest_neighbors(
             "prompt_injection_risk": _has_injection_risk_tag(tags),
         }
         if _classify_credential({"content": content or "",
+                                 "source_ref": source_ref or "",
                                  "tags": tags or ""}):
             entry["content"] = ""
             entry["withheld_for_secret"] = True

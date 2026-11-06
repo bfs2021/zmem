@@ -25,11 +25,13 @@ Fence-content and delivery-accounting hardening, collated: issues #307 +
   `reserve` plus the bump sink; plain-binding requirement; rename-resilient
   — `RenameResilienceTest`; NEW no-popularity-filter law closing the
   executed ledger-rowset gap); stale docstrings corrected.
-- #352 AC1: continuation lines of EVERY free-form fence field (`content`,
-  `source_ref`, `tags`) render indented in both the canonical and the Hermes
-  degraded renderers, so stored multi-line text can no longer forge
-  `rows_present_in` delivery credit for an unrendered row; `fence_row_cost`
-  measures the indented bytes (admission covers unbounded continuations).
+- #352 AC1: continuation lines of stored free-form fence fields (`content`,
+  `source_ref`, `tags`) render indented in the canonical renderer, and
+  multi-line degraded-fence content continuation lines render indented in
+  the Hermes degraded renderer (its content stays inline on the bullet), so
+  stored multi-line text can no longer forge `rows_present_in` delivery
+  credit for an unrendered row; `fence_row_cost` measures the indented
+  bytes (admission covers unbounded continuations).
 - #352 AC2: the Hermes degraded fence carries the canonical provenance
   markers in canonical order (`[PREVIOUSLY]`, `[INJECTION RISK]`,
   `[UNTRUSTED TOOL]`/`[UNTRUSTED WEB]`, the contested marker with the exact
@@ -39,14 +41,31 @@ Fence-content and delivery-accounting hardening, collated: issues #307 +
   replay's PRE-BUDGET seam) classifies credential-shaped rows exactly as
   the passive lane, through one shared withheld-stub builder; a
   credential-shaped namespace is blanked in withheld stubs.
+- Review round: protected decision/constraint rows are truncated to fit
+  under budget pressure — never dropped — after the continuation indent
+  entered the admission cost (regression caught by the PR review);
+  withheld stubs keep their trust markers (`[INJECTION RISK]`,
+  `[UNTRUSTED TOOL/WEB]`, contested, tier) so envelope risk counts stay
+  honest; the #307 release block warns once per process if its query
+  fails instead of failing open silently; explained-verdict neighbours
+  classify `source_ref` too; sync ingest refuses control-character
+  namespaces, matching the writer path.
 
 **Behavioural changes** (visible): the contested marker re-renders on
 strong-token re-delivery (#307); multi-line stored content/source_ref/tags
-render with indented continuation lines (#352 AC1); explicit-lane
-credential rows surface as `[WITHHELD: SECRET]` stubs instead of raw
-content (#352 AC3); the Hermes degraded fence marks provenance on flagged
-rows (#352 AC2). Single-line rows, non-credential rows, and
+render with indented continuation lines on the canonical fence, and
+multi-line degraded-fence content continuations are indented (#352 AC1);
+explicit-lane credential rows surface as `[WITHHELD: SECRET]` stubs instead
+of raw content (#352 AC3); the Hermes degraded fence marks provenance on
+flagged rows (#352 AC2). Single-line rows are byte-identical in both
+renderers; multi-line rows change only on their continuation lines;
 non-re-delivery paths are byte-identical.
+
+**Evidence note (0.142.0 final)**: the committed canary report records the
+pre-publication tree that carries this release's exact runtime code (the
+canary→release diff touches only the two evidence files; the release
+manifest digests of the runtime files match the release commit), and the
+support report's `generated_at` is its own post-canary write time.
 
 ## [0.141.0] - 2026-11-04
 

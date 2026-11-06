@@ -43,7 +43,9 @@ RECALL_PY = STORELIB / "recall.py"
 # "record" call to the admit-once "record_undelivered" API; issue #284
 # (0.109.0) added the reservation sink. The guard follows the SINKS, never a
 # spelling of a local variable.
-_LEDGER_SINKS = ("record_undelivered", "reserve")
+# "record" is the pre-#362 spelling; kept in the vocabulary so a refactor
+# that reverts to the bare record call is still watched (maintainer F-09).
+_LEDGER_SINKS = ("record_undelivered", "reserve", "record")
 _BUMP_SINK = "_bump_telemetry"
 
 
@@ -132,9 +134,13 @@ def _call_arg_names(func: ast.FunctionDef, dotted: str) -> list[ast.Call]:
     return out
 
 
-def _sink_rowset(func: ast.FunctionDef, dotted: str) -> str:
-    """The PLAIN binding the sink ``dotted`` consumes — fail loudly when no
-    argument anchors to a plain rowset ``Name`` (an inline expression over
+def _sink_rowset(func: ast.FunctionDef, dotted: str) -> str | None:
+    """The PLAIN binding the sink ``dotted`` consumes, or None when the sink
+    is not called at all — the vocabulary carries historical spellings
+    (maintainer F-09: ``record`` predates the #362 rename), so absence is
+    legitimate for a legacy name; the CURRENT sink's presence is enforced
+    separately in ``_structural_names``. Fail loudly when a present sink's
+    argument anchors to no plain rowset ``Name`` (an inline expression over
     non-rowset data is exactly the shape a helper could hide a filter in,
     and the chain laws below could not anchor to it). Sinks take non-rowset
     arguments (resolved_data, session_id, moment, ...) and the bump sink
@@ -142,7 +148,8 @@ def _sink_rowset(func: ast.FunctionDef, dotted: str) -> str:
     argument is examined and a comprehension's iteration binding counts."""
     rowsets = _rowset_names(func)
     calls = _call_arg_names(func, dotted)
-    assert calls, f"the {dotted} sink call was not found in the selector"
+    if not calls:
+        return None
     names = set()
     for call in calls:
         found = None
@@ -161,6 +168,8 @@ def _sink_rowset(func: ast.FunctionDef, dotted: str) -> str:
                     found = it.value.id
                     break
         if found is None:
+            # Explicit raise, not a bare assert: python -O strips asserts,
+            # and this tripwire must survive (review round PRR-011).
             shapes = [ast.unparse(a) for a in call.args]
             raise AssertionError(
                 f"{dotted} must consume a plain rowset binding (directly or "
@@ -197,14 +206,24 @@ def _structural_names(func: ast.FunctionDef) -> tuple[str, str]:
     """(ledger_name, bump_name) derived from the sinks, with the shared-sink
     and distinctness laws enforced."""
     ledger_names = {_sink_rowset(func, sink) for sink in _LEDGER_SINKS}
-    assert len(ledger_names) == 1, (
-        f"both ledger sinks must consume the SAME rowset; got "
-        f"{sorted(ledger_names)}")
+    ledger_names.discard(None)
+    if not ledger_names:
+        raise AssertionError(
+            "no ledger sink found in the selector: expected at least one of "
+            f"{_LEDGER_SINKS} to be called")
+    if len(ledger_names) != 1:
+        # Explicit raise (survives python -O) — review round PRR-011: this
+        # is the derivation tripwire the module docstring promises fires
+        # loudly; a stripped assert would silently unanchor every law.
+        raise AssertionError(
+            f"both ledger sinks must consume the SAME rowset; got "
+            f"{sorted(ledger_names)}")
     ledger_name = next(iter(ledger_names))
     bump_name = _sink_rowset(func, _BUMP_SINK)
-    assert bump_name != ledger_name, (
-        f"the ledger sinks and {_BUMP_SINK} must not share a rowset "
-        "(the #250 defect shape)")
+    if bump_name == ledger_name:
+        raise AssertionError(
+            f"the ledger sinks and {_BUMP_SINK} must not share a rowset "
+            "(the #250 defect shape)")
     return ledger_name, bump_name
 
 
