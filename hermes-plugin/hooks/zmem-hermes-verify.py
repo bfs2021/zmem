@@ -62,10 +62,24 @@ def _parse_convention_count(value) -> int:
     last_seen = obj.get("last_seen")
     if not isinstance(last_seen, str) or not last_seen:
         return 0
+    # Exact canonical shape + a strftime round-trip: strptime alone ACCEPTS
+    # second=60 (which the epoch parser resolves as 0.0), so the round-trip
+    # is what catches normalizable-but-unresolvable shapes (impl-review r2).
+    import re as _re
+    import time as _time
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", last_seen):
+        return 0
     try:
-        import time as _time
-        _time.strptime(last_seen, "%Y-%m-%dT%H:%M:%SZ")
+        _parsed = _time.strptime(last_seen, "%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
+        return 0
+    # strptime accepts leap seconds (tm_sec 60/61) that strftime renders
+    # back verbatim; the explicit range gates catch what the round-trip
+    # cannot (impl-review r2, twin of schema_meta._valid_convention_last_seen).
+    if not (0 <= _parsed.tm_hour <= 23 and 0 <= _parsed.tm_min <= 59
+            and 0 <= _parsed.tm_sec <= 59):
+        return 0
+    if _time.strftime("%Y-%m-%dT%H:%M:%SZ", _parsed) != last_seen:
         return 0
     return count
 

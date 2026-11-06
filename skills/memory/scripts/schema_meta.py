@@ -70,19 +70,32 @@ CONVENTION_COUNT_TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 def _valid_convention_last_seen(value: object) -> bool:
-    """True when last_seen is an exact canonical UTC timestamp string. A JSON
-    counter with a corrupt timestamp has no age evidence and must classify
-    MALFORMED (retained by the pruner, counted unparseable) rather than
-    parse as epoch 0 and be deleted as ancient — _parse_iso_to_epoch is total
-    and cannot signal failure (impl-review round 1 finding 3)."""
+    """True when last_seen is an exact canonical UTC timestamp string that the
+    epoch parser can resolve. A JSON counter with a corrupt timestamp has no
+    age evidence and must classify MALFORMED (retained by the pruner, counted
+    unparseable) rather than parse as epoch 0 and be deleted as ancient —
+    _parse_iso_to_epoch is total and cannot signal failure (impl-review
+    rounds 1+2 finding 3: strptime alone ACCEPTS second=60, e.g.
+    2026-11-06T18:00:60Z, which the epoch parser then resolves as 0.0 — the
+    strftime round-trip catches every shape strptime normalizes)."""
     if not isinstance(value, str) or not value:
         return False
+    import re as _re
     import time as _time
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value):
+        return False
     try:
-        _time.strptime(value, CONVENTION_COUNT_TS_FORMAT)
+        parsed = _time.strptime(value, CONVENTION_COUNT_TS_FORMAT)
     except ValueError:
         return False
-    return True
+    # strptime is POSIX-lenient: it accepts tm_sec 60/61 (leap seconds) and
+    # normalizes overflow, and strftime renders them back verbatim — so the
+    # round-trip alone cannot catch them, and _parse_iso_to_epoch resolves
+    # such shapes to its 0.0 failure sentinel. Explicit range gates.
+    if not (0 <= parsed.tm_hour <= 23 and 0 <= parsed.tm_min <= 59
+            and 0 <= parsed.tm_sec <= 59):
+        return False
+    return _time.strftime(CONVENTION_COUNT_TS_FORMAT, parsed) == value
 
 
 def classify_convention_count(value: object) -> str:
