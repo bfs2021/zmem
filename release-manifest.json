@@ -1,6 +1,6 @@
 {
   "algorithm": "sha256-crlf-norm",
-  "digest": "f15be093fd6397ca213cb6c4075271538624c8c9bc558172aab414fdb7c1d7fe",
+  "digest": "050f82d7cddec2bec144065a685cf9e17e152301d00dbbcffc088e8ec6533048",
   "files": {
     ".agents/plugins/marketplace.json": "1cb7b07100e5237d17f71e7e6634c3d19e5a68084404269c870090c25434ed9c",
     ".claude-plugin/marketplace.json": "079d7b104baa071dcbb16e1f1d22d8c50cf3d7c5831a157d7842e6f726aa711a",
@@ -22,7 +22,7 @@
     "hermes-plugin/hooks/_zmem_hook_common.py": "98a15c57335dfa2a330fd07dfb5a0c87b21eaf1761c679b998234f53127f6b78",
     "hermes-plugin/hooks/zmem-hermes-convention.py": "ef1a7b1fd8a3630dd8ee5c993a786b344b93d28784bb8bf64c07218a71b3d30e",
     "hermes-plugin/hooks/zmem-hermes-reflect.py": "fdec448c8b40d7a0a5c32b98e80e9a1aedcd1df15d806c3c93b059183814b1eb",
-    "hermes-plugin/hooks/zmem-hermes-verify.py": "b6b0292efdb7995e045390f639ae9de74a7823ae7b504bb6ace70b98b23b6bd3",
+    "hermes-plugin/hooks/zmem-hermes-verify.py": "e38ae5d22e770e7e710dbf0154e9deee154582ee78909fdda01817792cb84bd6",
     "hermes-plugin/plugin.yaml": "69ac21107e73d4dc8c4af0341b5a02fbbbb4c5771bca17713cbe6e2e7ce528c7",
     "hermes-plugin/server/auth.py": "a19930bc442f97e87829bb0d08042ca552d24ffc630e8a3b4b0c99b09114ea11",
     "hermes-plugin/server/bind_guard.py": "3539d23ea8c2f9f4a60b398975e5cd79a8518aef3e61f86068b22f7eb0cf6372",
@@ -104,7 +104,7 @@
     "skills/memory/scripts/protocol.py": "cfd9d84621864ef1d0144d235dc2e05df330552eb57d98cb8678e101df73ecb4",
     "skills/memory/scripts/redaction.py": "ddaf7dc8db56ab9cf5d00cf76c3a87d8804ad4d54d74103833eea5f0b6bc05bf",
     "skills/memory/scripts/requirements-training.txt": "87e2a26eba83329b6be02d566fea3feab9e887296d67b7bae4b34a4b60445c88",
-    "skills/memory/scripts/schema_meta.py": "0ff00806293cfb6a5d134c32373415869167a45a6fd1dff94b530a0728157038",
+    "skills/memory/scripts/schema_meta.py": "13a0cd3c18c24bfd54f8dcdf8286f8ef642cf33059486ba76f364c261b1ad3cb",
     "skills/memory/scripts/store.py": "5492a0026aea6ce74d7a88bdcfa702a602465c0969ff810fdb64b81a35f49176",
     "skills/memory/scripts/storelib/__init__.py": "a0935a47debc89e06f9b8f82c830870ed8ba3c898503b8759757aab9a47aa99a",
     "skills/memory/scripts/storelib/backup.py": "d6118592341a17ef9378183ea5c17263cf0d33b4979ef6dc7d307969856ba218",
