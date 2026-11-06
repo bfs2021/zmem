@@ -1048,6 +1048,20 @@ def _validate_sync_row(obj: dict, lineno: int | None = None) -> dict:
                 f"field 'namespace' value {ns_trimmed!r} looks like a "
                 f"misspelling of the global namespace; use {GLOBAL_NAMESPACE!r}"
             )
+    # Review round (maintainer F-12, PR #440): the add path rejects C0/DEL
+    # control characters in namespaces (write._validate_namespace via
+    # schema_meta.has_namespace_control) because they cannot pass through
+    # subprocess argv — and a newline renders as a column-0 line in the
+    # untrusted fence, where the delivery ledger's bullet grammar can credit
+    # it as a delivery (the #352 forgery class). Sync previously accepted
+    # what the writer refuses; imported legacy rows with odd-but-printable
+    # namespaces keep flowing — only the control-char class is refused.
+    from schema_meta import has_namespace_control
+    if has_namespace_control(ns_trimmed):
+        raise ValueError(
+            f"field 'namespace' value {ns_trimmed!r} contains a control "
+            "character; the writer path refuses the same class"
+        )
     namespace = ns_trimmed
     content = _req_str("content")
     if len(content) > INGEST_MAX_CONTENT_CHARS:

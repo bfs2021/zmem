@@ -775,6 +775,65 @@ def _fence_renderer():
         return None
 
 
+# Issue #307/#352 lockstep seam: degraded mode by definition cannot import
+# storelib (the import failure is what selected this renderer), so
+# _degraded_contested_marker duplicates inject.contested_marker's EXACT
+# algorithm — falsy opponent renders the bare marker; otherwise the opponent
+# is stringified; an empty string or any character from " \t\r\n]<>" renders
+# the bare marker; every other token (INCLUDING "[", which is safe) renders
+# the named form. tests/test_followup_fence_forgery.py
+# HermesDegradedFenceParityTest holds the two implementations in lockstep.
+_DEGRADED_MARKER_UNSAFE_CHARS = " \t\r\n]<>"
+
+
+def _degraded_contested_marker(row) -> str:
+    opponent = row.get("link_of")
+    if not opponent:
+        return "[CONTESTED LINK]"
+    token = opponent if isinstance(opponent, str) else str(opponent)
+    if not token or any(c in _DEGRADED_MARKER_UNSAFE_CHARS for c in token):
+        return "[CONTESTED LINK]"
+    return "[CONTESTED LINK: %s]" % token
+
+
+def _degraded_row_markers(row) -> list:
+    """Marker prefixes in the canonical renderer's exact ORDER
+    (recall._format_fenced_recall / inject._row_markers): PREVIOUSLY,
+    INJECTION RISK, UNTRUSTED TOOL/WEB, the contested marker, and
+    WITHHELD: SECRET — a withheld row's bullet carries the marker and NO
+    content (#352 AC2 parity)."""
+    markers = []
+    if row.get("unfold_hop"):
+        markers.append("[PREVIOUSLY]")
+    if row.get("prompt_injection_risk"):
+        markers.append("[INJECTION RISK]")
+    taint = row.get("taint")
+    if taint == "untrusted_tool":
+        markers.append("[UNTRUSTED TOOL]")
+    elif taint == "untrusted_web":
+        markers.append("[UNTRUSTED WEB]")
+    if row.get("contested_link"):
+        markers.append(_degraded_contested_marker(row))
+    if row.get("withheld_for_secret"):
+        markers.append("[WITHHELD: SECRET]")
+    return markers
+
+
+def _degraded_inline_content(text) -> str:
+    """Degraded-lane content slot: the FIRST line stays inline exactly as
+    base rendered it (single-line rows are byte-identical to 0.141.0);
+    CONTINUATION lines carry the 4-space indent so no stored byte can pose
+    as a column-0 fence bullet (issue #352 AC1; the ledger's rows_present_in
+    grammar honours column-0 ``- [<id>]`` lines). Review round (maintainer
+    F-07): indenting the first line too changed every single-line degraded
+    row's bytes and left a trailing pad on empty content."""
+    text = str(text or "")
+    if "\n" not in text:
+        return text
+    first, *rest = text.split("\n")
+    return "\n".join([first] + ["    " + part for part in rest])
+
+
 def _local_fenced_recall(rows, header: str, budget_note: str = "",
                          legacy_injection_wire: bool = False) -> str:
     """Degraded-mode fence mirroring storelib's token accounting.
@@ -783,7 +842,15 @@ def _local_fenced_recall(rows, header: str, budget_note: str = "",
     omission-diagnostics contract as the storelib renderer, byte-consistently:
     the note carries the same ``# `` comment prefix and the header is capped
     at 240 chars exactly like ``_format_fenced_recall`` (the admission shell
-    reservation budgets a capped header)."""
+    reservation budgets a capped header).
+
+    Issue #352 AC2: provenance-marker PARITY with the canonical renderer —
+    same markers, same order, same withheld behaviour (a withheld row shows
+    its marker and no content). The degraded layout otherwise stands: content
+    stays inline on the bullet (canonical puts it on a separate indented
+    line), multi-line content CONTINUATION lines are indented so they cannot
+    forge delivery bullets (#352 AC1), and single-line rows are byte-identical
+    to 0.141.0 (maintainer review F-07)."""
     if header and len(header) > 240:
         header = header[:237] + "..."
     lines = ["<<<ZMEM_UNTRUSTED_FENCE>>>", header,
@@ -802,15 +869,24 @@ def _local_fenced_recall(rows, header: str, budget_note: str = "",
         else:
             tier_token = ""
             tier_prefix = "[tier=unknown] "
-        lines.append(
-            "- {tier_prefix}[{id}] [conf={conf}] [signal={sig}] [ns={ns}]"
-            "{tier_token} [type={t}] {c}".format(
-                tier_prefix=tier_prefix, tier_token=tier_token,
+        markers = _degraded_row_markers(r)
+        marker_prefix = (" " + " ".join(markers)) if markers else ""
+        withheld = bool(r.get("withheld_for_secret"))
+        content = "" if withheld else _degraded_inline_content(
+            r.get("content", ""))
+        bullet = (
+            "{mp}- {tp}[{id}] [conf={conf}] [signal={sig}] [ns={ns}]"
+            "{tt} [type={t}]".format(
+                mp=marker_prefix, tp=tier_prefix, tt=tier_token,
                 id=r.get("id", "?"), conf=r.get("confidence", 0),
                 sig=r.get("signal", "none"), ns=r.get("namespace", "?"),
-                t=r.get("type", "?"), c=r.get("content", ""),
+                t=r.get("type", "?"),
             )
         )
+        if content:
+            # No trailing pad on empty/withheld content (maintainer F-07).
+            bullet += " " + content
+        lines.append(bullet)
     if budget_note:
         lines.append("# " + budget_note)
     lines.append("<<<END_ZMEM_UNTRUSTED_FENCE>>>")

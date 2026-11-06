@@ -151,6 +151,30 @@ class BudgetAdmissionTest(unittest.TestCase):
         self.assertEqual(stats["truncated"], 1)
         self.assertLessEqual(used + inject.FENCE_SHELL_ALLOWANCE, budget)
 
+    def test_multiline_protected_row_truncated_not_dropped(self):
+        # Review round (PRR-005 / maintainer-confirmed HIGH): the #352
+        # continuation indent is billed by fence_row_cost but the original
+        # single-shot clip model ignored it, so a multi-line decision row
+        # needing truncation FAILED the fail-closed re-measure and was
+        # DROPPED where base delivered it truncated (overage = exactly
+        # K-1 tokens, K = newlines retained in the clip). The clip now
+        # re-measures and shaves until the stub fits: a protected row is
+        # truncated, never dropped, while it can still carry information.
+        content = "\n".join(f"decision line {i:03d} with payload text"
+                            for i in range(40))
+        rows = [_row(content, type_="decision", score=0.1)]
+        budget = inject.FENCE_SHELL_ALLOWANCE + 100
+        kept, used, dropped, stats = inject.apply_token_budget(
+            rows, budget=budget, with_stats=True)
+        self.assertEqual(
+            len(kept), 1,
+            "a multi-line protected row must be truncated to fit, never "
+            "dropped in the truncation band (PRR-005)")
+        self.assertTrue(kept[0]["content"].endswith(inject.TRUNCATION_MARKER))
+        self.assertEqual(stats["truncated"], 1)
+        self.assertEqual(stats["dropped_protected"], 0)
+        self.assertLessEqual(used + inject.FENCE_SHELL_ALLOWANCE, budget)
+
     def test_absurd_budget_drops_protected_with_count(self):
         # Below the fence-shell allowance nothing fits — protected rows are
         # dropped WITH a count, never silently.

@@ -193,6 +193,11 @@ def _row_markers(row: dict[str, Any]) -> list:
 # rendered row out of ledger accounting (the #250 re-delivery harm class).
 _MARKER_UNSAFE_CHARS = " \t\r\n]<>"
 
+# One-shot flag for the #307 release-block fail-open warning (maintainer
+# review F-03: the degraded mode must not be indistinguishable from
+# feature-off). Module-level so the nested selector can `global` it.
+_CONTESTED_RELEASE_WARNED = False
+
 
 def contested_marker(row: dict[str, Any]) -> str:
     """The contested-link marker for a row, naming the opposing row.
@@ -211,6 +216,37 @@ def contested_marker(row: dict[str, Any]) -> str:
     if not token or any(c in _MARKER_UNSAFE_CHARS for c in token):
         return "[CONTESTED LINK]"
     return "[CONTESTED LINK: %s]" % token
+
+
+def _indent_continuations(text: Any, indent: str = "    ") -> str:
+    """Render stored free-form text so no CONTINUATION line starts at
+    column 0 (issue #352 AC1).
+
+    The delivery ledger's ``rows_present_in`` bullet grammar
+    (delivery_ledger.py) honours column-0 ``- [<id>]`` lines, and the fence
+    renders stored ``content``/``source_ref``/``tags`` — so a stored value
+    containing a newline followed by a renderer-shaped bullet forged delivery
+    credit for a row that never rendered (executed probe, PR #350 review;
+    re-executed at base 7b9d871). Prefixing every continuation line with the
+    field's first-line indent closes the class for the fields this helper
+    covers. SCOPE (review round, maintainer F-08): the claim covers the
+    content/source_ref/tags call sites — header fields, page-provenance
+    lines, and entity names are interpolated elsewhere and are bounded
+    upstream (write-path namespace/enum validation; sync namespace validation
+    since this PR's review round) for rows admitted through the validated
+    paths; legacy rows predating that validation, and the
+    import-store/dataset import paths, which do not run the control-char
+    check, remain a disclosed residual (issue #443). Single-line
+    behaviour is CALL-SITE
+    dependent: the canonical content call site already supplies the first
+    line's indent via this prefix (byte-identical to the pre-PR
+    ``"    {content}"`` form); a caller that renders the first line inline
+    must not route it through here (the Hermes degraded twin uses its own
+    continuations-only helper). ``fence_row_cost`` applies this same
+    transformation before ``estimate_tokens`` so admission accounting cannot
+    diverge from the rendered bytes.
+    """
+    return "\n".join(indent + part for part in str(text or "").split("\n"))
 
 
 def fence_row_cost(row: dict[str, Any], *,
@@ -263,10 +299,18 @@ def fence_row_cost(row: dict[str, Any], *,
     lines = [header]
     # Credential-withheld rows render only their marked id/type bullet.  Keep
     # admission cost exact so a marker never becomes unbudgeted fence text.
+    # Issue #352 AC1: content/source_ref/tags continuation lines carry the
+    # same 4-space indent as their first line in the renderer, and admission
+    # measures the SAME indented bytes (a fixed margin cannot absorb
+    # unbounded continuations — plan-critic round 1, blocker 5).
     if not row.get("withheld_for_secret"):
-        lines.append("    " + (row.get("content", "") or ""))
+        lines.append(_indent_continuations(row.get("content", "") or ""))
     if not row.get("withheld_for_secret") and row.get("source_ref"):
-        lines.append("    source_ref: {}".format(row["source_ref"]))
+        # First line rides after the "source_ref: " label; continuation lines
+        # keep the 4-space indent (the [4:] strips only the first line's
+        # prefix, which the label line already provides).
+        lines.append("    source_ref: "
+                     + _indent_continuations(row["source_ref"])[4:])
     # Page provenance is intentionally a narrow, page-only extension of the
     # common fence.  Ordinary rows retain their historical bytes.
     if row.get("type") == "page" and not row.get("withheld_for_secret"):
@@ -278,7 +322,7 @@ def fence_row_cost(row: dict[str, Any], *,
             if isinstance(values, (list, tuple)) and values:
                 lines.append("    {}: {}".format(key, ", ".join(map(str, values))))
     if not row.get("withheld_for_secret") and row.get("tags"):
-        lines.append("    tags: {}".format(row["tags"]))
+        lines.append("    tags: " + _indent_continuations(row["tags"])[4:])
     ents = row.get("entities") or []
     if not row.get("withheld_for_secret") and ents:
         lines.append(
@@ -457,15 +501,23 @@ def _truncate_protected_row(
         - (overhead * CHARS_PER_TOKEN) - CHARS_PER_TOKEN
     if allowed < MIN_STUB_CHARS:
         return None
-    clipped = row.copy()
-    clipped["content"] = content[:allowed].rstrip() + marker
-    cost = _fence_row_cost_for_wire(
-        clipped, legacy_injection_wire=legacy_injection_wire)
-    if cost > remaining:
-        # Fail-closed: the arithmetic above is conservative, but if the
-        # re-measure ever disagrees, drop instead of breaking the ceiling.
-        return None
-    return clipped, cost
+    while allowed >= MIN_STUB_CHARS:
+        clipped = row.copy()
+        clipped["content"] = content[:allowed].rstrip() + marker
+        cost = _fence_row_cost_for_wire(
+            clipped, legacy_injection_wire=legacy_injection_wire)
+        if cost <= remaining:
+            return clipped, cost
+        # The flat chars/4 model above ignores the per-continuation-line
+        # indent the renderer adds (issue #352 AC1): a clipped slice that
+        # retains K newlines bills K-1 tokens over the flat estimate (the
+        # safety margin absorbs one). Shave one token of content and
+        # re-measure until the stub fits or nothing is left — a protected
+        # row is truncated, never dropped, while it can still carry
+        # information (apply_token_budget's documented policy).
+        allowed -= CHARS_PER_TOKEN
+    # Fail-closed: even a minimal stub does not fit.
+    return None
 
 
 def apply_token_budget(
@@ -1223,6 +1275,7 @@ def select_and_budget_for_injection(
     # and making duplicate ids deterministic across callers.
     exclusions = _ordered_unique(list(exclude_ids or []) + delivered_ids)
     if moment == "pretool" and ops_tokens is None and effective_ops:
+        strong: set = set()
         try:
             strong = {
                 rid for rid, entry in delivered_by_id.items()
@@ -1231,6 +1284,72 @@ def select_and_budget_for_injection(
             exclusions = [rid for rid in exclusions if rid not in strong]
         except Exception:
             pass
+        # Issue #307 (decision comment 6639125597): a hazard neighbour that
+        # was ledgered as this parent's CONTRADICTS expansion child stays
+        # excluded above — its own text never strong-matches, and nothing
+        # modelled the delivery relationship — so its [CONTESTED LINK] marker
+        # silently vanished from exactly the re-delivery envelope that
+        # matters (the operator is about to run the hazardous op the parent
+        # describes). Release the ledgered contradicts neighbours of the
+        # strong-released parents: delivered-derived ids only (never widens
+        # to a row the session has not seen), minus explicit exclude_ids
+        # (caller exclusions always apply to THIS arm; the parent arm's
+        # strong-match release above deliberately overrides explicit
+        # exclusions — the hazard override pinned by
+        # ParentStrongReleaseIgnoresExplicitExclusionTest), contradicts-only
+        # (a related/supports neighbour carries no marker and re-delivering
+        # it is pure budget noise — out of the issue's scope), ONE batched
+        # query over all released parents. This block sits in its OWN try,
+        # isolated from the parent release above: a pre-v11 store without
+        # memory_link (or any failure here) degrades to parent-only release
+        # — today's behaviour, never worse. No-op on bridged pulls
+        # (delivered_ids was emptied above). The release un-suppresses; it
+        # never force-includes — the parent must still be retrieved, and
+        # the neighbour re-renders through the expansion walk that stamps
+        # contested_link/link_of (a direct-retrieved neighbour renders
+        # unmarked by design: the marker is expansion provenance; maintainer
+        # review F-02 — re-render is retrieval-driven, and a neighbour that
+        # direct-matches the query renders without the marker, which no
+        # test pins). Failures here warn ONCE per process (maintainer F-03):
+        # the fail-open must not be indistinguishable from feature-off.
+        if strong and delivered_ids:
+            try:
+                _ph = ",".join("?" * len(strong))
+                _edges = conn.execute(
+                    "SELECT src_id, dst_id FROM memory_link "
+                    f"WHERE relation = 'contradicts' "
+                    f"AND (src_id IN ({_ph}) OR dst_id IN ({_ph}))",
+                    (*strong, *strong),
+                ).fetchall()
+                _parents = set(strong)
+                _release = {
+                    (e["src_id"] if e["dst_id"] in _parents else e["dst_id"])
+                    for e in _edges
+                }
+                _release &= set(delivered_ids)
+                _release -= set(exclude_ids or [])
+                if _release:
+                    exclusions = [rid for rid in exclusions
+                                  if rid not in _release]
+            except Exception as _exc:
+                # Fail-open: parent-only release (see comment above). Warn
+                # ONCE per process (maintainer F-03) so the degraded mode is
+                # not indistinguishable from feature-off; stderr only — the
+                # hook envelope's shape is pinned and must not grow keys.
+                global _CONTESTED_RELEASE_WARNED
+                if not _CONTESTED_RELEASE_WARNED:
+                    _CONTESTED_RELEASE_WARNED = True
+                    try:
+                        import sys as _sys
+                        print(
+                            "[zmem] warning: contested-link re-delivery "
+                            "disabled by a query failure ("
+                            + type(_exc).__name__
+                            + "); falling back to parent-only release",
+                            file=_sys.stderr,
+                        )
+                    except Exception:
+                        pass
 
     # Discover and gate page candidates before invoking ordinary recall so its
     # budget stays byte-identical on calls where no usable page exists. Only a
@@ -1372,18 +1491,16 @@ def select_and_budget_for_injection(
                 for row in page_rows:
                     if (row.get("withheld_for_secret")
                             or recall_module._classify_credential(row)):
-                        # Keep the canonical id/type-only credential marker in
-                        # the envelope, admit its exact fenced cost, and never
+                        # Keep the canonical credential marker in the
+                        # envelope, admit its exact fenced cost, and never
                         # let it suppress its represented canonical sources.
-                        page_secret_markers.append({
-                            "id": row.get("id", ""),
-                            "type": row.get("type", ""),
-                            "confidence": row.get("confidence", 0.0),
-                            "signal": row.get("signal", "none"),
-                            "namespace": row.get("namespace", ""),
-                            "content": "",
-                            "withheld_for_secret": True,
-                        })
+                        # Review round 2 (R2-1): the shared stub builder is
+                        # the single source of truth — namespace-blank law
+                        # AND the fixed-vocabulary trust/marker keys (the
+                        # literal copy here had already drifted from it
+                        # once; maintainer F-04 / PRR-002).
+                        page_secret_markers.append(
+                            recall_module._withhold_credential_stub(row))
                     else:
                         safe_page_rows.append(row)
                 page_rows = safe_page_rows
@@ -1478,15 +1595,15 @@ def select_and_budget_for_injection(
                     row.get("withheld_for_secret")
                     or recall_module._classify_credential(row)):
                 withheld_rows.append(row)
-                displayed_rows.append({
-                    "id": row.get("id", ""),
-                    "type": row.get("type", ""),
-                    "confidence": row.get("confidence", 0.0),
-                    "signal": row.get("signal", "none"),
-                    "namespace": row.get("namespace", ""),
-                    "content": "",
-                    "withheld_for_secret": True,
-                })
+                # Review round 2 (R2-1): the passive hook fence renders this
+                # stub — route it through the shared builder so withheld
+                # rows keep their trust markers ([tier=…], [INJECTION
+                # RISK], [UNTRUSTED TOOL/WEB], contested link) on the
+                # model-visible passive surface too, and a credential-shaped
+                # namespace is blanked here exactly as on the explicit lanes
+                # (maintainer F-04 / PRR-002).
+                displayed_rows.append(
+                    recall_module._withhold_credential_stub(row))
             else:
                 displayed_rows.append(row)
         rows = displayed_rows

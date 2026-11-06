@@ -5,6 +5,77 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.142.0] - 2026-11-05
+
+Fence-content and delivery-accounting hardening, collated: issues #307 +
+#311 + #352 (the #250/#254/#350 follow-up family).
+
+- #307: a hazard neighbour ledgered as a parent's `contradicts` expansion
+  child re-renders with its `[CONTESTED LINK: <parent-id>]` marker when the
+  parent is re-delivered on a strong-token pretool event (contradicts-only
+  release; delivered-derived ids minus explicit `--exclude`; one batched
+  query; isolated fail-open to parent-only release on stores without
+  `memory_link`; `related`/`supports` neighbours stay suppressed; the
+  documented pre-existing parent-release `exclude_ids` asymmetry is pinned).
+  Decision recorded on the issue pre-PR (comment 6639125597).
+- #311: the partial-exclusion invariant of `expand_recall_links` is pinned
+  (`PartialExclusionExpansionTest` — killed by the seeds-derived `have`
+  mutant, which survived the whole suite before); the #250 AST guardrail is
+  structural (names derived from BOTH ledger sinks `record_undelivered` and
+  `reserve` plus the bump sink; plain-binding requirement; rename-resilient
+  — `RenameResilienceTest`; NEW no-popularity-filter law closing the
+  executed ledger-rowset gap); stale docstrings corrected.
+- #352 AC1: continuation lines of stored free-form fence fields (`content`,
+  `source_ref`, `tags`) render indented in the canonical renderer, and
+  multi-line degraded-fence content continuation lines render indented in
+  the Hermes degraded renderer (its content stays inline on the bullet), so
+  stored multi-line text can no longer forge `rows_present_in` delivery
+  credit for an unrendered row on the validated ingest paths (writer
+  namespace validation; sync ingest refuses control-character namespaces
+  since this review round) — legacy rows predating validation and the
+  import-store/dataset import paths are the disclosed residual (#443);
+  `fence_row_cost`
+  measures the indented bytes (admission covers unbounded continuations).
+- #352 AC2: the Hermes degraded fence carries the canonical provenance
+  markers in canonical order (`[PREVIOUSLY]`, `[INJECTION RISK]`,
+  `[UNTRUSTED TOOL]`/`[UNTRUSTED WEB]`, the contested marker with the exact
+  bare/named algorithm, `[WITHHELD: SECRET]` with content suppression).
+- #352 AC3: every explicit surface (recall human + JSON, `recent`,
+  `explain` including its verdict-neighbour payloads and the injection
+  replay's PRE-BUDGET seam) classifies credential-shaped rows exactly as
+  the passive lane, through one shared withheld-stub builder; a
+  credential-shaped namespace is blanked in withheld stubs.
+- Review round: protected decision/constraint rows are truncated to fit
+  under budget pressure — never dropped while a minimal stub still fits
+  (an absurd sub-minimum budget still drops them, with a count) — after
+  the continuation indent entered the admission cost (regression caught by
+  the PR review); withheld stubs keep their trust markers (`[INJECTION
+  RISK]`, `[UNTRUSTED TOOL/WEB]`, contested, tier) on every fence — the
+  passive hook fence renders the same shared stub builder — so envelope
+  risk counts stay honest; the #307 release block warns once per process
+  if its query fails instead of failing open silently; explained-verdict
+  neighbours classify `source_ref` too; sync ingest refuses
+  control-character namespaces, matching the writer path.
+
+**Behavioural changes** (visible): the contested marker re-renders on
+strong-token re-delivery (#307); multi-line stored content/source_ref/tags
+render with indented continuation lines on the canonical fence, and
+multi-line degraded-fence content continuations are indented (#352 AC1);
+explicit-lane credential rows surface as `[WITHHELD: SECRET]` stubs instead
+of raw content (#352 AC3); the Hermes degraded fence marks provenance on
+flagged rows (#352 AC2). Single-line UNFLAGGED rows with non-empty content are
+byte-identical in both renderers; empty-content rows lose their trailing
+pad; multi-line unflagged rows change only on their continuation lines
+(flagged and withheld rows gain markers/stubs as described above);
+non-re-delivery paths are byte-identical.
+
+**Evidence note (0.142.0 final)**: the committed canary report records the
+pre-publication tree that carries this release's exact runtime code (the
+canary→release diff touches only the two evidence reports plus
+test-only commits — no runtime surface; the release manifest digests
+of the runtime files match the release commit), and the support report's `generated_at` is its own
+post-canary write time.
+
 ## [0.141.0] - 2026-11-04
 
 ### Fixed
