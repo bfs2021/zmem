@@ -401,6 +401,32 @@ class MetaSweepTest(MetaTableBoundBase):
             args.append("--dry-run")
         return self._run(*args, env=env)
 
+    def test_corrupt_but_shaped_timestamp_retained_as_unparseable(self):
+        """Impl-review round 2 finding 5: a RECENT row whose last_seen is
+        shape-valid but unresolvable by the epoch parser (strptime accepts
+        second=60; _parse_iso_to_epoch returns its 0.0 failure sentinel for
+        it) must be RETAINED and counted unparseable — never deleted as
+        'ancient' by the sentinel epoch. This is the data-loss shape the
+        round-2 reviewer's probe caught."""
+        corrupt_recent = json.dumps(
+            {"count": 4,
+             "last_seen": time.strftime("%Y-%m-%dT%H:%M:", time.gmtime())
+             + "60Z"})
+        self._set_meta("hermes_convention_count_leap-legacy-aa", corrupt_recent)
+        r = self._sweep()
+        self.assertEqual(r.returncode, 0, _excerpt(r))
+        meta = self._meta_values()
+        key = "hermes_convention_count_leap-legacy-aa"
+        self.assertIn(key, meta, "the corrupt-but-shaped RECENT row was "
+                     f"DELETED (data loss); observed meta: {sorted(meta)}")
+        self.assertEqual(meta[key], corrupt_recent,
+                         "the corrupt-but-shaped row must stay byte-identical")
+        m = re.search(r"unparseable=(\d+)", r.stderr)
+        self.assertIsNotNone(m, f"summary missing; stderr: {r.stderr!r}")
+        self.assertGreaterEqual(int(m.group(1)), 1,
+                                "the corrupt-but-shaped row must be counted "
+                                f"unparseable; stderr: {r.stderr!r}")
+
     def test_sweep_prunes_and_upgrades_convention_meta(self):
         """DISCRIMINATING — at base every convention row survives, nothing
         is upgraded, and no summary line exists."""
@@ -1151,6 +1177,16 @@ class VerifyHookParityTest(MetaTableBoundBase):
             "[]",
             "null",
             '{"count":-3,"last_seen":"x"}',
+            # Impl-review round 2 finding 5: corrupt-but-shaped timestamps.
+            # strptime ACCEPTS second=60 (POSIX leap seconds) and strftime
+            # renders it back verbatim, so only the explicit range gates
+            # reject it; the epoch parser would resolve it to its 0.0
+            # failure sentinel. Both twins must treat these as malformed.
+            '{"count":1,"last_seen":"2026-11-06T18:00:60Z"}',
+            '{"count":1,"last_seen":"2026-02-30T00:00:00Z"}',
+            '{"count":1,"last_seen":"2026-11-06T24:00:00Z"}',
+            '{"count":1,"last_seen":""}',
+            '{"count":1,"last_seen":5}',
         )
         for value in matrix:
             with self.subTest(value=value):
