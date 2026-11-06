@@ -66,14 +66,22 @@ def unsafe_capture_paths(root):
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 payload = None
+            raw_text = ""
+            try:
+                raw_text = path.read_text(encoding="utf-8").lower()
+            except OSError:
+                raw_text = ""
+            # PRR-005: scan the RAW BYTES, not the parsed object —
+            # last-wins parsing erases an earlier duplicate value, so a
+            # {"stdout_raw": "<raw>", "stdout_raw": marker} file must be
+            # judged on the bytes that stay on disk.
+            if _RAW_RECALL_MARKER in raw_text:
+                reasons.append("raw-recall-marker")
+            if any(marker in raw_text for marker in _TIER0_MARKERS):
+                reasons.append("tier0-marker")
             if isinstance(payload, dict):
                 if payload.get("stdout_raw") != REDACTED:
                     reasons.append("raw-stdout")
-                text = json.dumps(payload).lower()
-                if _RAW_RECALL_MARKER in text:
-                    reasons.append("raw-recall-marker")
-                if any(marker in text for marker in _TIER0_MARKERS):
-                    reasons.append("tier0-marker")
                 remote = payload.get("remote_url")
                 if isinstance(remote, str) and "://" in remote:
                     reasons.append("live-remote-url")
@@ -128,11 +136,18 @@ class HostEvidenceRedactionTests(unittest.TestCase):
             run2_like.write_text(
                 json.dumps({"note": "json plus trailing text"}) + " trailing",
                 encoding="utf-8")
+            dup = nested / "claude-launcher-dup.json"
+            dup.write_text(
+                '{"stdout_raw": "synthetic private recall", "stdout_raw": '
+                '"' + REDACTED + '"}',
+                encoding="utf-8")
             self.assertEqual(
                 unsafe_recall_paths(root),
                 ["future-host-gate/arbitrary-future-name.json",
+                 "future-host-gate/claude-launcher-dup.json",
                  "future-host-gate/claude-launcher-pretool-recall.json",
                  "future-host-gate/claude-launcher-session-start.json"])
+            dup.unlink()
             for path in (shipped_pretool, shipped_start, future_name):
                 path.write_text(json.dumps({"stdout_raw": REDACTED}),
                                 encoding="utf-8")

@@ -4271,7 +4271,11 @@ class ZmemMemoryProvider(MemoryProvider):
                 payload["candidate_ids"] = [str(mid) for mid in ids
                                             if isinstance(mid, str)]
             else:
-                payload = {}
+                # PRR-007a: preserve the hub's own silent reason
+                # (hub-unreachable is a closed-set member) instead of
+                # flattening an outage to empty-pool.
+                _r = envelope.get("reason") if isinstance(envelope, dict) else None
+                payload = {"reason": _r} if isinstance(_r, str) and _r else {}
             elapsed = timing.get("t_ms", 0)
         else:
             result = _run_passive_store(_passive_store_args(

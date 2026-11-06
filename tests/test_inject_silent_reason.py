@@ -10,7 +10,7 @@ Proves the #87 contract end to end on every silent surface:
   (schema_meta.INJECT_SILENT_REASONS), never blame the session inject bar for
   an empty prefetch, and keep the budget-drop sentence byte-identical;
 - classification fails open (classifier exception ⇒ retrieved-empty one-liner,
-  exit 0, no traceback) and a pre-v13 bare-list envelope classifies empty-pool,
+  exit 0, no traceback) and a pre-v13 bare-list envelope classifies envelope-error (issue #435),
   not omitted.
 
 All stores are throwaway temp stores (ZMEM_STORE/ZMEM_DATA point at a temp
@@ -497,7 +497,7 @@ class HookBodyBareListEnvelopeTest(unittest.TestCase):
     channel as a healthy no-match. omitted stays 0 (no envelope was
     read); miss-rate excludes the token as transport."""
 
-    def test_6_bare_list_empty_is_empty_pool(self):
+    def test_6_bare_list_is_envelope_error(self):
         tmp = tempfile.mkdtemp(prefix="zmem-silent-bare-")
         try:
             scripts_dir = Path(tmp) / "stub-scripts"

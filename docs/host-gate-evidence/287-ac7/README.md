@@ -19,8 +19,8 @@ UserPromptSubmit, PreToolUse) is proven two ways:
    `ZMEM_REMOTE_URL` pointing at the hub, and records the launcher's
    `additionalContext` output — the model-visible injection. Every capture
    shows `model_visible_fence: true` (the `ZMEM_UNTRUSTED_FENCE` block);
-   the UserPromptSubmit (`recall`) captures additionally show
-   `hub_canary_visible: true` — the canary row seeded into the hub's
+   at capture time the UserPromptSubmit (`recall`) captures additionally
+   showed `hub_canary_visible: true` — the canary row seeded into the hub's
    store over MCP immediately before the capture, proving the content
    traveled hub → broker → harness. At capture time the SessionStart
    captures carried the hub-owned Tier-0 `core.md` (5130 chars), the T-08
@@ -29,11 +29,13 @@ UserPromptSubmit, PreToolUse) is proven two ways:
 
 2. **Real harness transcript** (codex): `codex-exec-transcript.jsonl` is
    the session log of `codex exec` (codex-cli 0.160.0) run with
-   `ZMEM_REMOTE_URL` set, redacted exactly one way: absolute home
-   directory segments (`...\Users\<user>` placeholders, per the
-   tracked-file hygiene ratchet in `tests/test_doc_drift.py`) — every
-   byte of the injection payload, hook events and model output is
-   untouched. The harness fired the zmem
+   `ZMEM_REMOTE_URL` set, redacted two ways (2026-11-05): absolute home
+   directory segments (`.../Users/<user>` placeholders, per the
+   tracked-file hygiene ratchet in `tests/test_doc_drift.py`), and the
+   raw memory payloads — the Tier-0 `core.md` body and the one
+   `user:global` recall row — replaced in place with redaction notices
+   (hook events, fence headers and model output are untouched). The
+   harness fired the zmem
    `UserPromptSubmit` hook (visible in the log as
    `hook: UserPromptSubmit Completed`), and the MODEL'S OWN ANSWER in the
    transcript confirms the fenced `Relevant memories` block was visible
@@ -75,3 +77,9 @@ when capturing production hook behavior.
 > content is still readable here. The guard itself now lives in
 > `scripts/host_evidence_guard.py` and is filename-independent for the
 > `stdout_raw` rule.
+>
+> Transcript redaction (2026-11-06, PR #441 feedback): the codex
+> transcript's Tier-0 body and `user:global` recall row were redacted in
+> place (structural fence headers, the probe question, hook events and
+> model output untouched) — the two-way disclosure in point 2 above
+> supersedes the original "redacted exactly one way" wording.

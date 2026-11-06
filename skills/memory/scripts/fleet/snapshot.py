@@ -595,7 +595,24 @@ def _refresh(http: Any, env: dict[str, str],
     # clear the reconnect stamp while destroying a good pair.  Only an
     # explicit ok=True proceeds (a legitimately empty scoped store is
     # ok=True with rows == [] and IS a valid refresh).
+    #
+    # PR #441 review PRR-001/B1: the production transport (McpHttp
+    # snapshot) NEVER raises — every connect/timeout/hang failure
+    # returns a {ok: False, reason: <transport reason>} DICT, so the
+    # except arm above is dead in production and these dicts previously
+    # fell into the hub-refused arm: the operator line claimed the hub
+    # "answered", and kind=refused suppressed the eager reconnect even
+    # with a fresh pair. Route on the payload's OWN reason field: a
+    # transport reason (hub-unreachable | empty-pool executor-timeout or
+    # hang shape) is a transport failure — eager-retry class, label
+    # names the real cause; only a hub-ANSWERED refusal (error key, no
+    # transport reason) is kind=refused.
     if not isinstance(payload, dict) or payload.get("ok") is not True:
+        failure_reason = payload.get("reason") if isinstance(payload, dict) else None
+        if isinstance(failure_reason, str) and failure_reason:
+            _refuse_refresh("hub-unreachable", failure_reason)
+            _write_backoff_marker(env, _BACKOFF_KIND_TRANSPORT)
+            return False
         _refuse_refresh("hub-refused", "hub answered without ok=True")
         _write_backoff_marker(env, _BACKOFF_KIND_REFUSED)
         return False
@@ -608,7 +625,7 @@ def _refresh(http: Any, env: dict[str, str],
     except (TypeError, ValueError, OverflowError) as exc:
         _refuse_refresh("payload-invalid", exc)
         _write_backoff_marker(env, _BACKOFF_KIND_REFUSED)
-        return False
+        return False  # hub-answered nonsense: operator/hub condition
     if _payload_bytes > MAX_SNAPSHOT_BYTES:
         _refuse_refresh(
             "payload-invalid",
@@ -621,9 +638,12 @@ def _refresh(http: Any, env: dict[str, str],
         return True
     except (ValueError, OSError, sqlite3.Error) as exc:
         # The id-gate ValueError text already names the offending row
-        # index and id value (issue #437 AC6).
+        # index and id value (issue #437 AC6). A BUILD failure is a
+        # transient LOCAL condition (torn scratch, locked db — PRR-010f):
+        # transport kind, so recovery is retried at the next moment
+        # instead of suppressing refresh for the whole interval.
         _refuse_refresh("payload-invalid", exc)
-        _write_backoff_marker(env, _BACKOFF_KIND_REFUSED)
+        _write_backoff_marker(env, _BACKOFF_KIND_TRANSPORT)
         return False
 
 
@@ -679,7 +699,11 @@ def _maybe_refresh(http: Any, env: dict[str, str],
             raise ValueError("backoff marker is not a JSON object")
         failed_at = float(backoff.get("failed_at", 0) or 0)
         failure_kind = str(backoff.get("kind") or "")
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, OverflowError):
+        # OverflowError: an in-range-JSON but out-of-float-range integer
+        # failed_at (torn/foreign write) must fail open like every other
+        # malformed shape (PRR-002) — matches the payload_bytes arm at
+        # the refresh gate.
         failed_at = 0.0
         failure_kind = ""
     pair_is_fresh = bool(meta) and (

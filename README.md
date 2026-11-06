@@ -1109,13 +1109,14 @@ closed lane vocabulary is `claude`, `codex`, `zcode`, `deepseek`,
 `empty-pool`, `omitted`, `below-bar`, `budget-drop`, `below-relevance`,
 `already-delivered`, and `expired`; `expired` names a pool that was eligible
 before the live-expiry gate drained it (issue #174). The decision line can
-additionally carry `reason=store-error` — the hook-side token for a store
-child that exited nonzero (transport failure, e.g. a partial-upgrade store
-rejecting an unknown flag) — or `reason=envelope-error` — the hook-side
-token for a store child that exited zero whose stdout was not a JSON
-envelope (a corrupted output channel of the same version-skew family,
-issue #435). Both are transport classifications, never a store-side
-silent reason, and miss-rate reporting excludes them from the
+additionally carry `reason=store-error` — the transport token for a store
+child that exited nonzero (e.g. a partial-upgrade store rejecting an
+unknown flag) — or `reason=envelope-error` — the transport token for a
+store child that exited zero whose stdout was not a JSON envelope (a
+corrupted output channel of the same version-skew family, issue #435).
+Both are transport classifications emitted by the hook body and the
+hermes-provider lane, never a store-side silent reason, and miss-rate
+reporting excludes them from the
 missed count like the other negotiation refusals. `reason=injected` is the successful
 decision, while `reason=disabled` is the separate passive-injection kill-switch
 marker.

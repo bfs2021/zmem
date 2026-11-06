@@ -155,14 +155,15 @@ class RefreshRefusalObservabilityTest(_Base):
 
     def _assert_refusal_line(self, stderr: str, class_token: str):
         lines = [ln for ln in stderr.splitlines() if ln.strip()]
-        self.assertTrue(
-            lines, "the refused refresh wrote no stderr line at base "
-            f"(expected the {class_token} refusal class)")
         naming = [ln for ln in lines if class_token in ln]
+        self.assertTrue(
+            naming, "the refused refresh wrote no stderr line at base "
+            f"(expected the {class_token} refusal class)")
         self.assertEqual(
-            len(naming), 1,
-            f"expected exactly one bounded stderr line naming "
-            f"{class_token}; got {len(naming)} of {len(lines)} line(s)")
+            len(lines), 1,
+            "the refusal emitter must write exactly ONE bounded line "
+            f"(PRR-009c); got {len(lines)}: extra lines leak detail")
+
         self.assertLessEqual(len(naming[0]), MAX_LINE_CHARS,
                              "the refusal line must stay bounded")
 
@@ -229,17 +230,23 @@ class RefreshRefusalObservabilityTest(_Base):
             _StaticPayloadHttp(_ok_payload(
                 [_schema_row(GOOD_ID, Path(self._tmp))])), self.env, None)
         self.assertTrue(primed, "harness could not prime a good pair")
-        snap, _meta = fsnap._snapshot_paths(self.env)
+        snap, meta = fsnap._snapshot_paths(self.env)
         before = hashlib.sha256(snap.read_bytes()).hexdigest()
+        before_meta = hashlib.sha256(meta.read_bytes()).hexdigest()
         hostile_row = [HOSTILE_ID] + [None] * (len(_COLS) - 1)
         accepted, stderr = self._refresh_capturing(
             _StaticPayloadHttp(_ok_payload([hostile_row])))
         self.assertFalse(accepted)
         after = hashlib.sha256(snap.read_bytes()).hexdigest()
+        after_meta = hashlib.sha256(meta.read_bytes()).hexdigest()
         self.assertEqual(
             before, after,
             "a refused refresh must leave the served snapshot.sqlite "
             "byte-identical (the whole-payload gate is unchanged)")
+        self.assertEqual(
+            before_meta, after_meta,
+            "a refused refresh must leave the meta sidecar (revision/"
+            "expiry/provenance) byte-identical too (PRR-009d)")
 
 
 class RefreshRefusalBackoffTest(_Base):
@@ -308,6 +315,85 @@ class RefreshRefusalBackoffTest(_Base):
             fsnap.stamp_present(env),
             "the stamp must stay armed while the refusal persists")
 
+    def test_production_transport_dict_keeps_eager_reconnect(self):
+        # B1 fix-verification (PRR-001): the production McpHttp transport
+        # NEVER raises — it returns {ok: False, reason: hub-unreachable}.
+        # With a fresh pair + armed stamp, that shape must take the
+        # transport arm (eager next-moment retry), not the refused
+        # backoff. Drives a sequence: failure dict, then a healthy hub —
+        # the healthy moment MUST be attempted.
+        import json as _json
+        from storelib.schema import init_db, migrate
+
+        src = os.path.join(self._tmp, "src-prod-shape.sqlite")
+        conn = sqlite3.connect(src)
+        try:
+            init_db(conn)
+            migrate(conn)
+        finally:
+            conn.close()
+        env = dict(self.env)
+        fsnap.build_snapshot(source_store=src, env=env, revision=1)
+        fsnap.write_stamp(env)
+
+        class _ProductionShapeHttp:
+            def __init__(self):
+                self.calls = 0
+                self.raise_next = True
+
+            def snapshot(self, deadline_ms=None):
+                self.calls += 1
+                if self.raise_next:
+                    self.raise_next = False
+                    return {"ok": False, "reason": "hub-unreachable"}
+                return _ok_payload([], snapshot_revision=2)
+
+        http = _ProductionShapeHttp()
+        self.assertFalse(fsnap._maybe_refresh(http, env, None))
+        self.assertTrue(
+            fsnap._maybe_refresh(http, env, None),
+            "a production-shaped transport dict must keep the eager "
+            "next-moment retry (kind=transport, fresh pair)")
+        self.assertFalse(
+            fsnap.stamp_present(env),
+            "the recovered refresh cleared the reconnect stamp")
+
+    def test_executor_hang_dict_keeps_eager_reconnect(self):
+        # B1: the hang shape (executor timeout -> reason=empty-pool dict)
+        # must NOT arm the refused backoff either.
+        import json as _json
+        from storelib.schema import init_db, migrate
+
+        src = os.path.join(self._tmp, "src-hang.sqlite")
+        conn = sqlite3.connect(src)
+        try:
+            init_db(conn)
+            migrate(conn)
+        finally:
+            conn.close()
+        env = dict(self.env)
+        fsnap.build_snapshot(source_store=src, env=env, revision=1)
+        fsnap.write_stamp(env)
+
+        class _HangShapeHttp:
+            def __init__(self):
+                self.calls = 0
+                self.hang_next = True
+
+            def snapshot(self, deadline_ms=None):
+                self.calls += 1
+                if self.hang_next:
+                    self.hang_next = False
+                    return {"ok": False, "reason": "empty-pool"}
+                return _ok_payload([], snapshot_revision=2)
+
+        http = _HangShapeHttp()
+        self.assertFalse(fsnap._maybe_refresh(http, env, None))
+        self.assertTrue(
+            fsnap._maybe_refresh(http, env, None),
+            "an executor-hang dict (reason=empty-pool) must keep the "
+            "eager next-moment retry")
+
     def test_non_dict_marker_fails_open(self):
         # Final-critic round 1 F2: a backoff marker holding valid JSON
         # that is not an object (torn/foreign write) must fail OPEN — the
@@ -318,7 +404,8 @@ class RefreshRefusalBackoffTest(_Base):
         marker = fsnap._snapshot_paths(self.env)[1].parent / \
             "refresh-backoff.json"
         marker.parent.mkdir(parents=True, exist_ok=True)
-        for bad in ("[1, 2, 3]", '"x"', "5", "null"):
+        for bad in ("[1, 2, 3]", '"x"', "5", "null",
+                    '{"failed_at": ' + ("9" * 400) + ', "kind": "refused"}'):
             marker.write_text(bad, encoding="utf-8")
             http = self._CountingRaisingHttp()
             fsnap.write_stamp(self.env)

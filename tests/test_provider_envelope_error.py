@@ -18,6 +18,7 @@ import _store_guard  # noqa: F401  (issue #244 isolation guard)
 
 import importlib.util
 import json
+import os
 import sys
 import types
 import unittest
@@ -51,7 +52,13 @@ def _load_provider():
 
 class ProviderEnvelopeErrorTest(unittest.TestCase):
     def setUp(self) -> None:
+        # PRR-009e: the provider reads the kill switch from os.environ at
+        # call time — an operator shell with ZMEM_INJECT=0 reds the whole
+        # suite for an unrelated reason. Pop in-process, restore after.
+        self._saved_inject = os.environ.pop("ZMEM_INJECT", None)
+        self.addCleanup(self._restore_inject)
         self.mod = _load_provider()
+
         self.records = []
         self.mod._append_session_decision = lambda **kw: self.records.append(kw)
 
@@ -63,6 +70,12 @@ class ProviderEnvelopeErrorTest(unittest.TestCase):
                 return False
 
         self.dep = _Dep()
+
+    def _restore_inject(self):
+        if self._saved_inject is not None:
+            os.environ["ZMEM_INJECT"] = self._saved_inject
+        else:
+            os.environ.pop("ZMEM_INJECT", None)
 
     def _run(self, stdout: str) -> dict:
         self.mod._run_store = lambda args, timing=None: {
@@ -118,8 +131,9 @@ class ProviderEnvelopeErrorTest(unittest.TestCase):
         out = json.loads(orig(dep, {"namespace": "user:global",
                                     "session_id": "s1"}))
         self.assertIsInstance(out, dict)
-        self.assertIn(out.get("reason"),
-                      ("hub-unreachable", "empty-pool", "envelope-error"))
+        # PRR-007a: the hub's own reason must survive — an outage is
+        # never reported as a healthy empty pool.
+        self.assertEqual(out.get("reason"), "hub-unreachable")
 
     def test_remote_mode_ok_envelope_no_rendered_does_not_raise(self):
         dep = self.dep

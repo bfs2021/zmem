@@ -187,12 +187,14 @@ def _redact_failure_text(text, limit: int = 200) -> str:
                   "text is UNREDACTED this run", file=sys.stderr)
     return _collapse_line_breaks(redacted)[:limit].strip()
 
-def _redact_command_text(text, limit: int) -> str:
-    """issue #439 AC0 command/path renderer: redact and cap WITHOUT the
-    line-break collapse. The classifier downstream must see the command's
-    line/separator structure (a reader line followed by a runner line is
-    NOT a read-only miss), so unlike _redact_failure_text the newlines
-    survive; the redaction primitive and the degrade counter are shared.
+def _redact_command_text(text, limit: int | None = None) -> str:
+    """issue #439 AC0 command/path renderer: redact WITHOUT the line-break
+    collapse and, by default, WITHOUT a cap — classification runs on the
+    FULL redacted text (PRR-004: a destructive/runner segment past a cap
+    must stay visible to the classifier); the render cap is applied
+    afterwards by _cap_commands. Pass limit only for callers that need a
+    bounded field directly. The redaction primitive and the degrade
+    counter are shared with _redact_failure_text.
     """
     global _REDACT_DEGRADE_WARNED
     if not text:
@@ -206,7 +208,7 @@ def _redact_command_text(text, limit: int) -> str:
             _REDACT_DEGRADE_WARNED = True
             print("[zmem] failures: secret redaction degraded — command "
                   "text is UNREDACTED this run", file=sys.stderr)
-    if len(redacted) > limit:
+    if limit is not None and len(redacted) > limit:
         redacted = redacted[:limit]
     return redacted
 
@@ -413,20 +415,20 @@ def _failures_from_transcript(path: str, text: str | None = None):
                     inp = tool_inputs.get(tid) if tid else None
                     if not isinstance(inp, dict):
                         inp = {}
-                    command = inp.get("command")
-                    path = inp.get("file_path", inp.get("path"))
+                    call_command = inp.get("command")
+                    call_path = inp.get("file_path", inp.get("path"))
                     details.append({
                         "tool": _sanitize_tool_name(tool_names.get(tid, "?")),
                         "error": _redact_failure_text(effective),
-                        # issue #439 AC0: redacted + capped at
-                        # MAX_COMMAND_CHARS (shared constant), empty string
-                        # when the call carried no such field.
+                        # issue #439 AC0: redacted, classified on the FULL
+                        # text, capped only for output (see _cap_commands) —
+                        # a destructive/runner segment past the cap must
+                        # stay visible to the classifier (PRR-004).
                         "command": _redact_command_text(
-                            command if isinstance(command, str) else "",
-                            MAX_COMMAND_CHARS),
+                            call_command if isinstance(call_command, str)
+                            else ""),
                         "path": _redact_command_text(
-                            path if isinstance(path, str) else "",
-                            MAX_COMMAND_CHARS),
+                            call_path if isinstance(call_path, str) else ""),
                     })
         # Pure sibling-string form: the top-level toolUseResult is itself a
         # rejection but no tool_result block classified this record (e.g. the
@@ -610,11 +612,9 @@ def _failures_from_db(db_path: str, session_id: str, *,
                 "retry_count": r["retry_count"] or 0,
                 "destructive": bool(r["destructive"]),
                 "command": _redact_command_text(
-                    command if isinstance(command, str) else "",
-                    MAX_COMMAND_CHARS),
+                    command if isinstance(command, str) else ""),
                 "path": _redact_command_text(
-                    path if isinstance(path, str) else "",
-                    MAX_COMMAND_CHARS),
+                    path if isinstance(path, str) else ""),
             })
     except Exception:
         # Enrichment columns absent — detection already succeeded, so surface
@@ -645,18 +645,39 @@ def _sanitize_exc_text(text: str, limit: int = 300) -> str:
 
 def _annotate_verdicts(details: list) -> list:
     """issue #439 AC17: one shared classifier annotates every failure
-    detail with its verdict on BOTH substrates (transcript and db). A
-    degraded classifier import fails open to ``other`` — today's
-    behavior (the sidecar still fires), never silence."""
+    detail with its verdict on BOTH substrates (transcript and db) —
+    on the FULL redacted command, before the render cap (PRR-004: a
+    destructive/runner segment past MAX_COMMAND_CHARS must stay visible
+    to the classifier). A degraded classifier import fails open to
+    ``other`` — today's behavior (the sidecar still fires), never
+    silence. The db path's ``destructive`` flag is a forcing signal: a
+    destructive failure is never trivial (automation review B2)."""
     for d in details:
+        verdict = None
         if _classify_failure is not None:
             try:
-                d["verdict"] = _classify_failure(d)
-                continue
+                verdict = _classify_failure(d)
             except Exception:
-                pass
-        d["verdict"] = "other"
+                verdict = None
+        if verdict not in ("trivial", "signal", "other"):
+            verdict = "other"
+        if verdict == "trivial" and d.get("destructive"):
+            verdict = "other"
+        d["verdict"] = verdict
+    _cap_commands(details)
     return details
+
+
+def _cap_commands(details: list) -> None:
+    """Render cap: trim the stored command/path to MAX_COMMAND_CHARS
+    AFTER classification so the wire shape keeps the AC0 contract."""
+    for d in details:
+        command = d.get("command")
+        if isinstance(command, str) and len(command) > MAX_COMMAND_CHARS:
+            d["command"] = command[:MAX_COMMAND_CHARS]
+        path = d.get("path")
+        if isinstance(path, str) and len(path) > MAX_COMMAND_CHARS:
+            d["path"] = path[:MAX_COMMAND_CHARS]
 
 
 def cmd_failures(session: str, transcript: str, db: str,

@@ -116,7 +116,13 @@ class FailureDetailsShapeTest(unittest.TestCase):
         self.assertIn("src/missing.py", read["path"])
 
     def test_command_is_capped_at_max_command_chars(self):
-        long_command = "echo " + "a" * (4 * MAX_COMMAND_CHARS)
+        # B2 (automation review): the probe must SURVIVE redaction — a
+        # uniform 'a'*N token collapses below the cap and the test is
+        # vacuous. Unique file names keep the command past 240 chars.
+        long_command = "grep -c pattern " + " ".join(
+            "file-%03d.txt" % i for i in range(40))
+        self.assertGreater(len(long_command), MAX_COMMAND_CHARS + 60,
+                           "the probe itself must exceed the cap")
         obj = self._failures([
             _tool_use("t1", "Bash", {"command": long_command}),
             _failed_tool_result("t1", "Exit code 1"),
@@ -128,8 +134,29 @@ class FailureDetailsShapeTest(unittest.TestCase):
                       "the Bash failure detail must carry the failed command")
         self.assertLessEqual(
             len(bash["command"]), MAX_COMMAND_CHARS,
-            "the detail command must be capped at the named "
-            "MAX_COMMAND_CHARS constant")
+            "the DETAIL command must be capped at the named "
+            "MAX_COMMAND_CHARS constant (render cap)")
+
+    def test_truncated_reader_prefix_with_destructive_tail_is_not_trivial(self):
+        # B2/PRR-004 regression: classification runs on the FULL redacted
+        # command, so a destructive tail past the render cap still yields
+        # a non-trivial verdict and the hand-off sidecar is not silenced.
+        tail = " ; rm -rf /srv/prod/data"
+        lead_chars = MAX_COMMAND_CHARS + 60
+        long_command = "grep -c pattern " + " ".join(
+            "file-%03d.txt" % i for i in range(40))[:lead_chars] + tail
+        self.assertGreater(len(long_command), MAX_COMMAND_CHARS)
+        obj = self._failures([
+            _tool_use("t1", "Bash", {"command": long_command}),
+            _failed_tool_result("t1", "Exit code 1"),
+        ])
+        details = obj.get("details") or []
+        bash = next((d for d in details if d.get("tool") == "Bash"), None)
+        self.assertIsNotNone(bash)
+        self.assertEqual(
+            bash.get("verdict"), "other",
+            "a destructive tail past the render cap must classify other "
+            "(classify-before-cap, PRR-004)")
 
     def test_command_is_redacted(self):
         command = ("curl -s -H 'Authorization: Bearer %s' "

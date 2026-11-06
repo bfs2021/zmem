@@ -378,8 +378,11 @@ State plainly:
 - Skills promoted (and why those, not the others)
 - Subagent reflection filter count (issue #439): how many trivial read-only
   search misses the subagent hand-off filter suppressed this session. Read
-  it from the per-session counter — resolve the ring from the active data
-  dir (the resolved store's parent, or ZMEM_DATA), then read
+  it from the per-session counter — resolve the ring EXACTLY as the
+  writer hook does (ZMEM_DATA, else ZCODE_PLUGIN_DATA, else ~/.zmem —
+  NOT host._resolve_data_dir, whose ZMEM_STORE-parent preference reads a
+  different directory than the writer under a ZMEM_STORE override;
+  PRR-010e), then read
   `subagent-reflections/<sha256(session_id)[:32]>.filtered.json` for the
   CURRENT session id and report its integer `filtered_trivial` value
   (absent or corrupt file = 0; report the number only, never file text).

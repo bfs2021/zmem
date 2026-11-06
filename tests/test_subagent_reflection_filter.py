@@ -83,6 +83,15 @@ def _run_hook(script: Path, env: dict, payload: str = "{}") -> str:
     r = subprocess.run(
         [_bash(), str(script)], input=payload, capture_output=True,
         text=True, env=env, timeout=120)
+    # PRR-009a: a crashed hook must fail the test, not pass absence
+    # assertions vacuously. Note the wrapper swallows python-block errors
+    # (2>/dev/null || echo '{}'), so this catches bash-level failures;
+    # file-level siblings are the compensating detector for in-body
+    # crashes.
+    if r.returncode != 0:
+        raise AssertionError(
+            "hook %s exited %d: %s" % (script.name, r.returncode,
+                                       (r.stderr or "")[-400:]))
     return r.stdout or ""
 
 

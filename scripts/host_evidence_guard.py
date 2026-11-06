@@ -35,6 +35,18 @@ def _is_launcher_capture(name: str) -> bool:
     return any(name.endswith(suffix) for suffix in LAUNCHER_CAPTURE_SUFFIXES)
 
 
+def _reject_duplicate_keys(pairs):
+    """json object_pairs_hook: any duplicate key raises (issue #438
+    review PRR-005 — last-wins parsing let a capture carry a raw
+    stdout_raw followed by a REDACTED duplicate and pass the guard)."""
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError("duplicate JSON key: %s" % key)
+        out[key] = value
+    return out
+
+
 def unsafe_recall_paths(root: Path) -> list:
     """Return filenames (relative posix) of unsafe captures under root.
 
@@ -43,14 +55,24 @@ def unsafe_recall_paths(root: Path) -> list:
     unsafe = []
     for path in sorted(root.rglob("*.json")):
         name = path.name
+        duplicate = False
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
+            payload = json.loads(path.read_text(encoding="utf-8"),
+                                 object_pairs_hook=_reject_duplicate_keys)
+        except json.JSONDecodeError:
             payload = None
-        if _is_launcher_capture(name):
+        except (ValueError, OSError):
+            # A duplicate-key file is VALID-shaped JSON with hostile
+            # parse semantics: unsafe under ANY name (a plain
+            # JSONDecodeError under a non-launcher name stays ignored —
+            # the claude-run2 JSON-plus-trailing-text shape).
+            duplicate = True
+            payload = None
+        if duplicate or _is_launcher_capture(name):
             # Launcher-capture contract: a well-formed dict whose
             # stdout_raw IS the marker. A missing key is unsafe.
-            safe = (isinstance(payload, dict)
+            safe = (not duplicate
+                    and isinstance(payload, dict)
                     and payload.get("stdout_raw") == REDACTED)
         elif isinstance(payload, dict) and "stdout_raw" in payload:
             # Name-independent rule: any parsed dict that carries the

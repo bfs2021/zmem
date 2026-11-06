@@ -44,7 +44,8 @@ _TRIVIALS = [
 
 def _bash():
     bash = shutil.which("bash")
-    for cand in (r"C:\Program Files\Git\bin\bash.exe",):
+    for cand in (r"C:\Program Files\Git\bin\bash.exe",
+                 r"C:\Program Files\Git\usr\bin\bash.exe",):
         if Path(cand).is_file():
             return cand
     if bash and Path(bash).is_file():
@@ -95,6 +96,9 @@ def _run_hook(data_dir: str, session: str, agent_id: str, cases) -> str:
         [_bash(), str(HOOK)],
         input="{}", capture_output=True, text=True,
         env=_hook_env(data_dir, session, agent_id, transcript), timeout=120)
+    if r.returncode != 0:
+        raise AssertionError(
+            "hook exited %d: %s" % (r.returncode, (r.stderr or "")[-400:]))
     return r.stdout or ""
 
 
@@ -134,7 +138,7 @@ class CounterLockTest(unittest.TestCase):
         holder = _sp.Popen(
             [_sys.executable, "-c", "import time; time.sleep(60)"],
             stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-        holder.wait() if False else holder.terminate()
+        holder.terminate()
         holder.wait(timeout=10)
         key = hashlib.sha256(b"s-orphan").hexdigest()[:32]
         ring = _ring(self._tmp)

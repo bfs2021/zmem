@@ -342,6 +342,20 @@ if count > 0 and trivial_count == count and not rej_msg:
                         holder_pid = int(str(lock_text).split(":", 1)[0])
                     except (ValueError, AttributeError):
                         holder_pid = -1
+                    if holder_pid <= 0:
+                        # PRR-003: an empty/unparseable token aged past the
+                        # grace has no possible live owner — a live writer
+                        # writes its token within milliseconds of create —
+                        # so this is the died-between-create-and-write
+                        # orphan. Reclaim and retry acquisition.
+                        try:
+                            if open(lock_path, "r",
+                                    encoding="ascii").read() == lock_text:
+                                os.unlink(lock_path)
+                                continue
+                        except OSError:
+                            pass
+                        continue
                     holder_alive = None
                     if holder_pid > 0 and _process_alive is not None:
                         try:
@@ -384,8 +398,16 @@ if count > 0 and trivial_count == count and not rej_msg:
                         os.unlink(lock_path)
                 except OSError:
                     pass
-    except Exception:
-        pass
+    except Exception as exc:
+        # PRR-008c: a silent counter-write failure made the filtered
+        # count unobservable. One bounded stderr line (guarded like the
+        # other hook diagnostics); fail-open unchanged.
+        try:
+            text = " ".join(str(exc).split())[:200]
+            print("[zmem] filtered counter update failed: %s" % text,
+                  file=sys.stderr)
+        except Exception:
+            pass
     emit({})
 
 # No failures and no rendered rejections → no-op (subagent reflection is
@@ -471,7 +493,9 @@ try:
     try:
         now_s = time.time()
         for stale_name in os.listdir(ring_dir):
-            if not (stale_name.endswith(".json") or stale_name.endswith(".tmp")):
+            if not (stale_name.endswith(".json")
+                    or stale_name.endswith(".tmp")
+                    or stale_name.endswith(".lock")):
                 continue
             stale = os.path.join(ring_dir, stale_name)
             try:
