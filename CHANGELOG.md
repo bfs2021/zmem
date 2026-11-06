@@ -63,9 +63,10 @@ render with indented continuation lines on the canonical fence, and
 multi-line degraded-fence content continuations are indented (#352 AC1);
 explicit-lane credential rows surface as `[WITHHELD: SECRET]` stubs instead
 of raw content (#352 AC3); the Hermes degraded fence marks provenance on
-flagged rows (#352 AC2). Single-line rows with non-empty content are
+flagged rows (#352 AC2). Single-line UNFLAGGED rows with non-empty content are
 byte-identical in both renderers; empty-content rows lose their trailing
-pad; multi-line rows change only on their continuation lines;
+pad; multi-line unflagged rows change only on their continuation lines
+(flagged and withheld rows gain markers/stubs as described above);
 non-re-delivery paths are byte-identical.
 
 **Evidence note (0.142.0 final)**: the committed canary report records the
