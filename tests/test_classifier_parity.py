@@ -207,6 +207,10 @@ class DbWiringIntegrationTest(unittest.TestCase):
         _os.close(fd)
         self.addCleanup(_cleanup_db, path)
         conn = _sqlite3.connect(path)
+        # Owner-approved F-04b fold-in (PR #445): a failure between connect
+        # and close must not leave an open handle blocking the cleanup.
+        # addCleanup runs LIFO, so this close fires before the file removal.
+        self.addCleanup(conn.close)
         cols = ("session_id TEXT, tool_name TEXT, read_only INT, "
                 "status TEXT, exit_code INT, error_message TEXT, "
                 "error_type TEXT, retry_count INT, destructive INT, "

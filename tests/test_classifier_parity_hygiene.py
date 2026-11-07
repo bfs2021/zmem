@@ -182,6 +182,34 @@ class ParityTempHygieneTest(unittest.TestCase):
             "the -wal sibling (it was swallowed, or the sibling was never "
             "attempted)")
 
+    def test_failed_build_leaves_no_artifact(self):
+        # F-04b (owner-approved fold-in): if the fixture build itself fails
+        # mid-way, the registered close must fire before the file removal,
+        # so a Windows open handle cannot block it and the scoped dir ends
+        # empty. Without the close registration this leg goes red. The
+        # failure is forced through a real seam: pre-creating the table
+        # makes the fixture's own CREATE TABLE raise OperationalError.
+        import sqlite3
+        scoped = tempfile.mkdtemp(prefix="zmem-parity-hygiene-failbuild-")
+        self.addCleanup(shutil.rmtree, scoped, ignore_errors=True)
+        case = _fixture_case()
+        real_connect = sqlite3.connect
+
+        def colliding_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            conn.execute("CREATE TABLE tool_usage(session_id TEXT)")
+            return conn
+
+        with mock.patch.object(tempfile, "tempdir", scoped), \
+                mock.patch.object(sqlite3, "connect", colliding_connect):
+            with self.assertRaises(sqlite3.OperationalError):
+                case._make_db(with_part_table=True)
+        case.doCleanups()
+        self.assertEqual(
+            os.listdir(scoped), [],
+            "a failed fixture build left an unremovable artifact behind "
+            "(the registered connection close is missing or misordered)")
+
 
 if __name__ == "__main__":
     unittest.main()
