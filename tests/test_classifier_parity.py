@@ -191,11 +191,16 @@ class DbWiringIntegrationTest(unittest.TestCase):
         import tempfile as _tempfile
 
         def _cleanup_db(p):
-            # main db + sqlite3 -wal/-shm siblings (NEW-3a leak pin)
-            for s in ("", "-wal", "-shm"):
+            # Main db plus every sqlite3 sibling name (NEW-3a leak pin). The
+            # fixture runs in sqlite's default DELETE journal mode, whose only
+            # sibling is a transient -journal (unlinked at commit); -wal/-shm
+            # are covered defensively in case the fixture ever enables WAL.
+            # Only a missing file is tolerated: any other removal failure
+            # (e.g. a still-open handle on Windows) surfaces as an error.
+            for s in ("", "-journal", "-wal", "-shm"):
                 try:
                     _os.remove(p + s)
-                except OSError:
+                except FileNotFoundError:
                     pass
 
         fd, path = _tempfile.mkstemp(suffix=".sqlite")

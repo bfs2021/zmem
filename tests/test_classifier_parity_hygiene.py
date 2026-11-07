@@ -2,11 +2,19 @@
 
 The parity suite can stay green while leaking temp files: its assertions
 never inspect post-teardown temp state. This driver closes that hole (PR
-#441 closeout item NEW-3a): it runs the parity file in a SUBPROCESS with an
-isolated TMP directory, then asserts the directory holds no sqlite artifacts
-after the child exits — the main db and the sqlite3 ``-wal``/``-shm``
-siblings included. A second, in-process leg pins the registered cleanup
-itself: after ``doCleanups`` the main db and both siblings are gone.
+#441 closeout item NEW-3a) with two legs:
+
+- A subprocess leg runs the parity suite verbosely under an isolated
+  TMP/TEMP/TMPDIR and a SEPARATE scratch ZMEM_DATA. It first proves the
+  fixture-creating DbWiringIntegrationTest legs actually ran ok (positive
+  control: a skipped or renamed class must not pass vacuously), then
+  asserts both scratch directories are empty after the child exits.
+- An in-process leg pins the registered cleanup itself under a scoped
+  ``tempfile.tempdir``, so a regression never litters the real TEMP. The
+  fixture runs in sqlite's default DELETE journal mode, whose only sibling
+  is a transient ``-journal`` (gone at commit) and which never creates
+  ``-wal``/``-shm``; the sibling-removal branch is therefore pinned by
+  planting those names directly, and the cleanup must report success.
 
 Run: python tests/test_classifier_parity_hygiene.py
 """
@@ -16,23 +24,47 @@ import _store_guard  # noqa: F401  (issue #244 isolation guard)
 
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PARITY = REPO_ROOT / "tests" / "test_classifier_parity.py"
+CHILD_TIMEOUT_S = 300
+SIBLINGS = ("-journal", "-wal", "-shm")
+
+# One verbose unittest line per DB-wiring leg that passed, e.g.
+# "test_x (__main__.DbWiringIntegrationTest.test_x) ... ok".
+_DB_LEG_OK = re.compile(
+    r"\([\w.]*DbWiringIntegrationTest\.(test_\w+)\) \.\.\. ok$", re.M)
+_SKIPPED_SUMMARY = re.compile(r"^OK \(.*skipped=", re.M)
+
+
+def _load_parity():
+    spec = importlib.util.spec_from_file_location("parity_mod", PARITY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _db_wiring_test_names(mod):
+    return sorted(
+        unittest.TestLoader().getTestCaseNames(mod.DbWiringIntegrationTest))
 
 
 class ParityTempHygieneTest(unittest.TestCase):
     def test_parity_suite_leaves_no_temp_artifacts(self):
-        tmp_root = tempfile.mkdtemp(prefix="zmem-parity-hygiene-")
+        expected = _db_wiring_test_names(_load_parity())
+        self.assertTrue(expected, "DbWiringIntegrationTest has no tests")
+        tmp_root = tempfile.mkdtemp(prefix="zmem-parity-hygiene-tmp-")
+        data_dir = tempfile.mkdtemp(prefix="zmem-parity-hygiene-data-")
         self.addCleanup(shutil.rmtree, tmp_root, ignore_errors=True)
-        data_dir = os.path.join(tmp_root, "data")
-        os.makedirs(data_dir, exist_ok=True)
+        self.addCleanup(shutil.rmtree, data_dir, ignore_errors=True)
         env = {k: v for k, v in os.environ.items()
                if not k.upper().startswith(("ZMEM_", "CLAUDE_", "ZCODE_"))}
         env.update({
@@ -41,42 +73,59 @@ class ParityTempHygieneTest(unittest.TestCase):
             "ZMEM_STORE": os.path.join(data_dir, "store.sqlite"),
             "PYTHONUTF8": "1",
         })
-        r = subprocess.run(
-            [sys.executable, "-X", "utf8", str(PARITY)],
-            capture_output=True, text=True, env=env, timeout=300)
+        try:
+            r = subprocess.run(
+                [sys.executable, "-X", "utf8", str(PARITY), "-v"],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", env=env, timeout=CHILD_TIMEOUT_S)
+        except subprocess.TimeoutExpired as exc:
+            err = exc.stderr or ""
+            if isinstance(err, bytes):
+                err = err.decode("utf-8", "replace")
+            raise AssertionError(
+                "parity child exceeded the %ds budget; stderr tail: %s"
+                % (CHILD_TIMEOUT_S, err[-400:])) from None
+        out = r.stderr or ""
         self.assertEqual(
             r.returncode, 0,
-            "parity child failed before the leak check: %s"
-            % ((r.stderr or "")[-400:]))
-        leftovers = sorted(
-            p.name for p in Path(tmp_root).iterdir() if p.name != "data")
+            "parity child failed before the leak check: %s" % out[-400:])
+        # Positive control: the legs that create the temp fixtures ran ok.
         self.assertEqual(
-            leftovers, [],
+            sorted(set(_DB_LEG_OK.findall(out))), expected,
+            "the fixture-creating DbWiringIntegrationTest legs did not all "
+            "run ok, so the leak check below would pass vacuously: %s"
+            % out[-400:])
+        self.assertIsNone(
+            _SKIPPED_SUMMARY.search(out),
+            "the parity child skipped tests: %s" % out[-400:])
+        self.assertEqual(
+            sorted(p.name for p in Path(tmp_root).iterdir()), [],
             "the parity suite leaked temp artifacts into its TMP dir")
+        self.assertEqual(
+            sorted(p.name for p in Path(data_dir).iterdir()), [],
+            "the parity suite wrote into its scratch ZMEM_DATA dir")
 
-    def test_cleanup_removes_wal_siblings(self):
-        spec = importlib.util.spec_from_file_location("parity_mod", PARITY)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        case = mod.DbWiringIntegrationTest(
-            "test_db_details_recover_inputs_and_verdicts")
-        case.setUp()
-        try:
+    def test_cleanup_removes_sqlite_siblings(self):
+        scoped = tempfile.mkdtemp(prefix="zmem-parity-hygiene-inproc-")
+        self.addCleanup(shutil.rmtree, scoped, ignore_errors=True)
+        mod = _load_parity()
+        case = mod.DbWiringIntegrationTest(_db_wiring_test_names(mod)[0])
+        with mock.patch.object(tempfile, "tempdir", scoped):
             path = case._make_db(with_part_table=True)
-            self.assertTrue(os.path.exists(path))
-            # Plant the sqlite3 -wal/-shm sibling names directly: a clean
-            # connection close checkpoints and deletes real siblings, so
-            # planting pins the helper's sibling-removal branch itself.
-            for s in ("-wal", "-shm"):
-                open(path + s, "wb").close()
-                self.assertTrue(os.path.exists(path + s))
-            case.doCleanups()  # fires _make_db's registered cleanup
-            for s in ("", "-wal", "-shm"):
-                self.assertFalse(
-                    os.path.exists(path + s),
-                    "cleanup left %s behind" % (path + s))
-        finally:
-            case.doCleanups()
+        self.assertEqual(
+            os.path.dirname(path), scoped,
+            "_make_db did not honor the scoped temp dir")
+        self.assertTrue(os.path.exists(path))
+        for s in SIBLINGS:
+            open(path + s, "wb").close()
+        self.assertTrue(case.doCleanups(), "the registered cleanup raised")
+        for s in ("",) + SIBLINGS:
+            self.assertFalse(
+                os.path.exists(path + s),
+                "cleanup left %s behind" % (path + s))
+        self.assertEqual(
+            os.listdir(scoped), [],
+            "the in-process leg left artifacts in its scoped temp dir")
 
 
 if __name__ == "__main__":
