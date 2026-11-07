@@ -2,7 +2,7 @@
 
 The parity suite can stay green while leaking temp files: its assertions
 never inspect post-teardown temp state. This driver closes that hole (PR
-#441 closeout item NEW-3a) with three legs:
+#441 closeout item NEW-3a) with four legs:
 
 - A subprocess leg runs the parity suite verbosely under an isolated
   TMP/TEMP/TMPDIR and a SEPARATE scratch ZMEM_DATA. It first proves every
@@ -18,6 +18,9 @@ never inspect post-teardown temp state. This driver closes that hole (PR
   cleanup must complete without error.
 - A third leg pins that the cleanup tolerates ONLY a missing file: any
   other removal failure must surface instead of being swallowed.
+- A fourth leg (owner-approved F-04b fold-in) forces a real mid-build
+  fixture failure and requires the scoped dir to end empty, pinning that
+  the registered connection close fires before the file removal.
 
 Run: python tests/test_classifier_parity_hygiene.py
 """
