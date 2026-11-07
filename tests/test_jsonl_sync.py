@@ -1524,6 +1524,42 @@ class IngestValidationTest(_TwoStoreCase):
                 self.assertIn("control character", r.stderr)
         self.assertEqual(self.b.query_one("SELECT count(*) FROM memory")[0], 0)
 
+    def test_control_character_namespace_is_rejected_for_episodes(self):
+        """Issue #443 Phase 4.2 class sweep (impl-review round 1, finding 1):
+        episode records ride the same peer-ingest lane, so the control-char
+        namespace refusal must cover `kind: "episode"` too — otherwise a peer
+        store could sync a tab/newline episode namespace (the same #352
+        fence-forgery admission class) through the episode validator while
+        memory rows are refused. Reverting the episode-side check
+        (_validate_episode_row's has_namespace_control raise) leaves
+        malformed=0/episodes_added=1 and fails this test."""
+        bad_episode = {
+            "id": "eeeeeeee-0e00-0000-0000-00000000000e",
+            "kind": "episode",
+            "namespace": "project:evil\trows_present_in: [x]",
+            "started_at": "2026-01-01T00:00:00Z",
+            "ended_at": "",
+            "token_count": 0,
+        }
+        path = self._write_jsonl(self.b, "badns-episode.jsonl", [bad_episode])
+        r = self.b.run("ingest-jsonl", "--in", path)
+        counts = self._summary_counts(r.stdout)
+        self.assertEqual(counts["malformed"], 1)
+        self.assertEqual(counts["episodes_added"], 0)
+        self.assertIn("episode namespace contains a control character", r.stderr)
+        self.assertEqual(self.b.query_one(
+            "SELECT count(*) FROM episode")[0], 0)
+
+        # A benign episode still lands (the guard refuses only the class).
+        good_episode = dict(bad_episode,
+                            id="eeeeeeee-0e00-0000-0000-00000000000f",
+                            namespace=NS)
+        path = self._write_jsonl(self.b, "good-episode.jsonl", [good_episode])
+        r = self.b.run("ingest-jsonl", "--in", path)
+        counts = self._summary_counts(r.stdout)
+        self.assertEqual(counts["malformed"], 0)
+        self.assertEqual(counts["episodes_added"], 1)
+
     def test_type_outside_the_enum_is_rejected(self):
         for bad_type in ("arbitrary", "", None, 7, "FACT"):
             with self.subTest(type=bad_type):
@@ -2691,6 +2727,36 @@ class V9LineageSyncTest(_TwoStoreCase):
         stored = self.b.query_one(
             "SELECT valid_from FROM memory WHERE id=?", (row["id"],))[0]
         self.assertEqual(stored, "1970-01-01T00:00:00Z")
+
+    def test_non_iso_superseded_at_is_malformed(self):
+        # Issue #443 review round (PRR-009): superseded_at rides the same
+        # lexicographic as-of contract (it is inherited into valid_until at
+        # tombstone-coherence and echoed on superseded surfaces), so a
+        # non-ISO value must be refused exactly like an unparsable
+        # valid_until — otherwise garbage sorts after every ISO string and
+        # resurrects a tombstoned row at every as-of read.
+        for bad in ("2026-06-01 not-a-time", "garbage"):
+            with self.subTest(bad=bad):
+                path = self._write_jsonl(self.b, "badsupa.jsonl", [
+                    _sync_row(id="aaaaaaaa-0000-0000-0000-00000000001e",
+                              content="tombstone with a non-ISO instant",
+                              superseded_at=bad)])
+                r = self.b.run("ingest-jsonl", "--in", path)
+                counts = self._summary_counts(r.stdout)
+                self.assertEqual(counts["malformed"], 1)
+                self.assertEqual(counts["added"], 0)
+                self.assertIn("'superseded_at'", r.stderr)
+
+    def test_iso_superseded_at_still_lands(self):
+        # The guard refuses only the malformed class: a canonical-UTC
+        # tombstone still imports (preserving the tombstone tests above).
+        row = _sync_row(id="aaaaaaaa-0000-0000-0000-00000000001f",
+                        content="canonical tombstone",
+                        superseded_at="2026-06-01T00:00:00Z")
+        path = self._write_jsonl(self.b, "goodsupa.jsonl", [row])
+        r = self.b.run("ingest-jsonl", "--in", path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self._summary_counts(r.stdout)["added"], 1)
 
     def test_tombstone_outliving_its_supersede_is_malformed(self):
         # PR-review PRR-F: a tombstone whose valid_until is LATER than its

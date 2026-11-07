@@ -114,6 +114,7 @@ from storelib.sync import (  # noqa: E402
     _validate_sync_row,
     cmd_ingest_jsonl_strict,
 )
+from schema_meta import has_namespace_control  # noqa: E402
 from storelib.write import (  # noqa: E402
     MAX_CONTENT_CHARS,
     CapturePolicyRefusal,
@@ -317,6 +318,22 @@ def _sanitize_staged_store(staged: sqlite3.Connection,
                 "import refused: source store carries a memory.id that is "
                 f"not UUID-shaped (first offender {mid!r}); refusing the "
                 "import rather than copying malformed ids")
+        # Issue #443 AC2 (review round): the sqlite-to-sqlite path is also
+        # the admission lane that never checked namespace grammar. A
+        # caller-supplied store can carry a namespace containing C0/DEL
+        # (pre-#440 sync peers, pre-0.144 dataset imports, direct surgery);
+        # the writer refuses that class, so copying it verbatim would land
+        # destination rows violating writer invariants — and a newline
+        # renders as a column-0 line in the untrusted fence (the #352
+        # delivery-credit-forgery class). Refuse the WHOLE import (the #353
+        # law) rather than copying a foreign namespace set.
+        src_ns = row["namespace"]
+        if not isinstance(src_ns, str) or has_namespace_control(src_ns):
+            raise ValueError(
+                "import refused: source store carries a memory.namespace "
+                "that is not a string or contains a control character "
+                f"(first offender {src_ns!r}); the writer path refuses the "
+                "same class")
         # NULL fields are legal in a real legacy store; the policy joins
         # strings and must never see None.
         content = row["content"] or ""
@@ -422,6 +439,28 @@ def _sanitize_staged_store(staged: sqlite3.Connection,
                     f"carries a not UUID-shaped id (first offender "
                     f"{val!r}); refusing the import rather than copying "
                     "malformed ids")
+
+    # Issue #443 AC2 (review round, delta-r1 residual): the namespace
+    # control-char refusal covers EVERY namespace-bearing table, not just
+    # memory — the episode lane copies episode.namespace verbatim, and the
+    # writer refuses the same class there (sync's episode validator, the
+    # episode-close summary path). Legacy sources without the table skip.
+    for table in ("memory", "episode"):
+        if not _table_exists(source, table):
+            continue
+        src_cols = {r["name"] for r in source.execute(
+            f"PRAGMA table_info({table})")}
+        if "namespace" not in src_cols:
+            continue
+        for (val,) in source.execute(
+                f"SELECT DISTINCT namespace FROM {table} "
+                f"WHERE namespace IS NOT NULL"):
+            if not isinstance(val, str) or has_namespace_control(val):
+                raise ValueError(
+                    f"import refused: source store table {table} carries a "
+                    f"namespace that is not a string or contains a control "
+                    f"character (first offender {val!r}); the writer path "
+                    "refuses the same class")
 
     staged_count = source_count - counters["quarantined"]
     return {"source_count": source_count, "staged_count": staged_count,
