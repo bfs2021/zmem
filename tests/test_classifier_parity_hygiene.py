@@ -38,11 +38,35 @@ PARITY = REPO_ROOT / "tests" / "test_classifier_parity.py"
 CHILD_TIMEOUT_S = 300
 SIBLINGS = ("-journal", "-wal", "-shm")
 
-# One verbose unittest line per DB-wiring leg that passed, e.g.
-# "test_x (__main__.DbWiringIntegrationTest.test_x) ... ok".
-_DB_LEG_OK = re.compile(
-    r"\([\w.]*DbWiringIntegrationTest\.(test_\w+)\) \.\.\. ok$", re.M)
+# Verbose unittest reports "test_x (__main__.DbWiringIntegrationTest.test_x)
+# ... <result>", but unrelated stderr noise (e.g. DeprecationWarnings while a
+# cold __pycache__ compiles storelib) can land between the marker and the
+# result, so each leg's result is read as the last line of its own segment.
+_DB_LEG_START = re.compile(
+    r"\([\w.]*DbWiringIntegrationTest\.(test_\w+)\) \.\.\. ")
+_NEXT_TEST_LINE = re.compile(r"^test_\w+ \(", re.M)
 _SKIPPED_SUMMARY = re.compile(r"^OK \(.*skipped=", re.M)
+
+
+def _passed_db_legs(out):
+    starts = list(_DB_LEG_START.finditer(out))
+    passed = set()
+    for i, m in enumerate(starts):
+        # A segment ends where the NEXT leg's line begins (the marker match
+        # starts mid-line, after the "test_x " prefix).
+        end = (out.rfind("\n", 0, starts[i + 1].start()) + 1
+               if i + 1 < len(starts) else len(out))
+        seg = out[m.end():end]
+        nxt = _NEXT_TEST_LINE.search(seg)
+        if nxt:
+            seg = seg[:nxt.start()]
+        sep = seg.find("\n------")
+        if sep != -1:
+            seg = seg[:sep]
+        lines = [line.strip() for line in seg.splitlines() if line.strip()]
+        if lines and lines[-1] == "ok":
+            passed.add(m.group(1))
+    return sorted(passed)
 
 
 def _load_parity():
@@ -91,7 +115,7 @@ class ParityTempHygieneTest(unittest.TestCase):
             "parity child failed before the leak check: %s" % out[-400:])
         # Positive control: the legs that create the temp fixtures ran ok.
         self.assertEqual(
-            sorted(set(_DB_LEG_OK.findall(out))), expected,
+            _passed_db_legs(out), expected,
             "the fixture-creating DbWiringIntegrationTest legs did not all "
             "run ok, so the leak check below would pass vacuously: %s"
             % out[-400:])
