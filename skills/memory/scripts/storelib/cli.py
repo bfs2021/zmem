@@ -4644,10 +4644,17 @@ def main():
         sys.exit(cmd_purge(ids=args.ids, scrub_backups=args.scrub_backups,
                            out_dir=args.out_dir, as_json=args.as_json))
 
-    # `sweep` is pure file maintenance (removes stale cooldown markers), never
-    # touches the store itself, so — like `failures`/`restore` above — it is
-    # dispatched BEFORE connect()/init_db()/migrate(): a locked or mid-migration
-    # store can never block the reaper, and no store.sqlite is required.
+    # `sweep` removes stale cooldown markers (pure file maintenance) PLUS —
+    # since issue #128 — a best-effort meta-prune phase that opens the store
+    # directly (raw mode=rw, or the sidecar-free readonly opener under
+    # --dry-run) OUTSIDE the connect()/maintenance-lock lifecycle. The phase
+    # is fail-open by contract: an absent, locked, mid-migration, non-
+    # database, or newer-schema store is skipped (exit 0, file-sweep result
+    # preserved), so a locked store still can never block the reaper — but
+    # the sweep is no longer strictly "never touches the store": on a
+    # healthy store it holds the write lock for the duration of the bounded
+    # meta transaction (review round PRR-015; the lock-serialization
+    # question vs restore/backup is tracked in the PR #444 follow-ups).
     if args.cmd == "sweep":
         sys.exit(cmd_sweep(marker_dir=args.marker_dir,
                            max_age_days=args.max_age_days,

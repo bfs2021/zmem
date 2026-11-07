@@ -2728,6 +2728,36 @@ class V9LineageSyncTest(_TwoStoreCase):
             "SELECT valid_from FROM memory WHERE id=?", (row["id"],))[0]
         self.assertEqual(stored, "1970-01-01T00:00:00Z")
 
+    def test_non_iso_superseded_at_is_malformed(self):
+        # Issue #443 review round (PRR-009): superseded_at rides the same
+        # lexicographic as-of contract (it is inherited into valid_until at
+        # tombstone-coherence and echoed on superseded surfaces), so a
+        # non-ISO value must be refused exactly like an unparsable
+        # valid_until — otherwise garbage sorts after every ISO string and
+        # resurrects a tombstoned row at every as-of read.
+        for bad in ("2026-06-01 not-a-time", "garbage"):
+            with self.subTest(bad=bad):
+                path = self._write_jsonl(self.b, "badsupa.jsonl", [
+                    _sync_row(id="aaaaaaaa-0000-0000-0000-00000000001e",
+                              content="tombstone with a non-ISO instant",
+                              superseded_at=bad)])
+                r = self.b.run("ingest-jsonl", "--in", path)
+                counts = self._summary_counts(r.stdout)
+                self.assertEqual(counts["malformed"], 1)
+                self.assertEqual(counts["added"], 0)
+                self.assertIn("'superseded_at'", r.stderr)
+
+    def test_iso_superseded_at_still_lands(self):
+        # The guard refuses only the malformed class: a canonical-UTC
+        # tombstone still imports (preserving the tombstone tests above).
+        row = _sync_row(id="aaaaaaaa-0000-0000-0000-00000000001f",
+                        content="canonical tombstone",
+                        superseded_at="2026-06-01T00:00:00Z")
+        path = self._write_jsonl(self.b, "goodsupa.jsonl", [row])
+        r = self.b.run("ingest-jsonl", "--in", path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self._summary_counts(r.stdout)["added"], 1)
+
     def test_tombstone_outliving_its_supersede_is_malformed(self):
         # PR-review PRR-F: a tombstone whose valid_until is LATER than its
         # superseded_at is incoherent (a row cannot outlive its own tombstone;

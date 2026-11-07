@@ -61,6 +61,16 @@ CLEAN_NS = "user:global"
 
 # -- env pinned BEFORE any storelib import AND before the issue-#244 store
 # isolation guard loads (the guard reads the ambient env at import time).
+# Ambient env snapshot taken BEFORE any mutation (review round
+# PRR-008): tearDownModule restores THESE values, not the scratch
+# pins written below.
+_PINNED_KEYS = ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODEL_AUTODOWNLOAD",
+                "PYTHONIOENCODING", "ZMEM_BACKUP_DIR", "ZMEM_HOME",
+                "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA",
+                "ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR",
+                "ZMEM_SESSION", "ZMEM_SESSION_ID")
+_SAVED_ENV = {key: os.environ.get(key) for key in _PINNED_KEYS}
+
 _TMP = tempfile.mkdtemp(prefix="zmem-c2-")
 os.environ.update({
     "ZMEM_STORE": os.path.join(_TMP, "store.sqlite"),
@@ -83,12 +93,6 @@ if str(SCRIPTS_DIR) not in sys.path:
     _PATH_INSERTED = True
 else:
     _PATH_INSERTED = False
-_PINNED_KEYS = ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODEL_AUTODOWNLOAD",
-                "PYTHONIOENCODING", "ZMEM_BACKUP_DIR", "ZMEM_HOME",
-                "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA",
-                "ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR",
-                "ZMEM_SESSION", "ZMEM_SESSION_ID")
-_SAVED_ENV = {key: os.environ.get(key) for key in _PINNED_KEYS}
 
 from storelib import dataset as ds  # noqa: E402
 
@@ -275,6 +279,91 @@ class ImportNamespaceControlRefusalTest(ImportNamespaceControlBase):
     def test_refuses_del_namespace(self):
         self._assert_refused(
             DEL_NS, "dddd4444-5555-4666-8777-88889999000b")
+
+    def test_sqlite_import_lane_refuses_control_char_namespace(self):
+        """Issue #443 AC2 + review round PRR-002: the sqlite-to-sqlite
+        migration lane (import-store.py --source <store>) must refuse the
+        WHOLE import when the source store carries a control-character
+        namespace — the writer refuses the class, so copying it verbatim
+        would land destination rows violating writer invariants (the #352
+        fence-forgery class)."""
+        src_dir = self.tmp / "srcstore"
+        src_dir.mkdir()
+        src_store = src_dir / "store.sqlite"
+        conn = sqlite3.connect(str(src_store))
+        try:
+            conn.executescript(
+                "CREATE TABLE memory (id TEXT PRIMARY KEY, namespace TEXT, "
+                "type TEXT, content TEXT, tags TEXT, source_ref TEXT, "
+                "confidence REAL, signal TEXT, ingestion_ts TEXT)")
+            conn.execute(
+                "INSERT INTO memory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("eeee5555-6666-4777-8888-99990000000a", TAB_NS, "fact",
+                 "sqlite-lane control-char namespace probe row", "",
+                 "session:probe", 0.9, "none", "2026-01-01T00:00:00Z"))
+            conn.commit()
+        finally:
+            conn.close()
+        dest = self.tmp / "dest-sqlite"
+        r = self._run_cli(
+            [str(IMPORT_STORE_PY), "--source", str(src_store),
+             "--dest-dir", str(dest)])
+        self.assertNotEqual(
+            r.returncode, 0,
+            f"C2/PRR-002: import-store's sqlite-to-sqlite lane must REFUSE "
+            f"the import for the control-character namespace {TAB_NS!r}. "
+            f"Observed rc=0 — the row landed. stdout:\n{r.stdout[-800:]!r}\n"
+            f"stderr:\n{r.stderr[-800:]!r}")
+        lowered = r.stderr.lower()
+        self.assertIn("control", lowered,
+                      f"the refusal must name the control character; "
+                      f"stderr:\n{r.stderr[-800:]!r}")
+        self.assertIn("namespace", lowered)
+        # Nothing landed: no destination store row carries the namespace.
+        dest_stores = list(dest.rglob("*.sqlite")) if dest.is_dir() else []
+        for ds in dest_stores:
+            conn = sqlite3.connect(str(ds))
+            try:
+                planted = conn.execute(
+                    "SELECT COUNT(*) FROM memory WHERE namespace=?",
+                    (TAB_NS,)).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(planted, 0)
+
+    def test_sqlite_import_lane_clean_namespace_still_lands(self):
+        """PRESERVING — the guard refuses only the control-char class: a
+        clean-namespace source row still migrates."""
+        src_dir = self.tmp / "srcstore-clean"
+        src_dir.mkdir()
+        src_store = src_dir / "store.sqlite"
+        conn = sqlite3.connect(str(src_store))
+        try:
+            conn.executescript(
+                "CREATE TABLE memory (id TEXT PRIMARY KEY, namespace TEXT, "
+                "type TEXT, content TEXT, tags TEXT, source_ref TEXT, "
+                "confidence REAL, signal TEXT, ingestion_ts TEXT, "
+                "superseded_at TEXT, source_hash TEXT, valid_from TEXT, "
+                "valid_until TEXT, update_of TEXT, content_norm TEXT, "
+                "merged_from TEXT, taint TEXT, trust_score REAL, "
+                "embedding BLOB, embedding_model TEXT)")
+            conn.execute(
+                "INSERT INTO memory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "NULL, '', '', '', '', '', NULL, 'trusted_internal', 1.0, "
+                "NULL, '')",
+                ("eeee5555-6666-4777-8888-99990000000b", "user:global",
+                 "fact", "clean sqlite-lane probe row", "", "session:probe",
+                 0.9, "none", "2026-01-01T00:00:00Z"))
+            conn.commit()
+        finally:
+            conn.close()
+        dest = self.tmp / "dest-sqlite-clean"
+        r = self._run_cli(
+            [str(IMPORT_STORE_PY), "--source", str(src_store),
+             "--dest-dir", str(dest)])
+        self.assertEqual(r.returncode, 0,
+                         f"a clean-namespace source row must migrate; "
+                         f"observed:\n{r.stdout[-400:]!r}\n{r.stderr[-400:]!r}")
 
     def test_refuses_trailing_tab_namespace(self):
         # Boundary: the control character is a trailing TAB. The validation

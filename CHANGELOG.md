@@ -57,6 +57,42 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `isdigit()` parse the JSON shape would have silently read as 0 and killed
   the convention nudge.
 
+### Review round (swarm-pr-review + swarm-pr-feedback, PR #444)
+
+- **import-store joins the control-char namespace refusal (#443 AC2
+  completed).** The sqlite-to-sqlite migration lane now refuses the WHOLE
+  import when the source store carries a memory.namespace that is not a
+  string or contains C0/DEL (mirroring the #353 whole-import id law) — the
+  destination can no longer receive rows the writer itself would refuse.
+- **Counter-value grammar hardened.** `classify_convention_count` /
+  `parse_convention_count` (and the hermes verify-hook twin) now use an
+  explicit ASCII-decimal predicate with an int()-parseability gate and catch
+  `RecursionError` on deeply nested JSON: a digit-shaped malformed value
+  (e.g. `²`, an over-limit digit string) classifies malformed — RETAINED by
+  the sweep's meta prune, never deleted — instead of crashing the verify
+  hook or being deleted as "legacy".
+- **Dry-run opens sidecar-free.** `sweep --dry-run`'s meta phase opens the
+  store through `storelib.readonly.open_readonly` instead of a bare
+  `mode=ro` URI, which materialized `-wal`/`-shm` residue on WAL stores
+  (issue #345 law).
+- **Mixed-version note.** A pre-0.144.0 client sharing the store reads the
+  new JSON counter value as 0 (its convention nudge stays suppressed until
+  the client updates) and an old writer's next increment resets the row to
+  a legacy integer 1; both are nudge-cadence effects, not data loss. On a
+  Hermes-only host no sweep runs (the bound applies where the sweep runs).
+- **Dataset repair path.** A dataset exported from a store that predates
+  the control-char refusal and carries such a namespace is refused whole at
+  import; the documented repair is purge-in-source then re-export (hand-
+  editing rows breaks the checksum + snapshot-hash verification).
+- **Peer timestamp grammar.** Sync ingest now asserts `superseded_at` is an
+  exact canonical UTC timestamp (same rule and malformed-counted-not-stored
+  consequence as `valid_from`/`valid_until`) before it is inherited into
+  `valid_until`, closing a lexicographic as-of bypass and a verbatim echo
+  on superseded read surfaces.
+- Sweep/contract comment corrections (the sweep's meta phase opens the
+  store; current-session retention applies to the launcher `ZMEM_SESSION`
+  id space — hermes payload-id rows are bounded by the `last_seen` TTL).
+
 ### Deferred (owner-disclosed)
 
 - #128 design 1-3 (re-adding the retired `convention-count` writer +

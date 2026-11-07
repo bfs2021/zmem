@@ -2519,8 +2519,11 @@ budget, so a credential straddling the budget cut is withheld whole — never
 leaked as a clipped fragment — and `--for-injection` applies it on the
 no-session lane too. Since 0.142.0 the explicit lanes are filtered as well:
 `recall`/`recent` reduce credential-shaped rows to the `[WITHHELD: SECRET]`
-stub (PR #440, issue #352 AC3); `get` by id remains an unfiltered operator
-surface.
+stub (PR #440, issue #352 AC3); since 0.144.0 `list` (both the human line and
+the `--json` payload, including the hub/remote read route) and `export-pack`
+(body bullets, the pack title, and the empty-pack refusal) reduce
+credential-shaped rows the same way and blank a credential-shaped namespace
+at render (issue #443). `get` by id remains an unfiltered operator surface.
 Sibling envelopes the selector
 builds for silent/kill-switch reasons never carry the key. Known residuals:
 a credential stored ONLY as an entity `canonical_name`/alias is not

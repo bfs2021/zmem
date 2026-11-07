@@ -48,11 +48,20 @@ def _parse_convention_count(value) -> int:
         return 0
     text = value if isinstance(value, str) else str(value)
     stripped = text.strip()
-    if stripped.isdigit():
-        return int(stripped)
+    # Explicit ASCII-decimal match with an int()-parseability gate, NOT
+    # str.isdigit(): isdigit admits non-decimal digit characters ('²') and
+    # over-limit digit strings whose int() raises; classify must call a
+    # value "legacy" only when it can actually parse (review round; twin of
+    # schema_meta.classify_convention_count).
+    import re as _re
+    if _re.fullmatch(r"[0-9]+", stripped):
+        try:
+            return int(stripped)
+        except ValueError:
+            return 0
     try:
         obj = json.loads(stripped)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return 0
     if not isinstance(obj, dict):
         return 0

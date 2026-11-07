@@ -61,6 +61,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 STORE_PY = REPO_ROOT / "skills" / "memory" / "scripts" / "store.py"
 PYTHON = sys.executable
 
+# Ambient env snapshot taken BEFORE any mutation (review round
+# PRR-008): tearDownModule restores THESE values, not the scratch
+# pins written below.
+_PINNED_KEYS = ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODEL_AUTODOWNLOAD",
+                "PYTHONIOENCODING", "ZMEM_BACKUP_DIR", "ZMEM_HOME",
+                "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA",
+                "ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR",
+                "ZMEM_SESSION", "ZMEM_SESSION_ID")
+_SAVED_ENV = {key: os.environ.get(key) for key in _PINNED_KEYS}
+
 _TMP = tempfile.mkdtemp(prefix="zmem-c1-")
 os.environ.update({
     "ZMEM_STORE": os.path.join(_TMP, "store.sqlite"),
@@ -74,12 +84,6 @@ for _k in ("ZMEM_BACKUP_DIR", "ZMEM_HOME", "CLAUDE_PLUGIN_DATA",
     os.environ.pop(_k, None)
 import _store_guard  # noqa: E402,F401  (issue #244 isolation guard)
 
-_PINNED_KEYS = ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODEL_AUTODOWNLOAD",
-                "PYTHONIOENCODING", "ZMEM_BACKUP_DIR", "ZMEM_HOME",
-                "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA",
-                "ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR",
-                "ZMEM_SESSION", "ZMEM_SESSION_ID")
-_SAVED_ENV = {key: os.environ.get(key) for key in _PINNED_KEYS}
 
 
 def tearDownModule():  # noqa: N802 - unittest hook

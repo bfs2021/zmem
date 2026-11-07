@@ -98,20 +98,39 @@ def _valid_convention_last_seen(value: object) -> bool:
     return _time.strftime(CONVENTION_COUNT_TS_FORMAT, parsed) == value
 
 
+_ASCII_DIGITS_RE = re.compile(r"[0-9]+")
+
+
 def classify_convention_count(value: object) -> str:
     """Classify a counter value: ``"json"`` (canonical shape), ``"legacy"``
-    (bare non-negative decimal integer), or ``"malformed"`` (anything else,
-    including JSON with a missing/wrong-typed ``count`` or a ``last_seen``
-    that is not an exact canonical timestamp)."""
+    (bare non-negative ASCII decimal integer), or ``"malformed"`` (anything
+    else, including JSON with a missing/wrong-typed ``count`` or a
+    ``last_seen`` that is not an exact canonical timestamp).
+
+    The legacy predicate is an explicit ASCII-decimal match, NOT
+    ``str.isdigit()``: isdigit also admits non-decimal digit characters
+    (e.g. ``'²'``) and over-limit digit strings whose ``int()`` raises
+    (review round: a misclassification here made the pruner DELETE
+    digit-shaped malformed rows the retention law protects)."""
     if value is None:
         return "malformed"
     text = value if isinstance(value, str) else str(value)
     stripped = text.strip()
-    if stripped.isdigit():
+    if _ASCII_DIGITS_RE.fullmatch(stripped):
+        try:
+            int(stripped)
+        except ValueError:
+            # ASCII digits but over CPython's int-string conversion limit:
+            # malformed (retained), NOT legacy — the pruner deletes
+            # non-current legacy rows, so anything classify calls legacy
+            # must be int-parseable (review round).
+            return "malformed"
         return "legacy"
     try:
         obj = json.loads(stripped)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
+        # RecursionError: a deeply nested JSON blob must degrade to
+        # malformed, not escape the caller (review round).
         return "malformed"
     if not isinstance(obj, dict):
         return "malformed"
@@ -127,11 +146,17 @@ def parse_convention_count(value: object) -> int:
     """The counter's integer count: canonical JSON ``count``, a legacy bare
     integer, or 0 for a malformed value. Twin: zmem-hermes-verify.py
     ``_parse_convention_count`` (keep byte-equivalent in behaviour)."""
-    kind = classify_convention_count(value)
-    if kind == "legacy":
-        return int(str(value).strip())
-    if kind == "json":
-        return int(json.loads(str(value).strip())["count"])
+    try:
+        kind = classify_convention_count(value)
+        if kind == "legacy":
+            return int(str(value).strip())
+        if kind == "json":
+            return int(json.loads(str(value).strip())["count"])
+    except (ValueError, TypeError, RecursionError):
+        # Defensive: classify admits only values int()/json.loads can
+        # resolve; a violation degrades to 0 rather than escaping into the
+        # increment/sweep/hook callers (the documented malformed law).
+        return 0
     return 0
 
 

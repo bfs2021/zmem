@@ -117,6 +117,16 @@ STORE_PY = SCRIPTS_DIR / "store.py"
 VERIFY_HOOK = REPO_ROOT / "hermes-plugin" / "hooks" / "zmem-hermes-verify.py"
 PYTHON = sys.executable
 
+# Ambient env snapshot taken BEFORE any mutation (review round
+# PRR-008): tearDownModule restores THESE values, not the scratch
+# pins written below.
+_PINNED_KEYS = ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODEL_AUTODOWNLOAD",
+                "PYTHONIOENCODING", "ZMEM_BACKUP_DIR", "ZMEM_HOME",
+                "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA",
+                "ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR",
+                "ZMEM_SESSION", "ZMEM_SESSION_ID")
+_SAVED_ENV = {key: os.environ.get(key) for key in _PINNED_KEYS}
+
 _TMP = tempfile.mkdtemp(prefix="zmem-128-")
 os.environ.update({
     "ZMEM_STORE": os.path.join(_TMP, "store.sqlite"),
@@ -130,12 +140,6 @@ for _k in ("ZMEM_BACKUP_DIR", "ZMEM_HOME", "CLAUDE_PLUGIN_DATA",
     os.environ.pop(_k, None)
 import _store_guard  # noqa: E402,F401  (issue #244 isolation guard)
 
-_PINNED_KEYS = ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODEL_AUTODOWNLOAD",
-                "PYTHONIOENCODING", "ZMEM_BACKUP_DIR", "ZMEM_HOME",
-                "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA",
-                "ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR",
-                "ZMEM_SESSION", "ZMEM_SESSION_ID")
-_SAVED_ENV = {key: os.environ.get(key) for key in _PINNED_KEYS}
 # storelib modules present before THIS file imported anything (defensive:
 # a pytest co-run may have loaded it under another file's env); restored in
 # tearDownModule after the in-process direct-function legs purge/reload.
@@ -282,11 +286,11 @@ class MetaTableBoundBase(unittest.TestCase):
             timeout=timeout, stdin=stdin, env=env)
 
     def _run_argv(self, argv, *, timeout=120, stdin=None,
-                  env=None) -> subprocess.CompletedProcess:
+                  env=None, cwd=None) -> subprocess.CompletedProcess:
         return subprocess.run(
             argv,
             env=env or self.env, capture_output=True, text=True,
-            timeout=timeout, input=stdin,
+            timeout=timeout, input=stdin, cwd=cwd,
         )
 
     def _meta_values(self) -> dict:
@@ -928,8 +932,14 @@ class CounterValueTest(MetaTableBoundBase):
                          f"hermes-convention must exit 0; observed:\n"
                          f"{_excerpt(r)}")
         first = self._parse_counter(FRESH_SESSION, "first fresh increment")
+        _count = first.get("count")
+        self.assertIsInstance(_count, int)
+        self.assertFalse(
+            isinstance(_count, bool),
+            "count must be a real int, not a bool (bool is an int subclass; "
+            "review round PRR-010)")
         self.assertEqual(
-            first.get("count"), 1,
+            _count, 1,
             f"C5: a fresh counter's first increment must read count==1. "
             f"Observed: {first!r} (raw "
             f"{self._counter_value(FRESH_SESSION)!r})")
@@ -999,8 +1009,14 @@ class CounterValueTest(MetaTableBoundBase):
                          f"{_excerpt(r)}")
         value = self._parse_counter(
             MALFORMED_WRITE_SESSION, "malformed value + one increment")
+        _count = value.get("count")
+        self.assertIsInstance(_count, int)
+        self.assertFalse(
+            isinstance(_count, bool),
+            "count must be a real int, not a bool (bool is an int subclass; "
+            "review round PRR-010)")
         self.assertEqual(
-            value.get("count"), 1,
+            _count, 1,
             f"C5: a malformed counter value must be treated as 0 — the "
             f"next increment reads JSON count==1. Observed: {value!r} (raw "
             f"{self._counter_value(MALFORMED_WRITE_SESSION)!r})")
@@ -1017,8 +1033,14 @@ class CounterValueTest(MetaTableBoundBase):
                          f"{_excerpt(r)}")
         value = self._parse_counter(
             WRONG_TYPED_SESSION, "wrong-typed JSON + one increment")
+        _count = value.get("count")
+        self.assertIsInstance(_count, int)
+        self.assertFalse(
+            isinstance(_count, bool),
+            "count must be a real int, not a bool (bool is an int subclass; "
+            "review round PRR-010)")
         self.assertEqual(
-            value.get("count"), 1,
+            _count, 1,
             f"C5: a wrong-typed JSON counter must be treated as malformed "
             f"(0) — the next increment reads JSON count==1. Observed: "
             f"{value!r} (raw "
@@ -1220,13 +1242,25 @@ class VerifyHookParityTest(MetaTableBoundBase):
         shutil.copy2(VERIFY_HOOK.parent / "_zmem_hook_common.py",
                      scratch / "_zmem_hook_common.py")
         # Fixture sanity: the copy's resolver candidates genuinely lack
-        # host.py/storelib (parents[2] of the COPY, and no ZMEM_HOME).
+        # host.py/storelib (parents[2] of the COPY, and no ZMEM_HOME), AND
+        # the subprocess cwd cannot rescue candidate 2 — the hook resolves
+        # ZMEM_HOME-absent as Path("")/"skills/memory/scripts", which is
+        # CWD-RELATIVE; without a cwd pin the repo checkout itself would
+        # satisfy it and the inline degraded fallback would never run
+        # (review round PRR-007: the un-pinned leg was sabotage-mutant
+        # GREEN from the repo root).
         self.assertFalse(
             (hook_copy.parents[2] / "skills" / "memory" / "scripts"
              / "host.py").is_file(),
             f"fixture sanity: the scratch copy at {hook_copy} must NOT reach "
             f"a skills/memory/scripts tree via parents[2] "
             f"({hook_copy.parents[2]}).")
+        hook_cwd = scratch / "cwd"
+        hook_cwd.mkdir()
+        self.assertFalse(
+            (hook_cwd / "skills" / "memory" / "scripts" / "host.py").is_file(),
+            "fixture sanity: the hook subprocess cwd must not resolve a "
+            "skills/memory/scripts tree either.")
         session = HOOK_NOSTORELIB_SESSION
         self._set_meta(f"hermes_convention_count_{session}",
                        json.dumps({"count": 3, "last_seen": _now_iso_z()}))
@@ -1238,7 +1272,7 @@ class VerifyHookParityTest(MetaTableBoundBase):
                          "candidate (ZMEM_HOME) must be absent.")
         r = self._run_argv([PYTHON, "-X", "utf8", str(hook_copy)],
                            stdin=json.dumps({"session_id": session}),
-                           timeout=60, env=env)
+                           timeout=60, env=env, cwd=str(hook_cwd))
         # Passes in BOTH worlds: without storelib the hook must degrade, not
         # crash (rc 0, no Traceback — no ImportError leaking from a hard
         # storelib import).

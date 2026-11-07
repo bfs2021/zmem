@@ -455,6 +455,11 @@ reads this pack.
     memory does not evict the rest of the pack.
   - Skipped rows are reported in a trailing
     `*(N row(s) omitted to stay within --max-bytes=…)*` note.
+- **Credential withhold** — since 0.144.0 (issue #443) the pack is a
+  filtered surface: a credential-shaped row renders as
+  `[WITHHELD: SECRET]` instead of its content (never silently dropped), and
+  a credential-shaped `--namespace` is blanked in the title and in the
+  empty-pack refusal line.
 - **Exit code** — `export-pack` exits `2` when the pack would be empty (no
   live rows at/above `--min-confidence` in `--namespace` **and** none in
   `user:global` — e.g. a wrong or not-yet-populated namespace), and `0`

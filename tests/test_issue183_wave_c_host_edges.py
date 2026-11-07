@@ -552,10 +552,14 @@ process.stdout.write(JSON.stringify({
                 # Issue #128 (0.144.0): the counter value is the canonical
                 # JSON shape (count == 1 after one event); the NO-MIGRATION
                 # property under test is the schema_version/evidence asserts
-                # above, which must keep holding.
+                # above, which must keep holding. Exact-type count pin
+                # (bool is an int subclass — review round PRR-010).
                 self.assertIsNotNone(legacy)
                 counter = json.loads(legacy[0])
-                self.assertEqual(counter.get("count"), 1,
+                _count = counter.get("count")
+                self.assertIsInstance(_count, int)
+                self.assertFalse(isinstance(_count, bool))
+                self.assertEqual(_count, 1,
                                  conn.execute("SELECT key,value FROM meta").fetchall())
             finally:
                 conn.close()

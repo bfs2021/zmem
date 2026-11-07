@@ -472,11 +472,15 @@ def prune_convention_meta(store_path, *, cutoff_epoch: float,
       deleted (an operator must be able to inspect a corrupted counter).
 
     Returns ``(removed, retained, unparseable)``, or ``None`` when the store
-    is absent, locked, unreadable, or stamped with a schema version newer
-    than this client supports (skip: the sweep must never break on, or
-    touch, a store it cannot safely open). Mid-transaction sqlite errors roll
-    the transaction back and re-raise. The connection is opened RAW (URI
-    mode=rw for real runs / mode=ro for dry runs — never ``connect()``: the
+    is absent, locked, unreadable, not a database, missing its meta table,
+    or stamped with a schema version newer than this client supports (skip:
+    the sweep must never break on, or touch, a store it cannot safely open).
+    Mid-transaction sqlite errors roll the transaction back and re-raise.
+    The dry-run arm opens through ``storelib.readonly.open_readonly`` — a
+    bare ``?mode=ro`` open is NOT side-effect-free on a WAL store (it
+    materializes ``-wal``/``-shm`` residue that later sidecar-free readers
+    trip over; the readonly module exists precisely for this, issue #345).
+    The real-run arm opens RAW (URI mode=rw — never ``connect()``: the
     pre-connect sweep must not create stores, rewrite WAL headers, migrate,
     or rekey) and the schema gate runs INSIDE the write transaction so a
     concurrent migration cannot race the check."""
@@ -490,20 +494,42 @@ def prune_convention_meta(store_path, *, cutoff_epoch: float,
     store_path = Path(store_path)
     if not store_path.is_file():
         return None
-    mode = "ro" if dry_run else "rw"
-    uri = store_path.resolve().as_uri() + f"?mode={mode}"
-    try:
-        conn = sqlite3.connect(uri, uri=True, timeout=1.0)
-    except sqlite3.Error:
-        return None
+    handle = None
+    if dry_run:
+        # Sidecar-free read-only open (issue #345 law; review round PRR-005:
+        # a bare mode=ro open materializes -wal/-shm on a WAL store). A
+        # residue/copy failure raises ReadOnlyStoreError — the caller's
+        # fail-open handler skips the meta phase exactly like every other
+        # unopenable-store arm.
+        from storelib.readonly import open_readonly
+        try:
+            handle = open_readonly(store_path)
+        except (sqlite3.Error, OSError):
+            return None
+        conn = handle.conn
+    else:
+        uri = store_path.resolve().as_uri() + "?mode=rw"
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=1.0)
+        except sqlite3.Error:
+            return None
     try:
         conn.row_factory = sqlite3.Row
         if not dry_run:
             conn.execute("BEGIN IMMEDIATE")
         # Schema gate inside the transaction (race-free vs a concurrent
         # migration); a missing stamp is a pre-init store — leave it alone.
-        stamp = conn.execute(
-            "SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        # A store with NO meta table (pre-init) or a garbage file raises on
+        # this SELECT: both are the documented None-skip arms, not errors
+        # (review round PRR-017 — the skip must not masquerade as a crash
+        # the caller's blanket handler hides).
+        try:
+            stamp = conn.execute(
+                "SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        except sqlite3.Error:
+            if not dry_run:
+                conn.rollback()
+            return None
         try:
             version = int(stamp[0]) if stamp else None
         except (TypeError, ValueError):
@@ -581,7 +607,13 @@ def prune_convention_meta(store_path, *, cutoff_epoch: float,
                 pass
         raise
     finally:
-        conn.close()
+        # close() on a ReadOnlyHandle is idempotent and also removes the
+        # arm-B staging directory (close-then-remove); a bare conn.close()
+        # would leak it (readonly.py contract).
+        if handle is not None:
+            handle.close()
+        else:
+            conn.close()
 
 
 def cmd_sweep(marker_dir: str | None = None,
@@ -598,10 +630,15 @@ def cmd_sweep(marker_dir: str | None = None,
     `max_age_days` is garbage: it only ever gates a re-prompt within the session
     named in its filename.
 
-    No advisory lock is needed: listdir + per-file unlink is idempotent, so two
-    sessions sweeping the same dir at once are safe by construction (any
-    FileNotFoundError on unlink is caught as an OSError below). Returns a process
-    exit code; never raises on a missing dir or a permission error.
+    No advisory lock is needed for the FILE phases: listdir + per-file unlink
+    is idempotent, so two sessions sweeping the same dir at once are safe by
+    construction (any FileNotFoundError on unlink is caught as an OSError
+    below). The meta phase (issue #128) is best-effort and fail-open: it
+    opens the store directly (raw mode=rw with a 1s timeout, or the
+    sidecar-free readonly opener for --dry-run) and skips — preserving the
+    file-sweep result and exit 0 — whenever the store is absent, locked,
+    unreadable, not a database, or newer than this client supports. Returns
+    a process exit code; never raises on a missing dir or a permission error.
     """
     if max_age_days is None:
         max_age_days = SENTINEL_SWEEP_DAYS_DEFAULT
@@ -745,10 +782,16 @@ def cmd_sweep(marker_dir: str | None = None,
               "sentinel(s)/sidecar(s)")
     # Issue #128: bound the per-session convention-counter meta rows on the
     # SAME cutoff. Best-effort and fail-open by contract: an absent, locked,
-    # unreadable, or newer-schema store skips the meta phase entirely and
-    # preserves the successful file-sweep result above. The current session
-    # rides the AMBIENT ZMEM_SESSION (exported by the session launcher for
-    # cadence runs), so the live session's rows always survive.
+    # unreadable, non-database, or newer-schema store skips the meta phase
+    # entirely and preserves the successful file-sweep result above. The
+    # current session rides the AMBIENT ZMEM_SESSION (exported by the
+    # session launcher for cadence runs), so the live launcher session's
+    # rows always survive. NOTE (review round PRR-003): the hermes ring
+    # writer keys its rows by the hermes payload session_id — a different
+    # id space that never matches ZMEM_SESSION — so hermes-family rows are
+    # bounded purely by the last_seen TTL (fresh JSON rows survive; stale
+    # ones are pruned), and a pre-0.144 legacy hermes row is removed at its
+    # first post-upgrade sweep rather than upgraded.
     global last_meta_prune
     last_meta_prune = None
     try:

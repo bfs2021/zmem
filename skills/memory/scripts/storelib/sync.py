@@ -1200,6 +1200,13 @@ def _validate_sync_row(obj: dict, lineno: int | None = None) -> dict:
 
     _assert_valid_iso(valid_from, "valid_from")
     _assert_valid_iso(valid_until, "valid_until")
+    # Issue #443 review round (PRR-009): superseded_at rides the same
+    # lexicographic as-of contract — it is INHERITED into valid_until below
+    # (tombstone-coherence) and echoed verbatim on explicit superseded
+    # surfaces, so a non-ISO value here would silently defeat the as-of
+    # predicate exactly like an unparsable valid_until. Same grammar, same
+    # malformed-counted-not-stored consequence.
+    _assert_valid_iso(superseded_at, "superseded_at")
 
     # lineage invariant (issue #59, 4.4/4.6): valid_until is the exclusive end
     # of validity and is only EVER written at tombstone time, so a non-empty
