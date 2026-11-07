@@ -2750,6 +2750,18 @@ import store internals directly.
 convention-compatibility hook only. It does not control the commit-only
 `zmem-convention-capture.sh` prompt.
 
+The Hermes convention writer bounds its own `hermes_convention_count_*`
+meta rows (issue #446): once the convention-family row count exceeds
+`ZMEM_CONVENTION_ROW_CAP` (default 64; invalid/negative falls back, 0 is
+a valid aggressive setting), a best-effort prune runs BEFORE the counter
+write with `current_session` = the Hermes payload session id — the live
+session's row is retained (a legacy value upgrades in place) and
+non-current rows pruned oldest-first down to the cap. Malformed counter
+values are never deleted. A Hermes-only host (no launcher sweep) is
+bounded by this mechanism alone. The prune serializes against
+`restore` under the maintenance lock and skips (fail-open) when a live
+holder exists.
+
 ### queue-list / queue-clear / queue-add — review live-captured corrections (read-only / clear / author a note)
 ```
 <interpreter> <store.py> queue-list --namespace NS [--json]

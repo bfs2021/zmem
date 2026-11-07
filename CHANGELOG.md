@@ -5,6 +5,48 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.145.0] - 2026-11-07
+
+### Fixed (issues #442 + #446, collated)
+
+- **Transport failures keep their reason tokens on every remaining
+  surface (#442).** The session-start hook's parse gate classifies a
+  zero-exit stdout that never parses as a JSON dict (empty, malformed,
+  or valid non-dict) as `reason=envelope-error` instead of `omitted`
+  (timeout and nonzero-exit arms keep `omitted` per the filed contract).
+  The Hermes MCP twin's session prefetch classifies a nonzero store
+  child as `store-error` and zero-exit non-dict stdout as
+  `envelope-error`, TERMINALLY — before rows extraction, which the
+  non-dict list shape previously crashed outright. The Hermes provider's
+  local path never parses or injects a failed child's stdout: a failed
+  child is a silent `store-error` decision with empty ids/context (the
+  decoder is skipped entirely). The nine-token
+  `INJECT_SILENT_REASONS` closed set is untouched; both transport tokens
+  ride outside it (route c), and miss-rate exclusion is unchanged.
+- **Hermes-side convention-counter bounding (#446).** The hermes
+  convention writer bounds its own meta rows: a key-only indexed family
+  count triggers a best-effort prune BEFORE the counter write with
+  `current_session` = the Hermes payload session id — the
+  retain-and-upgrade rule is finally reachable for the hermes id space
+  (a live session's legacy row upgrades in place instead of being
+  deleted), and a Hermes-only host (no launcher sweep) bounds its rows
+  without operator intervention. Cap accounting: the current session's
+  parseable row consumes one of `ZMEM_CONVENTION_ROW_CAP` (default 64)
+  slots and is never deleted; retained non-current rows prune
+  oldest-first (`last_seen`, then key); malformed rows are never
+  deleted and sit outside the cap arithmetic; the classification pass
+  is idempotent (a retained population held above the cap by undeletable
+  rows re-classifies and writes nothing).
+- **Sweep meta phase serializes against restore (#446 AC8).**
+  `prune_convention_meta` (both the real and `--dry-run` arms) acquires
+  the maintenance lock BEFORE opening the store and releases it only
+  after the handle closes — on Windows even an idle open handle blocks a
+  concurrent restore's `os.replace` of `store.sqlite` (reproduced:
+  `PermissionError` WinError 5). A live holder skips the phase
+  (fail-open, unchanged exit codes). `cmd_backup` needs no such
+  serialization: its online SQLite backup is concurrency-safe against
+  writers by design.
+
 ## [0.144.0] - 2026-11-06
 
 ### Fixed (issues #443 + #128, collated)
