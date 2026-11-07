@@ -2094,6 +2094,56 @@ def cmd_evidence_associations(
         _read_snapshot_finish(conn, started)
 
 
+def _maybe_prune_convention_rows(conn: sqlite3.Connection, *,
+                                 current_session: str) -> None:
+    """Best-effort bounded prune of the convention-counter meta rows,
+    fired from the live hermes writer itself (issue #446 items 1+2).
+
+    Hot path: ONE key-only indexed family count per call; the
+    classification pass runs only when the count exceeds the cap. The
+    transaction is taken under the maintenance lock (serialize against
+    restore's store replacement — same protocol as the sweep's meta
+    phase); a live holder skips (fail-open, the caller swallows). The
+    caller owns the connection's outer lifecycle (writer lease); this
+    function's BEGIN/COMMIT is self-contained and never leaves a
+    transaction open."""
+    import time as _time
+    from storelib.backup import (
+        SENTINEL_SWEEP_DAYS_DEFAULT,
+        _prune_convention_meta_conn,
+        convention_family_key_count,
+        convention_row_cap,
+    )
+    from storelib.schema import (
+        _acquire_maintenance_lock_with_liveness,
+        _release_named_lock,
+    )
+    cap = convention_row_cap()
+    if convention_family_key_count(conn) <= cap:
+        return
+    now = _time.time()
+    cutoff = now - SENTINEL_SWEEP_DAYS_DEFAULT * 86400.0
+    token = _acquire_maintenance_lock_with_liveness()
+    if token is None:
+        return
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _prune_convention_meta_conn(
+                conn, cutoff_epoch=cutoff,
+                current_session=current_session, now_epoch=now,
+                row_cap=cap)
+            conn.commit()
+        except BaseException:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise
+    finally:
+        _release_named_lock("maintenance", token)
+
+
 def cmd_hermes_convention(
     conn: sqlite3.Connection, *, payload: dict[str, object]
 ) -> int:
@@ -2136,6 +2186,19 @@ def cmd_hermes_convention(
                     (f"hermes_pending_failure_{session}",),
                 )
         else:
+            # Issue #446 (items 1+2): bound the convention families from
+            # the ONLY live writer, BEFORE the counter transaction — a
+            # post-write prune would never see a current LEGACY row (the
+            # writer itself upgrades legacy rows on increment), leaving
+            # the retain-and-upgrade rule unreachable for the hermes id
+            # space, and a Hermes-only host (no launcher, no sweep) had
+            # no bound at all. Best-effort and fail-open: any failure
+            # here is swallowed so the counter write below is unaffected
+            # (the same contract as the sweep's meta phase).
+            try:
+                _maybe_prune_convention_rows(conn, current_session=session)
+            except Exception:
+                pass
             # Issue #128 (release 0.144.0): the counter value is the canonical
             # JSON shape {"count": N, "last_seen": <ISO-Z>} so the sweep can
             # age-prune stale sessions. The read-parse-write runs inside ONE

@@ -377,12 +377,25 @@ def build_tier2_context(store_py, namespace, session_id, budget, *, host="zcode"
             "--json", "--session-id",
             session_id, "--moment", "session_start", "--lane", lane]
     attempt_started = time.perf_counter()
+    # Issue #442: track the parse shape so a zero-exit stdout that never
+    # parses as a JSON dict (empty, malformed, or a valid non-dict) is a
+    # transport failure (envelope-error), never a deliberate skip. The
+    # timeout and nonzero-exit arms keep reason=omitted — the filed
+    # contract preserved them and the user_prompt ladder's envelope-error
+    # token (PR #441) classifies exactly this zero-exit shape.
+    envelope = None
+    envelope_error = False
     try:
         raw = subprocess.check_output(argv, stderr=subprocess.DEVNULL,
                                       timeout=_store_timeout_s())
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", "replace")
-        envelope = json.loads(raw)
+        try:
+            envelope = json.loads(raw)
+        except Exception:
+            envelope_error = True
+        if not envelope_error and not isinstance(envelope, dict):
+            envelope_error = True
     except subprocess.TimeoutExpired:
         attempt_t_ms = _rounded_elapsed_ms(attempt_started)
         _write_decision_line(
@@ -411,10 +424,10 @@ def build_tier2_context(store_py, namespace, session_id, budget, *, host="zcode"
                                  attempt_t_ms)), data_dir)
         return ""
     attempt_t_ms = _rounded_elapsed_ms(attempt_started)
-    if not isinstance(envelope, dict):
+    if envelope_error:
         _write_decision_line(
-            "[%d] zmem-hook status=silent reason=omitted ids=[] all=[] "
-            "exc=0 sid=%s moment=%s%s\n" %
+            "[%d] zmem-hook status=silent reason=envelope-error ids=[] "
+            "all=[] exc=0 sid=%s moment=%s%s\n" %
             (int(time.time()), _safe_sid(audit_sid), decision_moment,
              _format_attribution(attribution_lane, attribution_version,
                                  attempt_t_ms)), data_dir)
