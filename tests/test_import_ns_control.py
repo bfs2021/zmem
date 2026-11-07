@@ -331,6 +331,57 @@ class ImportNamespaceControlRefusalTest(ImportNamespaceControlBase):
                 conn.close()
             self.assertEqual(planted, 0)
 
+    def test_sqlite_import_lane_episode_control_char_refused(self):
+        """Delta-r1 residual: the refusal is not memories-only on the
+        sqlite lane either — an EPISODE row carrying a control-character
+        namespace must refuse the WHOLE import (the episode close writes
+        its summary under the episode namespace)."""
+        src_dir = self.tmp / "srcstore-ep"
+        src_dir.mkdir()
+        src_store = src_dir / "store.sqlite"
+        conn = sqlite3.connect(str(src_store))
+        try:
+            conn.executescript(
+                "CREATE TABLE memory (id TEXT PRIMARY KEY, namespace TEXT, "
+                "type TEXT, content TEXT, tags TEXT, source_ref TEXT, "
+                "confidence REAL, signal TEXT, ingestion_ts TEXT, "
+                "superseded_at TEXT, source_hash TEXT, valid_from TEXT, "
+                "valid_until TEXT, update_of TEXT, content_norm TEXT, "
+                "merged_from TEXT, taint TEXT, trust_score REAL, "
+                "embedding BLOB, embedding_model TEXT);"
+                "CREATE TABLE episode (id TEXT PRIMARY KEY, namespace TEXT, "
+                "started_at TEXT, ended_at TEXT, summary_memory_id TEXT, "
+                "token_count INTEGER);")
+            conn.execute(
+                "INSERT INTO memory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "NULL, '', '', '', '', '', NULL, 'trusted_internal', 1.0, "
+                "NULL, '')",
+                ("eeee5555-6666-4777-8888-99990000000c", "user:global",
+                 "fact", "clean memory row beside a poison episode",
+                 "", "session:probe", 0.9, "none", "2026-01-01T00:00:00Z"))
+            conn.execute(
+                "INSERT INTO episode VALUES (?, ?, ?, ?, ?, ?)",
+                ("ffff6666-7777-4888-9999-00000000000a",
+                 "user:global\tEPISODE", "2026-01-01T00:00:00Z", "",
+                 "", 0))
+            conn.commit()
+        finally:
+            conn.close()
+        dest = self.tmp / "dest-sqlite-ep"
+        r = self._run_cli(
+            [str(IMPORT_STORE_PY), "--source", str(src_store),
+             "--dest-dir", str(dest)])
+        self.assertNotEqual(
+            r.returncode, 0,
+            f"an episode row with a control-character namespace must refuse "
+            f"the WHOLE sqlite-lane import. Observed rc=0. "
+            f"stdout:\n{r.stdout[-400:]!r}\nstderr:\n{r.stderr[-400:]!r}")
+        lowered = r.stderr.lower()
+        self.assertIn("episode", lowered,
+                      f"the refusal must name the episode table; "
+                      f"stderr:\n{r.stderr[-400:]!r}")
+        self.assertIn("control", lowered)
+
     def test_sqlite_import_lane_clean_namespace_still_lands(self):
         """PRESERVING — the guard refuses only the control-char class: a
         clean-namespace source row still migrates."""

@@ -498,13 +498,14 @@ def prune_convention_meta(store_path, *, cutoff_epoch: float,
     if dry_run:
         # Sidecar-free read-only open (issue #345 law; review round PRR-005:
         # a bare mode=ro open materializes -wal/-shm on a WAL store). A
-        # residue/copy failure raises ReadOnlyStoreError — the caller's
-        # fail-open handler skips the meta phase exactly like every other
-        # unopenable-store arm.
+        # residue/copy failure raises ReadOnlyStoreError (a RuntimeError, NOT
+        # sqlite3.Error) — the caller's fail-open handler skips the meta
+        # phase exactly like every other unopenable-store arm, so it is in
+        # this catch tuple by contract (delta review r1).
         from storelib.readonly import open_readonly
         try:
             handle = open_readonly(store_path)
-        except (sqlite3.Error, OSError):
+        except (sqlite3.Error, OSError, RuntimeError):
             return None
         conn = handle.conn
     else:
@@ -516,7 +517,14 @@ def prune_convention_meta(store_path, *, cutoff_epoch: float,
     try:
         conn.row_factory = sqlite3.Row
         if not dry_run:
-            conn.execute("BEGIN IMMEDIATE")
+            # Locked, garbage, or truncated stores fail HERE (OperationalError
+            # / DatabaseError) — the documented None-skip arms, not a raise
+            # (delta review r1: the BEGIN IMMEDIATE ran outside the skip
+            # contract and the docstring lied about locked/unreadable).
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.Error:
+                return None
         # Schema gate inside the transaction (race-free vs a concurrent
         # migration); a missing stamp is a pre-init store — leave it alone.
         # A store with NO meta table (pre-init) or a garbage file raises on

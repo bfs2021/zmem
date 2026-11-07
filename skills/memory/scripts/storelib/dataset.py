@@ -1114,8 +1114,9 @@ def import_dataset(source: str, *, revision: str, dest_dir: str,
     # (sync._validate_sync_row, PR #440) refuse C0/DEL control characters in
     # namespaces -- a newline renders as a column-0 line in the untrusted
     # fence, where the delivery ledger's bullet grammar can credit it as a
-    # delivery (the #352 forgery class). Dataset import was the remaining
-    # admission path with no such check. Validate the ORIGINAL string (never
+    # delivery (the #352 forgery class). Dataset import and (since the
+    # #444 review round) the import-store sqlite lane were the remaining
+    # admission paths with no such check. Validate the ORIGINAL string (never
     # a stripped form: leading/trailing controls would otherwise pass the
     # check and land verbatim), for BOTH namespace-bearing families, BEFORE
     # any filtering or destination work -- the #353 whole-snapshot refusal

@@ -61,9 +61,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **import-store joins the control-char namespace refusal (#443 AC2
   completed).** The sqlite-to-sqlite migration lane now refuses the WHOLE
-  import when the source store carries a memory.namespace that is not a
-  string or contains C0/DEL (mirroring the #353 whole-import id law) — the
-  destination can no longer receive rows the writer itself would refuse.
+  import when the source carries a memory.namespace OR episode.namespace
+  that is not a string or contains C0/DEL (mirroring the #353 whole-import
+  id law) — the destination can no longer receive rows the writer itself
+  would refuse, from either namespace-bearing table.
 - **Counter-value grammar hardened.** `classify_convention_count` /
   `parse_convention_count` (and the hermes verify-hook twin) now use an
   explicit ASCII-decimal predicate with an int()-parseability gate and catch
@@ -73,8 +74,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   hook or being deleted as "legacy".
 - **Dry-run opens sidecar-free.** `sweep --dry-run`'s meta phase opens the
   store through `storelib.readonly.open_readonly` instead of a bare
-  `mode=ro` URI, which materialized `-wal`/`-shm` residue on WAL stores
-  (issue #345 law).
+  `mode=ro` URI (which materialized `-wal`/`-shm` residue on WAL stores —
+  the base bullet below describes the real-run arm; issue #345 law). The
+  real-run meta phase also now treats a locked/garbage/truncated store as
+  the documented skip (None) rather than raising past it.
 - **Mixed-version note.** A pre-0.144.0 client sharing the store reads the
   new JSON counter value as 0 (its convention nudge stays suppressed until
   the client updates) and an old writer's next increment resets the row to
