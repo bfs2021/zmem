@@ -47,8 +47,10 @@ DB_CLASS = "DbWiringIntegrationTest"
 # cold-cache DeprecationWarning interleaved). The id line carries " ... " on
 # the same line unless a method docstring adds a description line, so a
 # leg's segment runs from its id line to the next id line (or the summary
-# separator) and it passes only when that segment's last line reports ok.
+# separator) and it passes only when that segment's last line reports ok and
+# no earlier line in it carries a failing result token.
 _TEST_ID = re.compile(r"^(test_\w+) \(([\w.]+)\)")
+_BAD_RESULT = re.compile(r"(^|\.\.\. )(FAIL|ERROR|skipped\b|expected failure)")
 
 
 def _passed_db_legs(out):
@@ -70,6 +72,8 @@ def _passed_db_legs(out):
                 seg = seg[:j]
                 break
         nonempty = [s.strip() for s in seg if s.strip()]
+        if any(_BAD_RESULT.search(s) for s in nonempty):
+            continue
         if nonempty and (nonempty[-1] == "ok"
                          or nonempty[-1].endswith(" ... ok")
                          or nonempty[-1] == "... ok"):
@@ -174,8 +178,9 @@ class ParityTempHygieneTest(unittest.TestCase):
         os.mkdir(path + "-wal")
         self.assertFalse(
             case.doCleanups(),
-            "the cleanup swallowed a removal failure other than a missing "
-            "file")
+            "the cleanup did not report a non-missing removal failure for "
+            "the -wal sibling (it was swallowed, or the sibling was never "
+            "attempted)")
 
 
 if __name__ == "__main__":
