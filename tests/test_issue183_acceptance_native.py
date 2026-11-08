@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 import uuid
@@ -130,11 +131,17 @@ class NativeHermesAcceptance(unittest.TestCase):
                     callback = ctx.hooks["post_tool_call"]
 
                     calls = []
-                    writer_called = threading.Event()
+                    # Evidence-write sync: set ONLY on the payload-bearing
+                    # call. Other store invocations (e.g. a payload-less
+                    # ops-append worker) must not release this event early —
+                    # that raced the payload assertion below (observed once
+                    # in CI: run 42267445746, payload_text None here).
+                    evidence_called = threading.Event()
 
                     def fake_store(args, *, input_text=None, **kwargs):
                         calls.append((list(args), input_text, dict(kwargs)))
-                        writer_called.set()
+                        if input_text:
+                            evidence_called.set()
                         return {"ok": True, "stdout": "{}\n", "stderr": "", "returncode": 0}
 
                     # The current provider already owns the subprocess seam; a
@@ -157,7 +164,21 @@ class NativeHermesAcceptance(unittest.TestCase):
                             error_message=None,
                             middleware_trace=[],
                         )
-                        self.assertTrue(writer_called.wait(5), "post_tool_call writer did not run")
+                        # Sync on the evidence write itself; a payload-less
+                        # ops-append does not satisfy this.
+                        self.assertTrue(
+                            evidence_called.wait(5),
+                            "post_tool_call evidence writer (payload-bearing call) did not run")
+                        # Drain: let any independent append worker land its
+                        # call INSIDE the patched window (it must not hit the
+                        # real seam after the mock is restored). Settled when
+                        # no new call has appeared for ~100 ms.
+                        deadline = time.time() + 2
+                        stable = 0
+                        while time.time() < deadline and stable < 5:
+                            n = len(calls)
+                            time.sleep(0.02)
+                            stable = stable + 1 if len(calls) == n else 0
 
                 self.assertTrue(calls, "post_tool_call did not invoke a store writer seam")
                 payload_text = next((text for _args, text, _kw in calls if text), None)
