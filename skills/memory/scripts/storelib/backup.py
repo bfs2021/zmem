@@ -555,7 +555,12 @@ def _prune_convention_meta_conn(conn, *, cutoff_epoch: float,
         kind = classify_convention_count(value)
         if is_current:
             retained += 1
-            current_parseable += 1
+            # Implementation-review round 1 finding 1: a MALFORMED
+            # current row is excluded from cap arithmetic like every
+            # other malformed row (the accounting law) — only a
+            # parseable current row consumes one of the row_cap slots.
+            if kind != "malformed":
+                current_parseable += 1
             if kind == "legacy" and not dry_run:
                 # #128 AC2: upgrade the retained current-session legacy
                 # row to canonical JSON, count unchanged. A current row
