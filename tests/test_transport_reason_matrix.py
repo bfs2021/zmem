@@ -54,6 +54,12 @@ for _k in ("ZMEM_HOME", "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA",
            "ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR",
            "ZMEM_SESSION", "ZMEM_SESSION_ID", "ZMEM_BACKUP_DIR"):
     os.environ.pop(_k, None)
+# PRR-026 seam shim (census SHIM_MARKER shape): under `python -m unittest`
+# the repo root is sys.path, so the guard must resolve via this file's
+# own directory.
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 import _store_guard  # noqa: E402,F401  (issue #244 isolation guard)
 
