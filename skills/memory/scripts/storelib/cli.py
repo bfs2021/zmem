@@ -2100,8 +2100,9 @@ def _maybe_prune_convention_rows(conn: sqlite3.Connection, *,
     """Best-effort bounded prune of the convention-counter meta rows,
     fired from the live hermes writer itself (issue #446 items 1+2).
 
-    Hot path: ONE key-only indexed family count per call; the
-    classification pass runs only when the count exceeds the cap. The
+    Hot path: one key-only indexed family count plus a point key-lookup
+    per call; the classification pass runs only when the count exceeds
+    the cap. The
     transaction runs on a DEDICATED 1s-timeout connection (PRR-007) so
     the host-wide maintenance lock is never held across the caller's
     5s busy timeout — a contended prune skips instead of stalling

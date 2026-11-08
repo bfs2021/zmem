@@ -143,7 +143,7 @@ class PruneSkipArmsTest(unittest.TestCase):
 
 
 # ============================================================================
-# Issue #446 AC7 + AC8 (trace contracts D and E). Frozen at base c78a2d5;
+# Issue filed #446 AC2 + AC3 (frozen checks C7 + C8) (trace contracts D and E). Frozen at base c78a2d5;
 # both classes are runnable directly:
 #   python -X utf8 tests/test_meta_prune_skip_arms.py HermesTriggerBoundTest
 #   python -X utf8 tests/test_meta_prune_skip_arms.py ConcurrentSweepRestoreAdjudicationTest
@@ -178,7 +178,7 @@ def _remove_quietly(path) -> None:
 
 
 class HermesTriggerBoundTest(unittest.TestCase):
-    """#446 AC7 (contract D, NEW-SURFACE): a Hermes-only host bounds its
+    """filed #446 AC2 (contract D, NEW-SURFACE): a Hermes-only host bounds its
     ``hermes_convention_count_*`` rows through the PRODUCTION writer entry —
     the hidden CLI ``store.py hermes-convention`` (the exact stdin-payload
     argv the Hermes hook fires; storelib/cli.py cmd_hermes_convention),
@@ -188,7 +188,7 @@ class HermesTriggerBoundTest(unittest.TestCase):
     _HERMES_TARGET_CAP; pinned slack 8).
 
     The twin of tests/test_meta_table_bound.py::HermesProductionBoundTest by
-    design (the AC7 NEW-SURFACE class for THIS file). Frozen at base: the
+    design (the filed-AC2 NEW-SURFACE class for THIS file). Frozen at base: the
     production entry never prunes, so the bound leg fails and the table
     keeps every seeded row.
     """
@@ -278,7 +278,7 @@ class HermesTriggerBoundTest(unittest.TestCase):
         bound = _HERMES_TARGET_CAP + _HERMES_BOUND_SLACK
         self.assertLessEqual(
             after, bound,
-            f"#446 AC7: a Hermes-only host running the production "
+            f"filed #446 AC2 (frozen check C7): a Hermes-only host running the production "
             f"hermes-convention entry with {before} convention rows must "
             f"bound the table to <= cap {_HERMES_TARGET_CAP} + slack "
             f"{_HERMES_BOUND_SLACK} = {bound} rows without operator "
@@ -300,14 +300,14 @@ class HermesTriggerBoundTest(unittest.TestCase):
         rows = _hermes_convention_rows(str(store))
         self.assertIn(
             _HERMES_LIVE_KEY, rows,
-            "#446 AC6/AC7: the LIVE session's legacy row must be RETAINED "
+            "filed #446 AC1/AC2 (frozen checks C6 + C7): the LIVE session's legacy row must be RETAINED "
             "by the production entry's bounded prune (current_session = the "
             f"hermes payload session id); it was DELETED. Surviving rows: "
             f"{len(rows)}")
         try:
             value = json.loads(rows[_HERMES_LIVE_KEY])
         except ValueError as exc:
-            self.fail(f"#446 AC6/AC7: the retained legacy row must be "
+            self.fail(f"filed #446 AC1/AC2 (frozen checks C6 + C7): the retained legacy row must be "
                       f"UPGRADED to canonical JSON; observed unparseable "
                       f"{rows[_HERMES_LIVE_KEY]!r} ({exc}).")
         self.assertIsInstance(value, dict,
@@ -315,7 +315,7 @@ class HermesTriggerBoundTest(unittest.TestCase):
                               f"observed {rows[_HERMES_LIVE_KEY]!r}")
         self.assertEqual(
             value.get("count"), 6,
-            f"#446 AC6/AC7: legacy '5' preserved across the prune and "
+            f"filed #446 AC1/AC2 (frozen checks C6 + C7): legacy '5' preserved across the prune and "
             f"incremented to count==6 (a deleted-then-recreated row reads "
             f"count==1 — the retention failure). Observed {value!r} (raw "
             f"{rows[_HERMES_LIVE_KEY]!r}).")
@@ -366,14 +366,14 @@ class HermesTriggerBoundTest(unittest.TestCase):
         bound = _HERMES_TARGET_CAP + _HERMES_BOUND_SLACK
         self.assertLessEqual(
             len(rows), bound,
-            f"#446 AC7: a FRESH census of {fresh_n} TTL-immune non-current "
+            f"filed #446 AC2 (frozen check C7): a FRESH census of {fresh_n} TTL-immune non-current "
             f"rows must still be bounded to <= cap {_HERMES_TARGET_CAP} + "
             f"slack {_HERMES_BOUND_SLACK} = {bound} (numeric bound on the "
             f"deletable population); observed {len(rows)} surviving.")
         for key in malformed_keys:
             self.assertIn(
                 key, rows,
-                f"#446 AC7: malformed row {key!r} must be RETAINED (never "
+                f"filed #446 AC2 (frozen check C7): malformed row {key!r} must be RETAINED (never "
                 f"deleted, #128 contract); observed {len(rows)} survivors.")
         self.assertIn(_HERMES_LIVE_KEY, rows,
                       "the LIVE session's row must survive the cap prune")
@@ -432,7 +432,7 @@ class HermesTriggerBoundTest(unittest.TestCase):
         expected = set(keys[-3:]) | {_HERMES_LIVE_KEY} | set(malformed_keys)
         self.assertEqual(
             set(rows), expected,
-            f"#446 AC7 wave-4: cap 4 with a live current row must retain "
+            f"filed #446 AC2 (check C7) wave-4: cap 4 with a live current row must retain "
             f"exactly the 3 NEWEST stamps' rows (the 3 SMALLEST keys, "
             f"anti-correlated) + live + malformed; observed "
             f"{sorted(rows)[:12]}... expected {sorted(expected)[:12]}...")
@@ -476,7 +476,7 @@ class HermesTriggerBoundTest(unittest.TestCase):
         expected = set(sorted(keys)[-2:]) | {_HERMES_LIVE_KEY}
         self.assertEqual(
             set(rows), expected,
-            f"#446 AC7 wave-3: same-timestamp tie must break by key "
+            f"filed #446 AC2 (check C7) wave-3: same-timestamp tie must break by key "
             f"(largest keys survive); observed {sorted(rows)!r} expected "
             f"{sorted(expected)!r}")
 
@@ -544,7 +544,7 @@ class HermesTriggerBoundTest(unittest.TestCase):
         self.assertEqual(
             {k: v for k, v in after.items() if k != _HERMES_LIVE_KEY},
             {k: v for k, v in snapshot.items() if k != _HERMES_LIVE_KEY},
-            "#446 AC7 wave-3: steady state — the second call must leave "
+            "filed #446 AC2 (check C7) wave-3: steady state — the second call must leave "
             "every row byte-identical apart from the live row's own "
             "counter increment (no prune churn)")
         self.assertEqual(
@@ -553,7 +553,7 @@ class HermesTriggerBoundTest(unittest.TestCase):
 
 
 class ConcurrentSweepRestoreAdjudicationTest(unittest.TestCase):
-    """#446 AC8 (contract E): the sweep's meta phase serializes under the
+    """filed #446 AC3 (frozen check C8) (contract E): the sweep's meta phase serializes under the
     SAME maintenance-lock protocol restore uses
     (``_acquire_maintenance_lock_with_liveness`` / ``_release_named_lock``
     from storelib.schema — the backup.py cmd_restore ladder), best-effort:
@@ -618,13 +618,13 @@ class ConcurrentSweepRestoreAdjudicationTest(unittest.TestCase):
             _release_named_lock("maintenance", token)
         self.assertIsNone(
             result,
-            "#446 AC8: while a LIVE holder owns the maintenance lock (as "
+            "filed #446 AC3 (frozen check C8): while a LIVE holder owns the maintenance lock (as "
             "restore does), the sweep meta phase must SKIP (return None, no "
             f"writes); observed {result!r} — the meta prune ran "
             "unserialized against restore")
         self.assertEqual(
             after, before,
-            "#446 AC8: the skipped meta phase must leave the meta table "
+            "filed #446 AC3 (frozen check C8): the skipped meta phase must leave the meta table "
             "byte-identical (no deletes, no upgrades)")
 
         # Non-vacuous control: lock released -> the same prune runs and
@@ -663,12 +663,12 @@ class ConcurrentSweepRestoreAdjudicationTest(unittest.TestCase):
             _release_named_lock("maintenance", token)
         self.assertIsNone(
             result,
-            "#446 AC8 wave-2: the DRY-RUN meta phase must ALSO skip under "
+            "filed #446 AC3 (frozen check C8) wave-2: the DRY-RUN meta phase must ALSO skip under "
             "a live maintenance-lock holder (its open_readonly handle "
             f"blocks restore's os.replace on Windows); observed {result!r}")
         self.assertEqual(
             after, before,
-            "#446 AC8 wave-2: the skipped dry-run must leave the meta "
+            "filed #446 AC3 (frozen check C8) wave-2: the skipped dry-run must leave the meta "
             "table byte-identical")
         # Non-vacuous control: released -> the dry-run reports counts
         # (would-prune accounting) without deleting.
@@ -732,7 +732,7 @@ class ConcurrentSweepRestoreAdjudicationTest(unittest.TestCase):
         if os.name == "nt":
             self.assertEqual(
                 observed, "PermissionError",
-                "#446 AC8: on Windows, replacing a store file while a "
+                "filed #446 AC3 (frozen check C8): on Windows, replacing a store file while a "
                 "connection holds an active transaction must be REFUSED "
                 "(PermissionError) — the reproduced interaction that makes "
                 f"meta-phase/restore serialization required. Observed "
@@ -740,7 +740,7 @@ class ConcurrentSweepRestoreAdjudicationTest(unittest.TestCase):
         else:
             self.assertEqual(
                 observed, "replaced",
-                "#446 AC8: on non-Windows platforms the replace succeeds "
+                "filed #446 AC3 (frozen check C8): on non-Windows platforms the replace succeeds "
                 "(the hazard is Windows-specific); observed "
                 f"{observed!r} ({detail}).")
 
@@ -757,7 +757,7 @@ class ConcurrentSweepRestoreAdjudicationTest(unittest.TestCase):
             second = _acquire_maintenance_lock_with_liveness()
             self.assertIsNone(
                 second,
-                "#446 AC8: while the meta phase holds the maintenance lock, "
+                "filed #446 AC3 (frozen check C8): while the meta phase holds the maintenance lock, "
                 "a restore-shaped acquisition must be mutually excluded "
                 "(None) — the lock is a real mutex")
         finally:

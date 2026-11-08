@@ -2765,11 +2765,14 @@ arithmetic (they are reported `unparseable`, including a malformed row
 for the live session). When the prune runs it also applies the sweep's
 age rules — non-current rows older than `ZMEM_SENTINEL_SWEEP_DAYS`
 (default 7) and every non-current legacy integer row are deleted
-regardless of the cap — so raising the cap does not retain history past
-the TTL. A Hermes-only host (no launcher sweep) is bounded by this
-mechanism alone. The prune serializes against `restore` under the
-maintenance lock and skips (fail-open) when a live holder exists; the
-transaction runs on a dedicated ~1s-timeout connection so a contended
+regardless of the cap value; raising the cap above the family
+population suppresses the prune entirely, so a Hermes-only host with no
+launcher sweep retains stale rows until the population crosses the cap.
+A Hermes-only host (no launcher
+sweep) is bounded by this mechanism alone. The prune serializes against
+`restore` under the maintenance lock and skips (fail-open) when a live
+holder exists; the transaction runs on a dedicated ~1s-timeout
+connection so a contended
 prune skips instead of stalling other store commands behind the lock.
 
 ### queue-list / queue-clear / queue-add — review live-captured corrections (read-only / clear / author a note)

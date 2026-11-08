@@ -330,7 +330,7 @@ class MetaTableBoundBase(unittest.TestCase):
             # 7: legacy integer for the CURRENT session (named by ZMEM_SESSION
             # in the sweep subprocess) — retained AND upgraded in the real
             # run; byte-identical '9' in --dry-run. CHECK_WRONG amend (issue
-            # #446 AC6 / plan-critic r1 finding 1): the pairing is now
+            # filed #446 AC1 / plan-critic r1 finding 1): the pairing is now
             # PRODUCTION-SHAPED for the sweep surface — the retired hook-era
             # writer keyed convention_count_sess_<ZMEM_SESSION>, exactly this
             # shape; the hermes-family pairing (hermes payload session id vs
@@ -438,7 +438,7 @@ class MetaSweepTest(MetaTableBoundBase):
                                 "the corrupt-but-shaped row must be counted "
                                 f"unparseable; stderr: {r.stderr!r}")
 
-    # NOTE (APPLIED, CHECK_WRONG amend — issue #446 AC6 / plan-critic r1
+    # NOTE (APPLIED, CHECK_WRONG amend — issue #446 (filed AC1) / plan-critic r1
     # finding 1): the group-7 pairing in this leg (and its --dry-run twin
     # below) was SYNTHETIC at first freeze (a hermes-prefixed key paired
     # with ZMEM_SESSION — a pairing production never produced). It is now
@@ -1312,7 +1312,7 @@ class VerifyHookParityTest(MetaTableBoundBase):
 
 
 # ============================================================================
-# Issue #446 AC6 / AC7 (contract D): production-shaped retention pairing and
+# Issue #446 (filed AC1/AC2, contract D): production-shaped retention pairing and
 # hermes-side bounding, both proven through the REAL production writer entry
 # `store.py hermes-convention` (the same stdin-payload argv the Hermes hook
 # fires — cmd_hermes_convention in storelib/cli.py). The implementer bounds
@@ -1327,7 +1327,7 @@ class VerifyHookParityTest(MetaTableBoundBase):
 
 
 class HermesProductionBoundTest(MetaTableBoundBase):
-    """#446 AC6 legs (1) and (2): the production hermes-convention entry
+    """#446 (filed AC1) legs (1) and (2): the production hermes-convention entry
     BOUNDS hermes_convention_count_* rows and retain-and-upgrades the LIVE
     session's legacy row."""
 
@@ -1399,7 +1399,7 @@ class HermesProductionBoundTest(MetaTableBoundBase):
         bound = self.CAP + self.SLACK
         self.assertLessEqual(
             after, bound,
-            f"#446 AC7: running the production hermes-convention entry on a "
+            f"filed #446 AC2 (frozen check C7): running the production hermes-convention entry on a "
             f"host holding {before} hermes convention rows must bound the "
             f"table to <= cap {self.CAP} + slack {self.SLACK} = {bound} "
             f"rows; observed {after} rows surviving (no hermes-side bound "
@@ -1420,7 +1420,7 @@ class HermesProductionBoundTest(MetaTableBoundBase):
         rows = self._convention_rows()
         self.assertIn(
             self.LIVE_KEY, rows,
-            f"#446 AC6: the LIVE session's legacy row must be RETAINED by "
+            f"filed #446 AC1 (frozen check C6): the LIVE session's legacy row must be RETAINED by "
             f"the production entry's prune (current_session = the hermes "
             f"payload session id); it was DELETED. Surviving rows: "
             f"{len(rows)}")
@@ -1428,7 +1428,7 @@ class HermesProductionBoundTest(MetaTableBoundBase):
             value = json.loads(rows[self.LIVE_KEY])
         except json.JSONDecodeError as exc:
             self.fail(
-                f"#446 AC6: the retained legacy row must be UPGRADED to the "
+                f"filed #446 AC1 (frozen check C6): the retained legacy row must be UPGRADED to the "
                 f"canonical JSON shape; observed unparseable value "
                 f"{rows[self.LIVE_KEY]!r} ({exc}).")
         self.assertIsInstance(value, dict,
@@ -1436,7 +1436,7 @@ class HermesProductionBoundTest(MetaTableBoundBase):
                               f"observed {rows[self.LIVE_KEY]!r}")
         self.assertEqual(
             value.get("count"), 6,
-            f"#446 AC6: the live session's legacy '5' must be preserved "
+            f"filed #446 AC1 (frozen check C6): the live session's legacy '5' must be preserved "
             f"ACROSS the prune and incremented to count==6 by the write "
             f"(a deleted-then-recreated row reads count==1 — the retention "
             f"failure). Observed {value!r} (raw "
@@ -1485,7 +1485,7 @@ class HermesProductionBoundTest(MetaTableBoundBase):
         bound = self.CAP + self.SLACK
         self.assertLessEqual(
             len(rows), bound,
-            f"#446 AC6: a FRESH census of {fresh_n} TTL-immune non-current "
+            f"filed #446 AC1 (frozen check C6): a FRESH census of {fresh_n} TTL-immune non-current "
             f"rows must still be bounded to <= cap {self.CAP} + slack "
             f"{self.SLACK} = {bound} (the cap is a numeric bound on the "
             f"deletable population, not a TTL trigger); observed "
@@ -1493,13 +1493,15 @@ class HermesProductionBoundTest(MetaTableBoundBase):
         for key in malformed_keys:
             self.assertIn(
                 key, rows,
-                f"#446 AC6: malformed row {key!r} must be RETAINED (never "
+                f"filed #446 AC1 (frozen check C6): malformed row {key!r} must be RETAINED (never "
                 f"deleted, #128 operator-inspection contract); observed "
                 f"survivors: {sorted(rows)[:10]}...")
         self.assertIn(self.LIVE_KEY, rows,
                       "the LIVE session's row must survive the cap prune")
         self.assertEqual(json.loads(rows[self.LIVE_KEY]).get("count"), 6,
-                         "the live legacy '5' must be retained-and-upgraded ")
+                         "the live legacy '5' must be retained-and-upgraded "
+                         "then incremented to 6 (same discriminator as "
+                         "leg 2, under cap pressure)")
 
     def test_malformed_current_counted_unparseable_and_cap_excluded(self):
         """PRR-009 (CHECK_WRONG amend): a MALFORMED CURRENT row is (a)
@@ -1633,7 +1635,7 @@ class HermesProductionBoundTest(MetaTableBoundBase):
                     if k.startswith("hermes_convention_count_")}
         self.assertEqual(
             observed, expected_survivors,
-            f"#446 AC6 wave-2: cap {cap} with a live current row must "
+            f"filed #446 AC1 (check C6) wave-2: cap {cap} with a live current row must "
             f"retain exactly the 3 NEWEST fresh rows + the live row + the "
             f"malformed rows (oldest-first deletion, key tie-break); "
             f"observed survivors {sorted(observed)!r}, expected "
@@ -1665,7 +1667,7 @@ class HermesProductionBoundTest(MetaTableBoundBase):
                     if k.startswith("hermes_convention_count_")}
         self.assertEqual(
             observed, expected,
-            f"#446 AC6 wave-2: a same-timestamp tie must break by KEY "
+            f"filed #446 AC1 (check C6) wave-2: a same-timestamp tie must break by KEY "
             f"(largest keys survive); observed {sorted(observed)!r}, "
             f"expected {sorted(expected)!r}")
 
@@ -1720,7 +1722,7 @@ class HermesProductionBoundTest(MetaTableBoundBase):
         self.assertEqual(
             {k: v for k, v in after.items() if k != self.LIVE_KEY},
             {k: v for k, v in snapshot.items() if k != self.LIVE_KEY},
-            "#446 AC6 wave-3: steady state — the second production call "
+            "filed #446 AC1 (check C6) wave-3: steady state — the second production call "
             "must leave every meta row byte-identical apart from the live "
             "row's own counter increment (no prune churn, no upgrades, "
             "no rewrites)")

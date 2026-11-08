@@ -46,8 +46,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   contended prune skips instead of stalling other store commands — is
   idempotent (a retained population held above the cap by undeletable
   rows re-classifies and writes nothing). When the prune runs it also
-  applies the sweep's age rules, so raising the cap does not retain
-  history past the 7-day TTL. The retain-and-upgrade rule on the SWEEP
+  applies the sweep's age rules — within a pass the age rules, not the
+  cap value, govern deletion; raising the cap above the family
+  population suppresses the prune entirely, so a Hermes-only host with
+  no launcher sweep retains stale rows until the population crosses the
+  cap. The retain-and-upgrade rule on the SWEEP
   path still keys `current_session` off `ZMEM_SESSION`: a pre-0.144
   legacy hermes row for a session swept BEFORE its first post-upgrade
   convention write is still removed by that sweep (the writer-side

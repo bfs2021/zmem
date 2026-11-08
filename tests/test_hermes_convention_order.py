@@ -138,9 +138,11 @@ class PruneBeforeWriteOrderCappedTest(unittest.TestCase):
 
 
 class TriggerNegativeLegTest(unittest.TestCase):
-    """PRR-023: below/at the cap with an EXISTING key, the inline prune
-    must NOT run — the early return is the hot-path bound, and
-    delete-the-gate or `<=` -> `<` mutants previously passed every leg."""
+    """PRR-023: below AND AT the cap with an EXISTING key, the inline
+    prune must NOT run — the early return is the hot-path bound, and
+    delete-the-gate or `<=` -> `<` mutants previously passed every leg
+    (the at-cap leg is the equality boundary that kills the `<`
+    mutant; delta-review r1)."""
 
     def test_below_cap_existing_key_skips_classification(self):
         store = Path(_TMP) / "neg-store.sqlite"
@@ -190,6 +192,113 @@ class TriggerNegativeLegTest(unittest.TestCase):
         self.assertIn('"count":6', final,
                       "the writer still increments (5 -> 6) with the "
                       "prune skipped")
+
+    def test_at_cap_existing_key_skips_classification(self):
+        """PRR-023 equality boundary (delta-r1): count == effective with
+        an EXISTING key must SKIP — a `<=` -> `<` mutant fires here
+        (delta-reviewer mutation probe), and only this fixture
+        distinguishes the two operators."""
+        store = Path(_TMP) / "neg-atcap-store.sqlite"
+        if store.exists():
+            store.unlink()
+        conn = sqlite3.connect(store)
+        conn.executescript(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            "INSERT INTO meta VALUES ('schema_version', '19');"
+            "INSERT INTO meta VALUES "
+            "('hermes_convention_count_order-live', '5');")
+        conn.commit()
+        conn.close()
+
+        os.environ["ZMEM_CONVENTION_ROW_CAP"] = "1"
+        self.addCleanup(os.environ.pop, "ZMEM_CONVENTION_ROW_CAP", None)
+        fired: "dict[str, int]" = {"n": 0}
+
+        import storelib.backup as backup_mod
+        real_conn_core = backup_mod._prune_convention_meta_conn
+
+        def _spy_core(conn, **kwargs):
+            fired["n"] += 1
+            return real_conn_core(conn, **kwargs)
+
+        backup_mod._prune_convention_meta_conn = _spy_core
+        try:
+            live_conn = sqlite3.connect(store)
+            try:
+                rc = cli_mod.cmd_hermes_convention(
+                    live_conn,
+                    payload={"payload": {"session_id": "order-live"}})
+            finally:
+                live_conn.close()
+        finally:
+            backup_mod._prune_convention_meta_conn = real_conn_core
+        self.assertEqual(rc, 0, "hermes-convention must exit 0")
+        self.assertEqual(
+            fired["n"], 0,
+            "PRR-023: with count == cap (existing key, in-place "
+            "increment), the classification pass must NOT run — a "
+            "`<=` -> `<` mutant fires here; the prune core fired "
+            f"{fired['n']} time(s)")
+        final = sqlite3.connect(store).execute(
+            "SELECT value FROM meta WHERE key = "
+            "'hermes_convention_count_order-live'").fetchone()[0]
+        self.assertIn('"count":6', final,
+                      "the writer still increments (5 -> 6) with the "
+                      "prune skipped")
+
+    def test_at_effective_new_key_skips_classification(self):
+        """PRR-023 equality boundary, NEW-key side (delta-r1): count ==
+        effective (cap - 1 for a NEW session key) must SKIP — the
+        pending row lands the post-write total exactly at cap. A `<=`
+        -> `<` mutant on the effective comparison FIRES here (count ==
+        effective fails `<`), so this leg kills it."""
+        store = Path(_TMP) / "neg-newkey-store.sqlite"
+        if store.exists():
+            store.unlink()
+        conn = sqlite3.connect(store)
+        conn.executescript(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            "INSERT INTO meta VALUES ('schema_version', '19');"
+            "INSERT INTO meta VALUES "
+            "('hermes_convention_count_seed-a', '1');")
+        conn.commit()
+        conn.close()
+
+        os.environ["ZMEM_CONVENTION_ROW_CAP"] = "2"
+        self.addCleanup(os.environ.pop, "ZMEM_CONVENTION_ROW_CAP", None)
+        fired: "dict[str, int]" = {"n": 0}
+
+        import storelib.backup as backup_mod
+        real_conn_core = backup_mod._prune_convention_meta_conn
+
+        def _spy_core(conn, **kwargs):
+            fired["n"] += 1
+            return real_conn_core(conn, **kwargs)
+
+        backup_mod._prune_convention_meta_conn = _spy_core
+        try:
+            live_conn = sqlite3.connect(store)
+            try:
+                rc = cli_mod.cmd_hermes_convention(
+                    live_conn,
+                    payload={"payload": {"session_id": "order-new"}})
+            finally:
+                live_conn.close()
+        finally:
+            backup_mod._prune_convention_meta_conn = real_conn_core
+        self.assertEqual(rc, 0, "hermes-convention must exit 0")
+        self.assertEqual(
+            fired["n"], 0,
+            "PRR-023: count 1 == effective (cap-1) for a NEW key must "
+            "SKIP (post-write total = 2 == cap; the pending row is "
+            "counted by the trigger's effective shift); a `<=` -> `<` "
+            f"mutant fires here; the prune core fired {fired['n']} "
+            f"time(s)")
+        rows = sqlite3.connect(store).execute(
+            "SELECT key FROM meta WHERE key = "
+            "'hermes_convention_count_order-new'").fetchone()
+        self.assertIsNotNone(rows,
+                             "the new session's row must still be written")
 
 
 class CapBoundaryNewSessionTest(unittest.TestCase):
