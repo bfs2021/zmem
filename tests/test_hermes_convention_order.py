@@ -1,15 +1,30 @@
 """Issue #446 supplementary (unfrozen) tests — plan-critic r2 finding 5
 + r2 finding 6:
 
-PruneBeforeWriteOrderTest — an in-process call-order spy proving the
+PruneBeforeWriteOrderCappedTest — an in-process call-order spy proving the
 inline prune observes the live session's row as LEGACY '5' BEFORE the
 writer's increment (the count==6 pin alone cannot distinguish pre-write
 from post-write pruning; a post-write implementation upgrades the row in
 the writer first and the pruner never sees a legacy current row).
 
+TriggerNegativeLegTest — PRR-023: the trigger's early return (below the
+cap AND at the effective boundary, existing and new key shapes) skips the
+classification pass; the equality-boundary legs kill the `<=` -> `<`
+mutant (delta-review r1, mutation-proven).
+
+CapBoundaryNewSessionTest — PRR-019: at an exactly-cap population, a NEW
+session's first write counts the pending row (effective = cap - 1) and
+the post-write total stays at the cap.
+
 CapClampTest — ZMEM_CONVENTION_ROW_CAP parsing/clamp discipline: invalid,
 negative, and unparsable values fall back to the default 64; 0 is a
 valid aggressive setting; positive integers pass through.
+
+Co-run citizenship (PRR-022, delta-r2): storelib is imported LAZILY per
+class (setUpClass), never at module level, so this file's import does
+not freeze storelib.schema.STORE_PATH for sibling files collected later
+by a whole-suite pytest run; tearDownModule restores the pre-file
+sys.modules and environment.
 
 Run: python -X utf8 tests/test_hermes_convention_order.py
 """
@@ -30,27 +45,19 @@ SCRIPTS = REPO_ROOT / "skills" / "memory" / "scripts"
 
 _TMP = tempfile.mkdtemp(prefix="zmem-446-order-")
 atexit.register(shutil.rmtree, _TMP, True)  # PRR-021-class cleanup
-# PRR-022: snapshot EVERY ambient key this module mutates so a
-# whole-suite pytest run inherits the operator's environment back
-# (storelib freezes STORE_PATH from ZMEM_STORE at the import below, so
-# the restore must run at interpreter exit, after any atexit consumers).
-_SAVED_ENV = {k: os.environ.get(k) for k in
-              ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODEL_AUTODOWNLOAD",
-               "PYTHONIOENCODING", "ZMEM_HOME", "CLAUDE_PLUGIN_DATA",
-               "ZCODE_PLUGIN_DATA", "ZCODE_PROJECT_DIR",
-               "CLAUDE_PROJECT_DIR", "ZMEM_SESSION", "ZMEM_SESSION_ID",
-               "ZMEM_BACKUP_DIR", "ZMEM_CONVENTION_ROW_CAP")}
 
-
-def _restore_env() -> None:
-    for _k, _v in _SAVED_ENV.items():
-        if _v is None:
-            os.environ.pop(_k, None)
-        else:
-            os.environ[_k] = _v
-
-
-atexit.register(_restore_env)
+_PIN_KEYS = ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODEL_AUTODOWNLOAD",
+             "PYTHONIOENCODING", "ZMEM_HOME", "CLAUDE_PLUGIN_DATA",
+             "ZCODE_PLUGIN_DATA", "ZCODE_PROJECT_DIR",
+             "CLAUDE_PROJECT_DIR", "ZMEM_SESSION", "ZMEM_SESSION_ID",
+             "ZMEM_BACKUP_DIR", "ZMEM_CONVENTION_ROW_CAP")
+_SAVED_ENV = {k: os.environ.get(k) for k in _PIN_KEYS}
+# PRR-022 (delta-r2): snapshot every storelib module present BEFORE this
+# file loads any (defensive: a pytest co-run may have loaded them under
+# another file's env); restored in tearDownModule after the classes' lazy
+# imports purge/reload under this file's pins.
+_SAVED_MODULES = {key: value for key, value in list(sys.modules.items())
+                  if key == "storelib" or key.startswith("storelib.")}
 
 os.environ.update({
     "ZMEM_STORE": os.path.join(_TMP, "store.sqlite"),
@@ -69,11 +76,69 @@ import _store_guard  # noqa: E402,F401  (issue #244 isolation guard)
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SCRIPTS / "storelib"))
 
-import storelib.cli as cli_mod  # noqa: E402
-from storelib.backup import convention_row_cap  # noqa: E402
+
+def _restore_ambient() -> None:
+    for key in [key for key in list(sys.modules)
+                if key == "storelib" or key.startswith("storelib.")]:
+        del sys.modules[key]
+    sys.modules.update(_SAVED_MODULES)
+    for key, value in _SAVED_ENV.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
-class PruneBeforeWriteOrderCappedTest(unittest.TestCase):
+atexit.register(_restore_ambient)
+
+
+def _import_storelib():
+    """Lazy storelib load under THIS file's pins (PRR-022 delta-r2):
+    purges any co-run's frozen modules and re-imports fresh so
+    storelib.schema.STORE_PATH resolves to this file's scratch. Called
+    from each class's setUpClass — never at module level, so pytest
+    collection of this file freezes nothing for sibling files."""
+    os.environ.update({
+        "ZMEM_STORE": os.path.join(_TMP, "store.sqlite"),
+        "ZMEM_DATA": _TMP,
+        "ZMEM_MODEL_AUTODOWNLOAD": "0",
+        "PYTHONIOENCODING": "utf-8",
+    })
+    for _k in ("ZMEM_HOME", "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA",
+               "ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR",
+               "ZMEM_SESSION", "ZMEM_SESSION_ID", "ZMEM_BACKUP_DIR",
+               "ZMEM_CONVENTION_ROW_CAP"):
+        os.environ.pop(_k, None)
+    for key in [key for key in list(sys.modules)
+                if key == "storelib" or key.startswith("storelib.")]:
+        del sys.modules[key]
+    import storelib.cli as cli_mod
+    from storelib.backup import convention_row_cap
+    return cli_mod, convention_row_cap
+
+
+def tearDownModule():  # noqa: N802 - unittest hook
+    """Co-run citizenship (PRR-022 delta-r2): when this module's tests
+    complete, purge this file's storelib modules and restore whatever
+    was present before them — a sibling collected/run after this one
+    (alphabetical order: hermes < meta) must see ITS OWN frozen
+    STORE_PATH, not this file's scratch."""
+    _restore_ambient()
+
+
+class _OrderBase(unittest.TestCase):
+    """Shared lazy-import bootstrap."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cli_mod, cls.convention_row_cap = _import_storelib()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        pass
+
+
+class PruneBeforeWriteOrderCappedTest(_OrderBase):
     """Same ordering pin with ZMEM_CONVENTION_ROW_CAP=1 so the trigger
     actually fires on the two-row fixture."""
 
@@ -111,7 +176,7 @@ class PruneBeforeWriteOrderCappedTest(unittest.TestCase):
         try:
             live_conn = sqlite3.connect(store)
             try:
-                rc = cli_mod.cmd_hermes_convention(
+                rc = self.cli_mod.cmd_hermes_convention(
                     live_conn,
                     payload={"payload": {"session_id": "order-live"}})
             finally:
@@ -137,7 +202,7 @@ class PruneBeforeWriteOrderCappedTest(unittest.TestCase):
                       f"count 6; observed {final!r}")
 
 
-class TriggerNegativeLegTest(unittest.TestCase):
+class TriggerNegativeLegTest(_OrderBase):
     """PRR-023: below AND AT the cap with an EXISTING key, the inline
     prune must NOT run — the early return is the hot-path bound, and
     delete-the-gate or `<=` -> `<` mutants previously passed every leg
@@ -172,7 +237,7 @@ class TriggerNegativeLegTest(unittest.TestCase):
         try:
             live_conn = sqlite3.connect(store)
             try:
-                rc = cli_mod.cmd_hermes_convention(
+                rc = self.cli_mod.cmd_hermes_convention(
                     live_conn,
                     payload={"payload": {"session_id": "order-live"}})
             finally:
@@ -225,7 +290,7 @@ class TriggerNegativeLegTest(unittest.TestCase):
         try:
             live_conn = sqlite3.connect(store)
             try:
-                rc = cli_mod.cmd_hermes_convention(
+                rc = self.cli_mod.cmd_hermes_convention(
                     live_conn,
                     payload={"payload": {"session_id": "order-live"}})
             finally:
@@ -279,7 +344,7 @@ class TriggerNegativeLegTest(unittest.TestCase):
         try:
             live_conn = sqlite3.connect(store)
             try:
-                rc = cli_mod.cmd_hermes_convention(
+                rc = self.cli_mod.cmd_hermes_convention(
                     live_conn,
                     payload={"payload": {"session_id": "order-new"}})
             finally:
@@ -301,7 +366,7 @@ class TriggerNegativeLegTest(unittest.TestCase):
                              "the new session's row must still be written")
 
 
-class CapBoundaryNewSessionTest(unittest.TestCase):
+class CapBoundaryNewSessionTest(_OrderBase):
     """PRR-019: at an exactly-cap population, a NEW session's first
     write must leave the post-write total <= cap (the pending row is
     counted by the trigger and the cap shrinks by one for the prune)."""
@@ -327,7 +392,7 @@ class CapBoundaryNewSessionTest(unittest.TestCase):
         conn.close()
 
         os.environ.pop("ZMEM_CONVENTION_ROW_CAP", None)  # default cap 64
-        rc = cli_mod.cmd_hermes_convention(
+        rc = self.cli_mod.cmd_hermes_convention(
             sqlite3.connect(store),
             payload={"payload": {"session_id": "boundary-new"}})
         conn = sqlite3.connect(store)
@@ -345,14 +410,14 @@ class CapBoundaryNewSessionTest(unittest.TestCase):
             f"row is counted); observed {n} rows")
 
 
-class CapClampTest(unittest.TestCase):
+class CapClampTest(_OrderBase):
     """ZMEM_CONVENTION_ROW_CAP parsing/clamp (r2 finding 6)."""
 
     def _with(self, raw):
         old = os.environ.get("ZMEM_CONVENTION_ROW_CAP")
         os.environ["ZMEM_CONVENTION_ROW_CAP"] = raw
         try:
-            return convention_row_cap()
+            return type(self).convention_row_cap()
         finally:
             if old is None:
                 os.environ.pop("ZMEM_CONVENTION_ROW_CAP", None)
@@ -361,7 +426,7 @@ class CapClampTest(unittest.TestCase):
 
     def test_default_when_unset(self):
         os.environ.pop("ZMEM_CONVENTION_ROW_CAP", None)
-        self.assertEqual(convention_row_cap(), 64)
+        self.assertEqual(type(self).convention_row_cap(), 64)
 
     def test_invalid_values_fall_back_to_default(self):
         for raw in ("not-a-number", "-3", "2.5", "", "  "):

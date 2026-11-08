@@ -568,6 +568,34 @@ class ConcurrentSweepRestoreAdjudicationTest(unittest.TestCase):
     serialization buys).
     """
 
+    @classmethod
+    def setUpClass(cls) -> None:
+        # PRR-022 co-run citizenship (delta-r2): a pytest co-run with a
+        # sibling file that freezes storelib under ITS scratch (e.g.
+        # test_hermes_convention_order) leaves sys.modules pointing at the
+        # sibling's STORE_PATH by the time this class's lazy imports run.
+        # Re-apply THIS file's pins and re-import fresh so the
+        # maintenance-lock fixtures land beside THIS file's scratch.
+        os.environ.update({
+            "ZMEM_STORE": os.path.join(_TMP, "store.sqlite"),
+            "ZMEM_DATA": _TMP,
+            "ZMEM_MODEL_AUTODOWNLOAD": "0",
+            "PYTHONIOENCODING": "utf-8",
+        })
+        for key in ("ZMEM_HOME", "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA",
+                    "ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR",
+                    "ZMEM_SESSION", "ZMEM_SESSION_ID", "ZMEM_BACKUP_DIR"):
+            os.environ.pop(key, None)
+        import sys as _sys
+        for key in [key for key in list(_sys.modules)
+                    if key == "storelib" or key.startswith("storelib.")]:
+            del _sys.modules[key]
+        import importlib as _importlib
+        import storelib.schema as _schema
+        _importlib.reload(_schema)
+        import storelib.backup as _backup
+        _importlib.reload(_backup)
+
     def _frozen_path_store(self) -> str:
         """A store at THIS process's frozen storelib STORE_PATH (frozen at
         first storelib import under the header-pinned env) — the lock file
