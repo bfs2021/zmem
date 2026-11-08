@@ -37,11 +37,22 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   without operator intervention. Cap accounting: the current session's
   parseable row consumes one of `ZMEM_CONVENTION_ROW_CAP` (default 64)
   slots and is never deleted; retained non-current rows prune
-  oldest-first (`last_seen`, then key); malformed rows are never
-  deleted and sit outside the cap arithmetic; the classification pass
-  is idempotent (a retained population held above the cap by undeletable
-  rows re-classifies and writes nothing).
-- **Sweep meta phase serializes against restore (#446 AC8).**
+  oldest-first (`last_seen`, then key); a first write for a NEW session
+  at an exactly-cap population prunes one extra row so the post-write
+  total stays at the cap; malformed rows are never deleted, sit outside
+  the cap arithmetic, and are reported `unparseable` (including a
+  malformed row for the live session); the classification pass — run on
+  a dedicated ~1s-timeout connection under the maintenance lock, so a
+  contended prune skips instead of stalling other store commands — is
+  idempotent (a retained population held above the cap by undeletable
+  rows re-classifies and writes nothing). When the prune runs it also
+  applies the sweep's age rules, so raising the cap does not retain
+  history past the 7-day TTL. The retain-and-upgrade rule on the SWEEP
+  path still keys `current_session` off `ZMEM_SESSION`: a pre-0.144
+  legacy hermes row for a session swept BEFORE its first post-upgrade
+  convention write is still removed by that sweep (the writer-side
+  prune covers the hermes id space from the first write onward).
+- **Sweep meta phase serializes against restore (filed #446 AC3).**
   `prune_convention_meta` (both the real and `--dry-run` arms) acquires
   the maintenance lock BEFORE opening the store and releases it only
   after the handle closes — on Windows even an idle open handle blocks a

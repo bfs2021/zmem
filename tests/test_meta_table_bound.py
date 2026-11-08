@@ -1345,8 +1345,12 @@ class HermesProductionBoundTest(MetaTableBoundBase):
     STALE_JSON_LAST_SEEN = "2026-01-01T00:00:00Z"  # far older than any TTL
 
     def _convention_rows(self) -> dict:
+        # PRR-020: the census counts the FULL convention family (all
+        # CONVENTION_META_PREFIXES), not just the hermes prefix — the cap
+        # spans every family and the bound legs must too.
         return {k: v for k, v in self._meta_values().items()
-                if k.startswith("hermes_convention_count_")}
+                if k.startswith("convention_count_")
+                or k.startswith("hermes_convention_count_")}
 
     def _seed_census(self, live_value: str = "5") -> None:
         """STALE_SESSIONS non-current legacy/stale-JSON rows plus the LIVE
@@ -1495,9 +1499,51 @@ class HermesProductionBoundTest(MetaTableBoundBase):
         self.assertIn(self.LIVE_KEY, rows,
                       "the LIVE session's row must survive the cap prune")
         self.assertEqual(json.loads(rows[self.LIVE_KEY]).get("count"), 6,
-                         "the live legacy '5' must be retained-and-upgraded "
-                         "then incremented to 6 (same discriminator as "
-                         "leg 2, under cap pressure)")
+                         "the live legacy '5' must be retained-and-upgraded ")
+
+    def test_malformed_current_counted_unparseable_and_cap_excluded(self):
+        """PRR-009 (CHECK_WRONG amend): a MALFORMED CURRENT row is (a)
+        counted in the returned unparseable tally per the core docstring,
+        (b) retained, and (c) excluded from cap arithmetic — inverting
+        the `kind != "malformed"` gate (charging it a slot) or dropping
+        the unparseable increment fails this leg."""
+        if str(SCRIPTS_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS_DIR))
+        for _k in [k for k in list(sys.modules)
+                   if k == "storelib" or k.startswith("storelib.")]:
+            del sys.modules[_k]
+        from storelib.backup import _prune_convention_meta_conn
+        conn = sqlite3.connect(str(self.store))
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                (self.LIVE_KEY, MALFORMED_VALUE))
+            now_iso = _now_iso_z()
+            for i in range(4):
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                    (f"hermes_convention_count_mc{i:04d}",
+                     json.dumps({"count": 1, "last_seen": now_iso})))
+            conn.commit()
+            res = _prune_convention_meta_conn(
+                conn, cutoff_epoch=0.0,
+                current_session=self.LIVE_SESSION, now_epoch=1_800_000_000.0,
+                row_cap=1)
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(
+            res, (3, 2, 1),
+            f"PRR-009: malformed-current census must be removed=3 "
+            f"(4 fresh - 1 kept at cap 1 with the malformed current "
+            f"excluded), retained=2 (kept fresh + malformed current), "
+            f"unparseable=1 (the malformed CURRENT row is counted); "
+            f"observed {res!r}")
+        rows = self._convention_rows()
+        self.assertIn(self.LIVE_KEY, rows,
+                      "the malformed current row must be RETAINED")
+        self.assertEqual(rows[self.LIVE_KEY], MALFORMED_VALUE,
+                         "the malformed current row must stay byte-identical")
 
     # ---- wave-2 legs (plan-critic r2 findings 2+3+6); fixtures
     # corrected wave-3 (r3 findings N3-1/N3-2/N3-3): timestamps are

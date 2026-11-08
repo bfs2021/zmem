@@ -146,7 +146,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          out="$(python -m unittest -v tests/test_session_tools.py tests/test_mcp_server.py tests/test_evidence_association.py 2>&1)" || {
+          out="$(python -m unittest -v tests/test_session_tools.py tests/test_mcp_server.py tests/test_evidence_association.py tests/test_hermes_mcp_transport_reason.py tests/test_transport_reason_matrix.py 2>&1)" || {
             printf '%s\n' "$out"
             exit 1
           }

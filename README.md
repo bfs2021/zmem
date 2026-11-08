@@ -1052,7 +1052,7 @@ Capture:
 | `ZMEM_CAPTURE` | Global fail-open capture switch. Only a trimmed `0` disables the failure, convention, Stop, SubagentStop, and Hermes compatibility surfaces before payload parsing or state access. Audits and probes set `ZMEM_CAPTURE=0`; empty, whitespace, `false`, and `00` remain enabled. | `1` |
 | `ZMEM_CAPTURE_MODE` | Capture policy for writes: `manual` (advisory secret warnings only, trusted local use) or `auto` (redact secret-like content, refuse secret-like provenance — the MCP/network default). Unset = `auto` for explicit `store.py add`/`update` writes (the issue-#288 capture-intent default) and `manual` for the ingest path; the MCP/network default stays `auto`. | `auto` (CLI add/update) / `manual` (ingest) |
 | `ZMEM_CONVENTION_INTERVAL` | Legacy cadence for the Hermes convention-compatibility hook only. It does not control the commit-only `zmem-convention-capture.sh` prompt. | `10` |
-| `ZMEM_CONVENTION_ROW_CAP` | Bound on retained parseable `*_convention_count_*` meta rows enforced by the hermes convention writer itself (issue #446) — a Hermes-only host (no launcher sweep) bounds its own rows. Accounting: the current session's parseable row consumes one slot and is never deleted; retained non-current rows are pruned oldest-first (`last_seen`, then key) down to the cap; malformed rows are never deleted (operator-inspection contract) and sit outside the cap arithmetic. Invalid/negative values fall back to the default; `0` is a valid aggressive setting. Hot path: one indexed key-only count per convention call; the classification pass runs only above the cap and is idempotent (a retained population held above the cap by undeletable rows re-classifies each call and writes nothing). | `64` |
+| `ZMEM_CONVENTION_ROW_CAP` | Bound on retained parseable `*_convention_count_*` meta rows enforced by the hermes convention writer itself (issue #446) — a Hermes-only host (no launcher sweep) bounds its own rows. Accounting: the current session's parseable row consumes one slot and is never deleted; retained non-current rows are pruned oldest-first (`last_seen`, then key) down to the cap; a first write for a NEW session at an exactly-cap population prunes one extra row so the post-write total stays at the cap; malformed rows are never deleted (operator-inspection contract) and sit outside the cap arithmetic. When the prune runs (family count above the cap) it ALSO applies the sweep's age rules — non-current rows older than `ZMEM_SENTINEL_SWEEP_DAYS` (default 7) and every non-current legacy integer row are deleted regardless of the cap — so raising the cap does not retain history past the TTL. Invalid/negative values fall back to the default; `0` is a valid aggressive setting. Hot path: one indexed key-only count per convention call; when the count exceeds the cap the classification pass re-runs (prefix-range scans over the family plus per-row parsing, inside a ~1s-timeout write transaction under the maintenance lock) and is idempotent — a population held above the cap by undeletable rows re-classifies each call and writes nothing. | `64` |
 
 Embedding model (the model file is gitignored; these control how/whether it is obtained):
 
@@ -1115,8 +1115,9 @@ child that exited nonzero (e.g. a partial-upgrade store rejecting an
 unknown flag) — or `reason=envelope-error` — the transport token for a
 store child that exited zero whose stdout was not a JSON envelope (a
 corrupted output channel of the same version-skew family, issue #435).
-Both are transport classifications emitted by the hook body and the
-hermes-provider lane, never a store-side silent reason, and miss-rate
+Both are transport classifications emitted by the hook body, the
+hermes-provider lane, and the hermes MCP server's session prefetch,
+never a store-side silent reason, and miss-rate
 reporting excludes them from the
 missed count like the other negotiation refusals. `reason=injected` is the successful
 decision, while `reason=disabled` is the separate passive-injection kill-switch

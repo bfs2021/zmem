@@ -4085,6 +4085,14 @@ def build_server(host: str, port: int, use_tls: bool = False) -> "FastMCP":  # t
             stderr = (r.get("stderr") or "")
             if "--authorized-namespace" in stderr \
                     and "unrecognized arguments" in stderr:
+                # PRR-005: a nonzero child on THIS arm is still a
+                # transport failure — #442's table has no exception for
+                # it, so the decision line must fire before the loud
+                # error return (the arm previously logged nothing).
+                await _append_session_decision_async(
+                    status="silent", reason="store-error", ids=[], all_ids=[],
+                    lane=lane, t_ms=elapsed,
+                )
                 return _error(
                     "store.py at ZMEM_HOME predates this server "
                     "(no --authorized-namespace support): update the zmem "

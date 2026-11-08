@@ -11,14 +11,16 @@ separate code paths and separate legs).
 | exit 0, stdout empty            | envelope-error | envelope-error | envelope-error    |
 | exit 0, stdout malformed JSON   | envelope-error | envelope-error | envelope-error    |
 | exit 0, stdout valid non-dict   | envelope-error | envelope-error | envelope-error    |
-| child times out                 | omitted        | (upstream)     | deadline-exceeded |
+| child times out                 | omitted        | store-error    | deadline-exceeded |
 | child exits nonzero             | omitted        | store-error    | store-error       |
 
-"(upstream)": the table says the provider's timeout cell is "handled
-upstream" and prescribes no token, so no provider-timeout leg is asserted.
-The MCP twin's timeout cell is also "handled upstream"; its upstream
-handling is the caller-deadline arm, whose shipped token
-``deadline-exceeded`` is pinned unchanged.
+Provider timeout (CHECK_WRONG amend, feedback round PRR-013): the
+provider's local runner synthesizes ``returncode: 124, ok: False`` for a
+timed-out child, so it rides the failed-child arm and logs
+``store-error`` — the adjudication named in the CHANGELOG and the PR
+body. The MCP twin's timeout cell stays "handled upstream": its caller
+deadline layer sits ABOVE the result handling, and the shipped
+``deadline-exceeded`` token is pinned unchanged.
 
 The per-surface drivers are imported from the sibling AC1/AC3/AC4 files
 (module aliases only — no TestCase class is re-exported into this module's
@@ -86,6 +88,9 @@ PROV_CELLS = {
     "nonzero": ({"ok": False, "stdout": "", "stderr": "boom",
                  "returncode": 1}, "store-error"),
     "runner_exception": (RuntimeError("runner exploded"), "store-error"),
+    "timeout_rc124": ({"ok": False, "stdout": "",
+                       "stderr": "store.py timed out after 20.0s",
+                       "returncode": 124}, "store-error"),
 }
 
 # ---- hermes MCP twin: _run_store result per trigger -----------------------

@@ -81,6 +81,14 @@ _REASON_RE = re.compile(r"\breason=(\S+)")
 # The exact result dicts the real ``_run_store`` builds for each arm.
 SHAPE_NONZERO = {"ok": False, "stdout": "", "stderr": "store.py: boom",
                  "returncode": 1}
+# CHECK_WRONG amend (feedback round, PRR-005): the mixed-version arm — a
+# nonzero child whose stderr carries the legacy-check markers — must ALSO
+# write reason=store-error before its loud error return.
+SHAPE_NONZERO_MIXED = {
+    "ok": False, "stdout": "",
+    "stderr": ("store.py: error: unrecognized arguments: "
+               "--authorized-namespace user:global"),
+    "returncode": 2}
 SHAPE_EMPTY = {"ok": True, "stdout": "", "stderr": "", "returncode": 0}
 SHAPE_MALFORMED = {"ok": True, "stdout": "this-is-not-json{{{{\n",
                    "stderr": "", "returncode": 0}
@@ -208,6 +216,22 @@ class HermesMcpTransportReasonTest(unittest.TestCase):
     def test_nonzero_exit_is_store_error(self):
         assert_reason(self, self.h, SHAPE_NONZERO, "store-error",
                       "nonzero exit")
+
+    def test_nonzero_mixed_version_is_store_error(self):
+        """PRR-005: the mixed-version arm ALSO writes the store-error
+        decision line before its loud error return (a nonzero child is
+        a transport failure with no exception in #442's table)."""
+        lines, result = self.h.drive(SHAPE_NONZERO_MIXED)
+        observed = [(_REASON_RE.search(ln) or [None, None])[1]
+                    for ln in lines]
+        self.assertEqual(
+            observed, ["store-error"],
+            f"MCP twin mixed-version arm: expected exactly one "
+            f"store-error decision line; observed={observed!r} "
+            f"lines={lines!r} tool-result={result!r}")
+        self.assertIn(
+            "predates this server", str(result),
+            "the loud mixed-version error must still reach the caller")
 
     def test_empty_stdout_is_envelope_error(self):
         assert_reason(self, self.h, SHAPE_EMPTY, "envelope-error",

@@ -15,12 +15,15 @@ import tempfile
 import threading
 import time
 import unittest
+import atexit
+import shutil
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "skills" / "memory" / "scripts"
 
 _TMP = tempfile.mkdtemp(prefix="zmem-pruneskip-")
+atexit.register(shutil.rmtree, _TMP, True)  # PRR-021: clean the scratch
 os.environ.update({
     "ZMEM_STORE": os.path.join(_TMP, "store.sqlite"),
     "ZMEM_DATA": _TMP,
@@ -96,12 +99,21 @@ class PruneSkipArmsTest(unittest.TestCase):
         holder.execute("BEGIN EXCLUSIVE")
         try:
             started = threading.Event()
+            outcome: "dict[str, object]" = {}
 
             def _run():
                 started.set()
-                prune_convention_meta(
-                    store, cutoff_epoch=CUTOFF, current_session="",
-                    dry_run=False, now_epoch=NOW)
+                # PRR-025: the skip shape is "returns None, never a
+                # raise" — capture the outcome so a raise-instead-of-
+                # None mutant fails this leg (threading's excepthook
+                # would otherwise swallow it and the leg would stay
+                # green on thread completion alone).
+                try:
+                    outcome["result"] = prune_convention_meta(
+                        store, cutoff_epoch=CUTOFF, current_session="",
+                        dry_run=False, now_epoch=NOW)
+                except BaseException as exc:  # noqa: BLE001 - the pin
+                    outcome["error"] = exc
 
             t = threading.Thread(target=_run, daemon=True)
             t.start()
@@ -110,6 +122,14 @@ class PruneSkipArmsTest(unittest.TestCase):
             self.assertFalse(t.is_alive(),
                              "the pruner must return (None skip) after the "
                              "busy timeout, not hang on the locked store")
+            self.assertNotIn(
+                "error", outcome,
+                f"the locked-store skip must NOT raise (the documented "
+                f"None-skip contract); observed error={outcome.get('error')!r}")
+            self.assertIsNone(
+                outcome.get("result"),
+                f"the locked-store skip must return None; observed "
+                f"{outcome.get('result')!r}")
         finally:
             holder.rollback()
             holder.close()
@@ -747,6 +767,45 @@ class ConcurrentSweepRestoreAdjudicationTest(unittest.TestCase):
             third, "after release the maintenance lock must be acquirable "
             "again (the exclusion above was the held lock, not a wedge)")
         _release_named_lock("maintenance", third)
+
+    def test_wrapper_lock_ordering_source_pin(self):
+        """PRR-024: the wrapper's Windows hazard is the ORDERING — the
+        maintenance lock must be acquired BEFORE the store is opened and
+        released only AFTER the handle is closed. The C8 legs prove the
+        no-lock mutant dies but acquire-after-open / release-before-close
+        mutants pass them; this source-order pin kills both. (Text-order
+        scan over prune_convention_meta's body — the established
+        schema-lock-supp pattern.)"""
+        from pathlib import Path as _P
+        src = (_P(__file__).resolve().parent.parent
+               / "skills" / "memory" / "scripts"
+               / "storelib" / "backup.py").read_text(encoding="utf-8")
+        body = src[src.index("def prune_convention_meta("):
+                   src.index("def cmd_sweep(")]
+        acquire = body.find("_acquire_maintenance_lock_with_liveness()")
+        ro_open = body.find("open_readonly(store_path)")
+        rw_open = body.find("sqlite3.connect(uri, uri=True")
+        close_handle = body.find("handle.close()")
+        close_conn = body.find("conn.close()")
+        release = body.find('_release_named_lock("maintenance", m_token)')
+        for name, needle in (("acquire", acquire), ("readonly open", ro_open),
+                             ("rw open", rw_open),
+                             ("handle close", close_handle),
+                             ("conn close", close_conn), ("release", release)):
+            self.assertGreaterEqual(
+                needle, 0,
+                f"wrapper source pin: {name!r} site not found in "
+                f"prune_convention_meta — the function was restructured; "
+                f"re-derive this pin")
+        self.assertLess(
+            acquire, min(ro_open, rw_open),
+            "PRR-024: the maintenance lock must be acquired BEFORE any "
+            "store open (an idle open handle blocks restore's os.replace "
+            "on Windows)")
+        self.assertGreater(
+            release, max(close_handle, close_conn),
+            "PRR-024: the maintenance lock must be released only AFTER "
+            "the handle/conn is closed")
 
 
 if __name__ == "__main__":

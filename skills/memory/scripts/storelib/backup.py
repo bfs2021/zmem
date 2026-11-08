@@ -536,9 +536,13 @@ def _prune_convention_meta_conn(conn, *, cutoff_epoch: float,
     kept_json: "list[tuple[float, str]]" = []
     rows: "dict[str, object]" = {}
     for prefix in CONVENTION_META_PREFIXES:
+        # PRR-006: prefix RANGE predicates (like the trigger count) so the
+        # meta PRIMARY KEY index serves the scan — a substr() prefix match
+        # here forces a full meta-table SCAN on every classification pass.
+        upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
         for row in conn.execute(
-                "SELECT key, value FROM meta WHERE substr(key,1,?) = ?",
-                (len(prefix), prefix)):
+                "SELECT key, value FROM meta WHERE key >= ? AND key < ?",
+                (prefix, upper)):
             # Dedupe by key: 'convention_count_' is itself a prefix of
             # 'convention_count_sess_', so that family's rows match TWO
             # prefix scans -- without the dict they would be classified
@@ -561,6 +565,11 @@ def _prune_convention_meta_conn(conn, *, cutoff_epoch: float,
             # parseable current row consumes one of the row_cap slots.
             if kind != "malformed":
                 current_parseable += 1
+            else:
+                # PRR-009: the docstring law counts EVERY malformed row
+                # unparseable — a current malformed row is retained and
+                # cap-excluded, and still reported in the census.
+                unparseable += 1
             if kind == "legacy" and not dry_run:
                 # #128 AC2: upgrade the retained current-session legacy
                 # row to canonical JSON, count unchanged. A current row
@@ -595,7 +604,10 @@ def _prune_convention_meta_conn(conn, *, cutoff_epoch: float,
         # malformed: retained, counted, never deleted
         retained += 1
         unparseable += 1
-    if row_cap is not None and not dry_run:
+    if row_cap is not None:
+        # PRR-008: the cap pass computes (and reports) the doomed set in
+        # BOTH arms so a dry run's removed/retained predict the real run;
+        # only the DELETEs are guarded by the dry_run flag.
         slots = row_cap - current_parseable
         if slots < 0:
             slots = 0
@@ -605,8 +617,9 @@ def _prune_convention_meta_conn(conn, *, cutoff_epoch: float,
             # and never enter the candidate list).
             kept_json.sort()
             doomed = {key for _, key in kept_json[:len(kept_json) - slots]}
-            for key in doomed:
-                conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+            if not dry_run:
+                for key in doomed:
+                    conn.execute("DELETE FROM meta WHERE key = ?", (key,))
             removed += len(doomed)
             retained -= len(doomed)
     return (removed, retained, unparseable)
@@ -626,7 +639,7 @@ def prune_convention_meta(store_path, *, cutoff_epoch: float,
     core in ONE write transaction; the dry-run arm reads through the
     sidecar-free readonly opener and deletes nothing.
 
-    Maintenance protocol (issue #446 AC8): BOTH arms acquire the
+    Maintenance protocol (filed issue #446 AC3): BOTH arms acquire the
     maintenance lock BEFORE opening the store and release it only AFTER
     the handle is closed — on Windows even an IDLE open handle blocks a
     concurrent restore's os.replace of store.sqlite (reproduced:
@@ -709,7 +722,7 @@ def prune_convention_meta(store_path, *, cutoff_epoch: float,
             # close() on a ReadOnlyHandle is idempotent and also removes
             # the arm-B staging directory (close-then-remove); a bare
             # conn.close() would leak it (readonly.py contract). The
-            # maintenance lock releases only AFTER the close (AC8).
+            # maintenance lock releases only AFTER the close (AC3).
             if handle is not None:
                 handle.close()
             elif conn is not None:
