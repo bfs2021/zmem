@@ -20,7 +20,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   non-dict list shape previously crashed outright. The Hermes provider's
   local path never parses or injects a failed child's stdout: a failed
   child is a silent `store-error` decision with empty ids/context (the
-  decoder is skipped entirely). The nine-token
+  decoder is skipped entirely). Provider runner timeouts
+  (`returncode: 124, ok: False`) ride the same failed-child arm and log
+  `store-error` (previously `empty-pool`) — the normative table's
+  "handled upstream" cell reading covers the MCP twin's caller-deadline
+  layer, not the provider's local path. The nine-token
   `INJECT_SILENT_REASONS` closed set is untouched; both transport tokens
   ride outside it (route c), and miss-rate exclusion is unchanged.
 - **Hermes-side convention-counter bounding (#446).** The hermes
