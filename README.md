@@ -67,7 +67,12 @@ flags. On the `pretool` passive lane, `recall` also accepts
 `--state-hint dirty|clean` (issue #397: refused with exit 2 unless the
 passive shape and `--moment pretool` are present) and the delegating
 `--delegation-prompt <text>` (issue #253: parked store-side for the child's
-SubagentStart; redacted before it touches disk). `--consume-tasktext`
+SubagentStart; redacted before it touches disk). Issue #428:
+`--delegation-agent-id <id>` tags that park and `--consume-agent-id <id>`
+(recall/recent/prefetch) lets the child's SubagentStart take exactly its own
+tagged prompt; untagged parks (every probed host today) keep the FIFO +
+aged-head rule unchanged, and remote mode refuses both flags by name.
+`--consume-tasktext`
 (issue #339) grants that lane the store-side consume of a parked
 delegation. DEFAULT-OFF and CALLER-ASSERTED: any caller may pass it (an
 authenticated hub principal can self-grant on the MCP prefetch tool), so

@@ -595,6 +595,25 @@ def _free_text_arg(option: str, value: str) -> list[str]:
     return [option + "=" + value] if value.startswith("-") else [option, value]
 
 
+# Issue #428: mirror of storelib.delivery_ledger.normalize_correlation_id
+# (the #158 boundary keeps storelib imports out of this adapter; a parity
+# test pins the two). Valid = string, stripped, non-empty, at most 128
+# chars, no C0/DEL controls, not option-shaped; anything else is ABSENT.
+_CORRELATION_ID_MAX = 128
+
+
+def _correlation_id(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    if (not value or len(value) > _CORRELATION_ID_MAX
+            or value.startswith("-")):
+        return ""
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        return ""
+    return value
+
+
 def _strict_json_object(pairs):
     result = {}
     for key, value in pairs:
@@ -864,6 +883,14 @@ def main() -> int:
     # moment always carries the grant.
     if mode == "subagent":
         args.append("--consume-tasktext")
+        # Issue #428: the child's SubagentStart payload carries its agent
+        # id (Claude Code: top-level agent_id). Forwarding it lets the
+        # store hand this child a park TAGGED with the same id; an untagged
+        # stash (every probed host today) is unaffected — the store's
+        # reservation rule falls back to the untagged FIFO/aged-head path.
+        _consume_id = _correlation_id(event.get("agent_id"))
+        if _consume_id:
+            args.extend(_free_text_arg("--consume-agent-id", _consume_id))
     if command == "recall":
         args[1:1] = _free_text_arg("--query", query)
     # Issue #397: pretool-only repository-state hint. Computed once per
@@ -908,6 +935,14 @@ def main() -> int:
             # The bound keeps argv well inside Windows' 32767-char limit.
             args.extend(_free_text_arg("--delegation-prompt",
                                        _delegation[:_DELEGATION_ARG_MAX]))
+            # Issue #428: a host that names the child's correlation id in
+            # the delegating call (tool_input.agent_id) tags the park so
+            # only the SubagentStart carrying the same id consumes it.
+            if isinstance(_tool_input, dict):
+                _park_id = _correlation_id(_tool_input.get("agent_id"))
+                if _park_id:
+                    args.extend(_free_text_arg("--delegation-agent-id",
+                                               _park_id))
     # Issue #98: forward the cross-project tier flag per its surface matrix.
     # ZMEM_CROSS_PROJECT unset arms pretool only (posttoolbatch included —
     # _decision_moment maps it to pretool); "0" disables every surface (the

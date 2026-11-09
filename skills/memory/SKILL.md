@@ -910,8 +910,21 @@ on the operator-profile ACL rather than chmod; since 0.138.0 written
 WITHOUT fsync (#340), so a host crash can lose the whole sidecar (the
 reader discards an unreadable stash) or re-deliver an already-consumed
 delegation — disclosed, regenerable-cache posture), and the selector consumes it
-FIFO at the subagent moment only when the payload ladder produced no query —
-no agent id exists at park time on any probed host, so FIFO is the
+FIFO at the subagent moment only when the payload ladder produced no query.
+Correlation key (issue #428, 0.148.0): a host that names the child's id in
+the delegating call (`tool_input.agent_id`, forwarded by the hook body as
+`--delegation-agent-id`) parks a TAGGED entry, and the child's SubagentStart
+`agent_id` (forwarded as `--consume-agent-id` beside `--consume-tasktext`)
+takes exactly its own tagged prompt regardless of age or newer siblings.
+Ids are normalized identically on both sides (string, stripped, 1–128
+chars, no control characters, no leading `-`; anything else is treated as
+absent). RESERVATION RULE: a consume without a matching id never takes,
+ages out, or counts a TAGGED entry — the FIFO + aged-head rule below runs
+over UNTAGGED entries only. No probed host supplies an id at PARK time
+today (Claude Code assigns the child id at SubagentStart), so every
+production stash is untagged and the rule below is byte-identical to
+0.138.0; the id the child carries simply finds no tag and falls through.
+For untagged entries FIFO is the
 correlation rule and out-of-order arrival of truly concurrent children is
 the documented limitation; the consume lands before the selector runs
 (#337), so a selector failure after a successful consume loses that
@@ -927,15 +940,18 @@ already-consumed entry is re-delivered (resurrection). An ORPHANED park
 — a delegation whose child never starts (permission denied, cancelled,
 tool errored) — would sit at the FIFO head and shift EVERY later child's
 prompt by one; since 0.138.0 the consume applies an AGED-HEAD SKIP
-(issue #329): a leading entry older than 300 s is dropped in favor of a
-strictly newer one (an exact agent_id match still outranks the
-heuristic; malformed timestamps are never aged; a sole entry inside the
-6h window is always served — the window prune still applies). Two residuals stand (issue #329, maintainer-ratified
-2026-11-02; tracked with the correlation-key work in issue #428): an
-orphan younger than 300 s still shifts by one until it ages out, and a
-live child delayed past 300 s can lose its prompt to a strictly newer
-delegation - a failure mode the heuristic introduces (pre-0.138.0 a
-delayed child consumed its own head entry). The 6h window and 16-entry cap bound how long any
+(issue #329) over untagged entries: a leading entry older than 300 s is
+dropped in favor of a strictly newer one (an exact agent_id match still
+outranks the heuristic; malformed timestamps are never aged; a sole entry
+inside the 6h window is always served — the window prune still applies).
+Two residuals stand for UNTAGGED entries (issue #329, maintainer-ratified
+2026-11-02): an orphan younger than 300 s still shifts by one until it
+ages out, and a live child delayed past 300 s can lose its prompt to a
+strictly newer delegation - a failure mode the heuristic introduces
+(pre-0.138.0 a delayed child consumed its own head entry). A host that
+supplies the correlation id on both sides retires both residuals for its
+delegations (issue #428); the 300 s band is unchanged. The 6h window and
+16-entry cap bound how long any
 shift lasts, not how many children it affects. Since 0.138.0 the consume
 is CALLER-GATED (issue #339): only the SubagentStart hook lane
 (`--consume-tasktext` on its recall/recent argv) and the fleet broker's
@@ -1381,7 +1397,12 @@ The passive `recall` and `recent` commands accept the additive attribution
 flags `--session-id=<id>`, `--moment`, `--lane`, and repeatable `--ops-token` when
 called with `--for-injection --json`, plus the payload flag
 `--delegation-prompt` (issue #253), `--consume-tasktext` (issue #339:
-SubagentStart-lane-only grant of the store-side task-text consume), and
+SubagentStart-lane-only grant of the store-side task-text consume), the
+issue #428 correlation ids `--delegation-agent-id` (tags the park) and
+`--consume-agent-id` (also on `prefetch`; selects the tagged entry) — both
+refused by name in remote mode (`ZMEM_REMOTE_URL` set), as is recall's
+`--state-hint`, because the hub read tools carry none of them and the fleet
+lane never parks — and
 repeatable `--authorized-namespace`
 (issue #283: the caller's namespace allow-list — the selector's
 `user:global` and cross-project lanes are filtered to it; omitted means

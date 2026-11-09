@@ -133,6 +133,29 @@ TASK_TEXT_CAP = 16
 # plausible park->SubagentStart latency (incl. permission prompts), far
 # below the 6h delivery window.
 TASK_TEXT_ORPHAN_S = 300.0
+# Issue #428: bound on a host-supplied delegation correlation id.
+TASK_TEXT_CORRELATION_ID_MAX = 128
+
+
+def normalize_correlation_id(value: Any) -> str:
+    """Issue #428: the delegation correlation id a host may supply at park
+    time (PreToolUse ``tool_input.agent_id``) and at consume time (the
+    child's SubagentStart ``agent_id``). Valid = a string that, stripped, is
+    non-empty, at most TASK_TEXT_CORRELATION_ID_MAX chars, free of C0/DEL
+    control characters and not option-shaped (no leading ``-``). Anything
+    else is treated as ABSENT ("") so a malformed id degrades to the
+    untagged legacy path instead of minting an unmatchable reservation.
+    hooks/lib/zmem-recall-body.py mirrors this rule (the #158 boundary keeps
+    storelib out of the hook adapter); a parity test pins the two."""
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    if (not value or len(value) > TASK_TEXT_CORRELATION_ID_MAX
+            or value.startswith("-")):
+        return ""
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        return ""
+    return value
 
 _DELIVERY_LOCK_TIMEOUT_S = 0.25
 _DELIVERY_LOCK_POLL_S = 0.005
@@ -1668,9 +1691,15 @@ def park_task_text(data_dir: str, session_id: str, text: str,
     child's SubagentStart to consume. Append, cap oldest-first, atomic
     write, fail-open.
 
-    ``agent_id`` is wiring for a future host that supplies it at PARK time:
-    neither Claude Code nor Codex does today (the id is assigned at
-    SubagentStart), so on every probed host consumption is FIFO. Accepted
+    ``agent_id`` is the delegation correlation id (issue #428), normalized
+    by normalize_correlation_id: a host that names the child's id in the
+    delegating call (PreToolUse ``tool_input.agent_id``, forwarded by the
+    hook body as ``--delegation-agent-id``) parks a TAGGED entry that only
+    the matching SubagentStart ``agent_id`` consumes (see
+    consume_task_text's reservation rule). Neither Claude Code nor Codex
+    supplies one at park time today (the id is assigned at SubagentStart),
+    so on every probed host entries stay untagged and consumption is the
+    FIFO + aged-head rule below, byte-identical to 0.138.0. Accepted
     race (PR #191 review F-002, mirrored on the pre-#117 .pending
     sidecar): two parallel Agent calls in one session race the
     read-modify-write. Empirically the loser is DROPPED OUTRIGHT (not
@@ -1693,15 +1722,18 @@ def park_task_text(data_dir: str, session_id: str, text: str,
 
     An ORPHANED park is the other case: a delegation whose child never
     starts (permission denied, cancelled, tool errored) leaves its entry at
-    the FIFO head and shifts every later prompt-less child by one. Since no
-    host supplies a correlation id at park time, consume_task_text applies
+    the FIFO head and shifts every later prompt-less child by one. For
+    UNTAGGED entries (every probed host today) consume_task_text applies
     an AGED-HEAD SKIP (issue #329): a leading entry older than
     TASK_TEXT_ORPHAN_S is dropped in favor of a strictly newer one. Two
-    residuals are accepted and disclosed: an orphan YOUNGER than the band
-    still shifts by one until it ages out, and a legitimate child delayed
-    past the band (e.g. a long permission prompt) can lose its prompt once
-    a strictly newer delegation exists. The 6h window / 16-entry cap bound
-    how long any shift persists, NOT how many children it affects."""
+    residuals are accepted and disclosed for untagged entries: an orphan
+    YOUNGER than the band still shifts by one until it ages out, and a
+    legitimate child delayed past the band (e.g. a long permission prompt)
+    can lose its prompt once a strictly newer delegation exists. A host
+    that supplies the correlation id on both sides retires both residuals
+    (issue #428): its tagged entries are never aged, shifted or taken by
+    another child. The 6h window / 16-entry cap bound how long any shift
+    persists, NOT how many children it affects."""
     path = tasktext_path(data_dir, session_id)
     if not path or not text or not text.strip():
         return
@@ -1726,7 +1758,7 @@ def park_task_text(data_dir: str, session_id: str, text: str,
         return
     entries = _load_tasktext(path, now)
     entries.append({
-        "agent_id": str(agent_id or ""),
+        "agent_id": normalize_correlation_id(agent_id),
         "text": text[:TASK_TEXT_MAX],
         "ts": now,
     })
@@ -1743,13 +1775,15 @@ def park_task_text(data_dir: str, session_id: str, text: str,
 
 def consume_task_text(data_dir: str, session_id: str,
                       agent_id: str = "") -> str:
-    """Issue #119 + #329: the child's SubagentStart takes one task text —
-    an exact ``agent_id`` match wins when a host parks one (unreachable in
-    production today; contract for a future host); otherwise FIFO with an
-    AGED-HEAD SKIP: leading entries older than ``TASK_TEXT_ORPHAN_S`` are
-    dropped in favor of a strictly newer one, so an orphaned park stops
-    shifting later children once it ages past the band (residuals: a
-    younger orphan still shifts until it ages out, and a live child
+    """Issue #119 + #329 + #428: the child's SubagentStart takes one task
+    text — an exact ``agent_id`` match (normalize_correlation_id) wins when
+    the host tagged the park and the child carries the same id; otherwise
+    FIFO with an AGED-HEAD SKIP over the UNTAGGED entries only (tagged
+    entries are reserved for their id — the #428 reservation rule):
+    leading untagged entries older than ``TASK_TEXT_ORPHAN_S`` are dropped
+    in favor of a strictly newer untagged one, so an orphaned park stops
+    shifting later children once it ages past the band (residuals, untagged
+    only: a younger orphan still shifts until it ages out, and a live child
     delayed past the band can lose its prompt to a strictly newer
     delegation — see park_task_text). The consume is CALLER-GATED since
     0.138.0 (#339): the selector passes it only for granted SubagentStart
@@ -1790,15 +1824,31 @@ def consume_task_text(data_dir: str, session_id: str,
                 time.sleep(0.01)
         return ""
     idx = None
+    drop: set[int] = set()
+    want = normalize_correlation_id(agent_id)
     # Issue #119 contract first: an exact agent_id match outranks BOTH the
-    # aging heuristic and FIFO (the future-host correlation key is exact —
-    # it must never be aged away; pinned by OrphanAgingBandTest guards).
-    if agent_id:
+    # aging heuristic and FIFO (the correlation key is exact — it must
+    # never be aged away; pinned by OrphanAgingBandTest guards).
+    if want:
         for i, e in enumerate(entries):
-            if e.get("agent_id") == agent_id:
+            if normalize_correlation_id(e.get("agent_id")) == want:
                 idx = i
                 break
     if idx is None:
+        # Issue #428 RESERVATION RULE: without a matching id (no id, or an
+        # id that tags nothing here) the FIFO + aged-head rule runs over the
+        # UNTAGGED entries only — a TAGGED entry is reserved for the child
+        # whose SubagentStart carries its id: never served to another
+        # child, never aged out by one, and never counted as the "strictly
+        # newer" successor that ages an untagged head. With no tagged
+        # entries (every probed host today) the pool is the whole stash and
+        # this is byte-identical to 0.138.0. Nothing untagged -> "" and the
+        # stash is left untouched (no write).
+        pool = [i for i, e in enumerate(entries)
+                if not normalize_correlation_id(e.get("agent_id"))]
+        if not pool:
+            return ""
+
         # Issue #329 aged-head skip: drop leading entries with FINITE ts
         # older than TASK_TEXT_ORPHAN_S, but ONLY while a strictly newer
         # (finite-ts) entry exists behind them. Guards (issue #329
@@ -1808,9 +1858,10 @@ def consume_task_text(data_dir: str, session_id: str,
         # loop); a sole aged entry is served (no strictly newer
         # successor); each skipped head is dropped from the write-back so
         # the next child is not shifted by it either.
-        # Residuals (disclosed): a younger-than-band orphan still shifts by
-        # one; a live child delayed past the band can lose its prompt once
-        # a strictly newer delegation exists.
+        # Residuals (disclosed, untagged entries only): a younger-than-band
+        # orphan still shifts by one; a live child delayed past the band can
+        # lose its prompt once a strictly newer delegation exists. Issue
+        # #428: a host supplying the correlation id retires both.
         def _finite_ts(entry: Any) -> float | None:
             try:
                 v = float(entry.get("ts"))
@@ -1821,20 +1872,22 @@ def consume_task_text(data_dir: str, session_id: str,
                 return None
             return v if math.isfinite(v) else None
 
-        while len(entries) > 1:
-            head_ts = _finite_ts(entries[0])
+        while len(pool) > 1:
+            head_ts = _finite_ts(entries[pool[0]])
             if head_ts is None or (now - head_ts) <= TASK_TEXT_ORPHAN_S:
                 break
             newer = any(
-                (lambda t: t is not None and t > head_ts)(_finite_ts(e))
-                for e in entries[1:]
+                (lambda t: t is not None and t > head_ts)(
+                    _finite_ts(entries[j]))
+                for j in pool[1:]
             )
             if not newer:
                 break
-            del entries[0]
-        idx = 0
+            drop.add(pool.pop(0))
+        idx = pool[0]
     text = str(entries[idx].get("text", ""))
-    del entries[idx]
+    drop.add(idx)
+    entries = [e for i, e in enumerate(entries) if i not in drop]
     try:
         if entries:
             # Issue #340: no fsync on this sidecar (park-side rationale).
