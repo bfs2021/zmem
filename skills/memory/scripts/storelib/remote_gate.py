@@ -63,7 +63,10 @@ _HERMES_CONTEXT_ALLOWED_ACTIONS = frozenset({"commit-cursor"})
 # explicitly supplied and is refused.  Keep in sync with the argparse
 # definitions in cli.py when flags are added — a future flag missing here
 # reverts to silent-drop, which the honesty contract forbids (the
-# supp test suite pins one flag per command).
+# supp test suite pins one flag per command; since #428
+# tests/test_tasktext_correlation_supp.py enumerates EVERY recall/recent
+# dest from the live parser and fails on any that is neither refused here
+# nor forwarded).
 _READ_DEFAULTS: dict[str, dict[str, Any]] = {
     "recall": {
         "hybrid": False, "no_hybrid": False, "no_mmr": False,
