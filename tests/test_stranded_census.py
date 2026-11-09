@@ -1,43 +1,49 @@
 """Issue #323 acceptance check: no stranded storelib function (AC1).
 
-DISCRIMINATING — expected RED at base: the storelib consolidation
-retirement family (#158/#117/#119) left functions defined with zero
-non-test callers; every one must be wired into a real production caller
-or removed with its tests. The guard is GENERAL — it asserts nothing
-about specific function names in the passing state; it asserts the
-stranded set is EMPTY and on failure enumerates every stranded
-``module:function`` so the disposition ledger (issue AC2) can be built
-from the failure output.
+DISCRIMINATING — RED at base on the retirement family's leftovers; GREEN
+only when the stranded set is empty. The guard is GENERAL — it asserts
+nothing about specific function names in the passing state; on failure it
+enumerates every stranded ``module:function`` so the disposition ledger
+(issue AC2) can be built from the failure output.
 
-Census contract (frozen):
+Census contract (frozen; PR #452 review round tightened the reference
+model after collision-masked strands were proven):
 
 - DEF SET — every ``FunctionDef``/``AsyncFunctionDef`` parsed with ast
   from ``skills/memory/scripts/storelib/*.py``, EXCLUDING dunder protocol
-  names (``__*__``): Python invokes those implicitly, so a name-reference
+  names (``__*__``): Python invokes those implicitly, so a reference
   census can never see their callers and flagging them would be noise.
 
 - CALLER SCOPE — every ``*.py`` under ``skills/``, ``hooks/``, and
   ``scripts/`` (repo-relative POSIX path), excluding paths containing
-  ``/test``, ``__pycache__``, and ``.agents/``. A function's callers are
-  searched in that scope in THREE shapes (issue #323 AC1, the #253
-  sweep's false-positive lesson — model all three):
-      1. call shape            ``name(``
-      2. bare-name dispatch    a name token NOT followed by ``(``
-                               (callable passed around, import binding)
-      3. dotted dispatch       ``module.name`` (attribute access)
-  For every file EXCEPT the defining module the shapes are matched at
-  TEXT level (so import bindings and re-exports count as wiring —
-  storelib/__init__.py's from-import lines wire the names they carry).
-  In the DEFINING module only real code references count (ast.Name /
-  ast.Attribute): a comment or docstring mention of a name is NOT a
-  caller, and the ``def`` statement itself contributes no reference
-  (internal helpers called by their own module are wired, recursion
-  counts, prose does not).
+  ``/test``, ``__pycache__``, and ``.agents/``. Every file in scope is
+  parsed with ast; a function is WIRED when any of these hold:
 
-- STRANDED — a def with zero callers anywhere in the caller scope.
+      1. CODE REFERENCE — an ``ast.Name`` in Load context, or an
+         ``ast.Attribute`` attribute, equal to the function name, in any
+         in-scope module (the defining module included: internal helpers
+         called by their own module are wired, recursion counts). A name
+         that is ASSIGNED anywhere in the same module (``ast.Store``) is
+         EXCLUDED from that module's reference set: a bound local or
+         re-bound global of the same name is not a reference to the
+         storelib function (the #452-review collision lesson:
+         ``delivered_ids`` was masked by a local variable,
+         ``cap`` by ``cap = _cap()``).
+      2. IMPORT BINDING — a ``from X import <name> [as alias]`` /
+         ``import <name>`` binding in any in-scope module. POLICY
+         (documented, disclosed in the PR body): an import binding IS
+         wiring — ``storelib/__init__.py`` and the training re-export
+         surface are public API for out-of-scope consumers, and a name
+         carried by a re-export is not stranded even if no in-repo code
+         invokes it. Text occurrence is NEVER wiring: comments,
+         docstrings, string/dict-key literals and word prefixes
+         ("capture" vs ``cap``) contribute nothing (AST identifiers
+         only, exact equality).
+      3. STRANDED — a def whose name appears in NO in-scope module's
+         reference set and NO import-binding set.
 
 Known-good wiring anchors this census must respect (if the census flags
-these, the caller-shape matching is wrong, not the code):
+these, the reference matching is wrong, not the code):
       clear_retry_state                  -> skills/memory/scripts/storelib/cli.py
       evaluate_injection_items           -> scripts/eval_inject_runner.py
       injection_per_moment               -> scripts/eval_inject_runner.py
@@ -51,7 +57,6 @@ Run: python tests/test_stranded_census.py
 from __future__ import annotations
 
 import ast
-import re
 import sys
 import unittest
 import warnings
@@ -60,8 +65,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STORELIB_DIR = REPO_ROOT / "skills" / "memory" / "scripts" / "storelib"
-
-_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 # Wiring anchors from the issue: functions the census must NEVER flag.
 _WIRED_ANCHORS = (
@@ -74,28 +77,6 @@ _WIRED_ANCHORS = (
 )
 
 
-def _caller_shape_regex(name: str) -> re.Pattern:
-    """The three caller shapes, one pattern: call ``name(``, bare-name
-    dispatch (token not followed by ``(``), dotted ``.name`` dispatch."""
-    esc = re.escape(name)
-    return re.compile(
-        r"\b" + esc + r"\("                  # 1. call shape
-        r"|(?<![\w.])" + esc + r"(?!\s*\()"  # 2. bare-name dispatch
-        r"|\." + esc + r"\b")                # 3. dotted dispatch
-
-
-def _caller_scope_files():
-    """Every non-test production .py under skills/, hooks/, scripts/ as
-    (posix_rel_path, Path) — repo-relative POSIX paths only (no
-    backslashes in anything this module builds)."""
-    for scope in ("skills", "hooks", "scripts"):
-        for path in (REPO_ROOT / scope).rglob("*.py"):
-            rel = path.relative_to(REPO_ROOT).as_posix()
-            if "/test" in rel or "__pycache__" in rel or "/.agents/" in rel:
-                continue
-            yield rel, path
-
-
 @contextmanager
 def _quiet_parse():
     """ast.parse on the analyzed sources re-emits their own Deprecation
@@ -106,25 +87,59 @@ def _quiet_parse():
         yield
 
 
-def _defining_module_references(source: str) -> set:
-    """Name/Attribute identifiers actually referenced by CODE in a module
-    (comments, docstrings and strings are not code references; a def
-    statement's own name is not an ast.Name node, so a def never wires
-    itself). SyntaxError -> empty set (a file we cannot parse contributes
-    no defining-module references; its defs then strand only if no other
-    file references them either)."""
+def _module_references(source: str) -> tuple[set, set]:
+    """(refs, imports) for one module.
+
+    refs — identifiers referenced by CODE: ``ast.Attribute`` attribute
+    names (any context: ``x.manifest(...)`` uses ``manifest`` even where
+    a local of the same name also exists), plus ``ast.Name`` nodes in
+    Load context EXCLUDING every id that is ASSIGNED (Store/Del context)
+    anywhere in the module (a bound local is its own binding, not a
+    reference to a storelib function of the same name — the #452-review
+    collision lesson: ``delivered_ids`` was masked by a local variable,
+    ``cap`` by ``cap = _cap()``). Aliased imports are followed:
+    ``from x import y as z`` makes references to ``z`` references to
+    ``y``. A def statement's own name is never an ``ast.Name`` node, so
+    a def cannot wire itself; comments, docstrings and string literals
+    are not AST nodes and contribute nothing.
+
+    imports — every imported name (the documented binding-is-wiring
+    policy: ``storelib/__init__.py`` and the training re-export surface
+    are public API for out-of-scope consumers), with aliased imports
+    translated back to the imported name.
+
+    SyntaxError -> ({}, {}) (an unparseable file contributes nothing).
+    """
     try:
         with _quiet_parse():
             tree = ast.parse(source)
     except SyntaxError:
-        return set()
-    refs = set()
+        return set(), set()
+    loads: set = set()
+    stores: set = set()
+    attrs: set = set()
+    aliases: dict = {}
+    imports: set = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
-            refs.add(node.id)
+            if isinstance(node.ctx, ast.Load):
+                loads.add(node.id)
+            else:
+                stores.add(node.id)
         elif isinstance(node, ast.Attribute):
-            refs.add(node.attr)
-    return refs
+            attrs.add(node.attr)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                imports.add(alias.name)
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add(alias.name.split(".")[0])
+    refs = attrs | (loads - stores)
+    refs |= {aliases[a] for a in list(refs) if a in aliases}
+    imports |= {aliases[a] for a in list(imports) if a in aliases}
+    return refs, imports
 
 
 def _module_defs(tree: ast.Module) -> set:
@@ -142,43 +157,47 @@ def run_census():
     """Return (stranded, wired_callers) where stranded is a sorted list of
     ``module.py:function`` with zero callers and wired_callers maps a
     function name to its caller files when non-empty (anchors only)."""
-    scope = {}
-    scope_tokens = {}
+    module_defs = {}
+    refs = {}
+    imports = {}
+    files = {}
     for rel, path in _caller_scope_files():
         source = path.read_text(encoding="utf-8", errors="replace")
-        scope[rel] = source
-        scope_tokens[rel] = set(_TOKEN_RE.findall(source))
+        files[rel] = source
+        if rel.startswith("skills/memory/scripts/storelib/"):
+            try:
+                with _quiet_parse():
+                    module_defs[rel] = _module_defs(ast.parse(source))
+            except SyntaxError as exc:
+                raise AssertionError(
+                    "storelib module failed to parse — census cannot run: "
+                    + rel + ": " + str(exc)) from exc
+        refs[rel], imports[rel] = _module_references(source)
 
     stranded = []
     wired_callers = {}
     anchor_names = {name for name, _ in _WIRED_ANCHORS}
-    for mod in sorted(STORELIB_DIR.glob("*.py")):
-        rel = mod.relative_to(REPO_ROOT).as_posix()
-        source = scope.get(rel) or mod.read_text(encoding="utf-8",
-                                                 errors="replace")
-        own_refs = _defining_module_references(source)
-        try:
-            with _quiet_parse():
-                mod_tree = ast.parse(source)
-        except SyntaxError as exc:
-            raise AssertionError(
-                "storelib module failed to parse — census cannot run: "
-                + rel + ": " + str(exc)) from exc
-        for name in sorted(_module_defs(mod_tree)):
-            callers = []
-            if name in own_refs:
-                callers.append(rel)
-            pattern = _caller_shape_regex(name)
-            for crel, csrc in scope.items():
-                if crel == rel:
-                    continue
-                if name in scope_tokens[crel] and pattern.search(csrc):
-                    callers.append(crel)
+    for rel in sorted(module_defs):
+        for name in sorted(module_defs[rel]):
+            callers = [crel for crel in sorted(files)
+                       if name in refs[crel] or name in imports[crel]]
             if not callers:
                 stranded.append(rel + ":" + name)
             elif name in anchor_names:
                 wired_callers[name] = callers
     return sorted(stranded), wired_callers
+
+
+def _caller_scope_files():
+    """Every non-test production .py under skills/, hooks/, scripts/ as
+    (posix_rel_path, Path) — repo-relative POSIX paths only (no
+    backslashes in anything this module builds)."""
+    for scope in ("skills", "hooks", "scripts"):
+        for path in (REPO_ROOT / scope).rglob("*.py"):
+            rel = path.relative_to(REPO_ROOT).as_posix()
+            if "/test" in rel or "__pycache__" in rel or "/.agents/" in rel:
+                continue
+            yield rel, path
 
 
 class StrandedCensusTest(unittest.TestCase):
@@ -201,8 +220,8 @@ class StrandedCensusTest(unittest.TestCase):
         # Caller-shape sanity anchors from the issue: clear_retry_state is
         # CLI-wired (storelib/cli.py) and the eval pair is wired via
         # scripts/eval_inject_runner.py. If THIS census flags them, the
-        # census's caller matching is wrong (the #253 lesson: all three
-        # call shapes must be modeled).
+        # census's reference matching is wrong (the #253 lesson: the
+        # caller model must cover real dispatch).
         flagged = {
             name: defining
             for name, defining in _WIRED_ANCHORS
@@ -211,7 +230,7 @@ class StrandedCensusTest(unittest.TestCase):
         }
         self.assertEqual(
             flagged, {},
-            "census caller-shape matching is wrong: known-wired functions "
+            "census reference matching is wrong: known-wired functions "
             "flagged as stranded " + repr(flagged))
         for name, _defining in _WIRED_ANCHORS:
             self.assertTrue(

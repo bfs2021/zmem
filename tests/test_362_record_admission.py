@@ -90,7 +90,8 @@ while True:
     except TypeError as exc:
         print("API_ERROR " + type(exc).__name__ + ": " + str(exc))
         raise SystemExit(3)
-    sees_delivered = "mem-1" in dl.delivered_ids(data_dir, sid)
+    sees_delivered = any(e["id"] == "mem-1"
+                         for e in dl.delivered(data_dir, sid))
     if admitted or sees_delivered or time.time() > retry_deadline:
         print("RESULT " + json.dumps({
             "admitted": [str(i) for i in (admitted or [])],
@@ -209,7 +210,7 @@ class RecordAdmissionRaceTest(_LedgerTmpTestCase):
             f"(delivered_ids after its call): {results}")
 
         self.assertEqual(
-            dl.delivered_ids(self.tmp, sid), [ROW_ID],
+            [e["id"] for e in dl.delivered(self.tmp, sid)], [ROW_ID],
             "the merged ledger view after the race must hold exactly the "
             "one admitted id")
 
@@ -338,7 +339,8 @@ class RecordAdmissionWiringTest(_LedgerTmpTestCase):
             "delivery-state lock — the non-admission record path must stay "
             "lock-independent (bounded single compaction attempt only)")
         self.assertIn(
-            "wedge-row-1", dl.delivered_ids(self.tmp, sid2),
+            "wedge-row-1",
+            [e["id"] for e in dl.delivered(self.tmp, sid2)],
             "plain record() must still publish its row under the wedged "
             "lock")
 

@@ -346,10 +346,10 @@ class SelectorValidationTest(unittest.TestCase):
         conn, old_env, selector = self._selector_context()
         try:
             ledger = importlib.import_module("storelib.delivery_ledger")
-            with mock.patch.object(ledger, "delivered_ids") as delivered_ids:
+            with mock.patch.object(ledger, "delivered") as delivered:
                 with self.assertRaises(ValueError):
                     selector(conn, **self._kwargs(moment="not-a-moment"))
-                delivered_ids.assert_not_called()
+                delivered.assert_not_called()
         finally:
             conn.close()
             os.environ.clear()
@@ -359,10 +359,10 @@ class SelectorValidationTest(unittest.TestCase):
         conn, old_env, selector = self._selector_context()
         try:
             ledger = importlib.import_module("storelib.delivery_ledger")
-            with mock.patch.object(ledger, "delivered_ids") as delivered_ids:
+            with mock.patch.object(ledger, "delivered") as delivered:
                 with self.assertRaises(ValueError):
                     selector(conn, **self._kwargs(lane="not-a-lane"))
-                delivered_ids.assert_not_called()
+                delivered.assert_not_called()
         finally:
             conn.close()
             os.environ.clear()
@@ -379,7 +379,7 @@ class SelectorValidationTest(unittest.TestCase):
             ) as recall_memory, mock.patch.object(
                 recall_module, "recent_memory", return_value=[]
             ) as recent_memory, mock.patch.object(
-                ledger, "delivered_ids", return_value=[]
+                ledger, "delivered", return_value=[]
             ):
                 selector(conn, **self._kwargs(query=""))
             recall_memory.assert_not_called()

@@ -11,8 +11,12 @@ parked fences. This module is the delivery-state substrate BOTH lanes share:
   collision class of the old ``.pending`` filename (two distinct 130-char ids
   shared one file before #117).
 - the fallback pending sidecar (legacy, retired with the #158 adapters):
-  no storelib API remains; a file left by a pre-#158 install is removed by
-  the terminal clear and reaped by the backup sweep.
+  no storelib call API remains for them (``pending_path`` stays public
+  for the backup sweep); a file left by a pre-#158 install under the RAW
+  session-id hash is removed by a keyed terminal clear only when no
+  principal/harness is presented (the composite key hashes differently -
+  the same raw-id caveat documented for ``.tasktext`` below), and is
+  otherwise reaped by the backup sweep.
 - the compaction sidecar (issue #118, Workstream D-2):
   ``<data>/ops/<sha256(session_id)[:32]>.compact`` — the storelib compact
   API is retired (issue #323); PreCompact clears the ledger, the following
@@ -29,9 +33,8 @@ subagent writers can never lose rows to a missed lock deadline. A
 best-effort locked compaction merges segments into the base ledger; when it
 cannot run, segments persist and every read merges them instead. Ledger
 clears, the legacy pending sidecar, and compaction remain serialized by the
-shared ``ops/.delivery-state.lock``; legacy helpers remain fail-open when
-that lock cannot be acquired, and the terminal ``end_delivery_state`` path
-still reports failure when the LOCK cannot be acquired — unlink failures
+shared ``ops/.delivery-state.lock``, and the terminal ``end_delivery_state``
+path still reports failure when that LOCK cannot be acquired — unlink failures
 degrade to sweep-deferred best effort (review round 2: the previous claim
 that unlink failures propagate is no longer true). Residual, stated plainly:
 a segment lost to a genuine filesystem failure (ENOSPC, unusable dir) is
@@ -220,12 +223,6 @@ def _cap() -> int:
     except ValueError:
         return CAP_DEFAULT
     return v if v > 0 else CAP_DEFAULT
-
-
-def cap() -> int:
-    """Public accessor for the ledger cap (callers bound their --exclude
-    argv with it so no delivered id can fall off the exclusion list)."""
-    return _cap()
 
 
 def _hashed_name(session_id: str, suffix: str) -> Optional[str]:
@@ -979,14 +976,6 @@ def delivered(data_dir: str, session_id: str,
             seg_lists.append(entries)
     base = _load_entries(ledger_path(data_dir, key), now)
     return _reduce_entries(base, seg_lists, now)
-
-
-def delivered_ids(data_dir: str, session_id: str,
-                  now: Optional[float] = None,
-                  principal: Optional[str] = None,
-                  harness: Optional[str] = None) -> List[str]:
-    return [e["id"] for e in delivered(data_dir, session_id, now=now,
-                                       principal=principal, harness=harness)]
 
 
 def _entries_for(rows: List[Dict[str, Any]], moment: str, now: float,

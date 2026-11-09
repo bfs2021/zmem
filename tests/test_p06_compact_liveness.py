@@ -129,7 +129,8 @@ class DoubleCompactorTest(_LedgerTmpTestCase):
             dl._read_seg_file = real_read
             dl._DELIVERY_LOCK_STALE_S = real_stale
 
-        final = set(dl.delivered_ids(self.tmp, SID, now=now + 60))
+        final = set(e["id"] for e in dl.delivered(self.tmp, SID,
+                                             now=now + 60))
         self.assertEqual(
             final, {"row-1", "row-2", "row-3"},
             "a row was lost when compactor B broke stalled compactor A's "

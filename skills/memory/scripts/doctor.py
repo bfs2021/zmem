@@ -1125,7 +1125,7 @@ def _check_delivery_state_skew(resolved_store: Path) -> list[dict]:
     except Exception as exc:
         return [
             _check(
-                "delivery-state-skew-unavailable",
+                "delivery-state-skew",
                 "warn",
                 "delivery-state skew probe unavailable (storelib.purge "
                 "import failed: %s); the ops delivery-state layout could "
@@ -1165,9 +1165,7 @@ def _check_delivery_state_skew(resolved_store: Path) -> list[dict]:
             "zmem client does not support (a newer client may have "
             "upgraded the on-disk delivery-state layout): %s%s - recovery: "
             "upgrade zmem on this host, or quiesce writers and delete the "
-            "unsupported files (for the 0.96.0 segment family: delete "
-            "ops/*.ledger.seg.* as the 0.96.0 CHANGELOG documents); "
-            "supported families: %s"
+            "unsupported files listed above; supported families: %s"
             % (
                 len(unsupported),
                 ", ".join(unsupported[:5]),

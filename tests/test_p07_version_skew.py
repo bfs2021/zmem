@@ -89,6 +89,11 @@ _PIN_KEYS = (
     "ZMEM_HOME", "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA",
     "ZMEM_CAPTURE_MODE", "ZMEM_TEST_LEDGER_FAMILIES", "ZMEM_TEST_NOW",
     "ZMEM_INJECT", "ZMEM_BACKUP_DIR",
+    # HOME/USERPROFILE are pinned too (PR #452 review round): doctor reads
+    # Path.home() for the host plugin registry, so an install-skew host
+    # would leak its marketplace-skew/duplicate-install checks into these
+    # legs (tests/test_doctor.py:123 pins both for the same reason).
+    "HOME", "USERPROFILE",
 )
 
 # Import-time scratch pins so the issue #244 guard (and anything else
@@ -219,16 +224,18 @@ class _P07Base(unittest.TestCase):
 
     @staticmethod
     def _skew_checks(payload):
-        """Checks matching the frozen skew contract: a check whose id
-        contains "skew", or whose serialized text (case-insensitive)
-        contains "skew" AND ("ledger.seg" or "ops")."""
+        """Checks matching the frozen skew contract: the id names the
+        delivery-state skew check, or the serialized text (case-insensitive)
+        carries "delivery-state" AND "skew" (the substring-loose earlier
+        matcher also matched the unrelated pre-existing marketplace-skew
+        check — PR #452 review round)."""
         out = []
         for check in payload.get("checks", []) or []:
             cid = str(check.get("id", "")).lower()
             blob = json.dumps(check, sort_keys=True).lower()
-            if "skew" in cid:
+            if "delivery-state-skew" in cid:
                 out.append(check)
-            elif "skew" in blob and ("ledger.seg" in blob or "ops" in blob):
+            elif "delivery-state" in blob and "skew" in blob:
                 out.append(check)
         return out
 

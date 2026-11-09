@@ -93,7 +93,7 @@ class NonReserveRoutingTest(unittest.TestCase):
         finally:
             conn.close()
         self.assertIsNotNone(result)
-        ids = dl.delivered_ids(_WIRING_TMP, "wiring-session")
+        ids = [e["id"] for e in dl.delivered(_WIRING_TMP, "wiring-session")]
         self.assertIn("wiring-1", ids,
                       "the delivered row must land in the ledger through the "
                       "admission API when record() is sabotaged")

@@ -225,11 +225,12 @@ class LedgerModuleTest(unittest.TestCase):
     def test_record_delivered_roundtrip_and_upsert(self):
         row = {"id": "row-1", "content": STASH_TEXT}
         self.dl.record(self.tmp, "sess-a", [row], "user_prompt")
-        ids = self.dl.delivered_ids(self.tmp, "sess-a")
+        ids = [e["id"] for e in self.dl.delivered(self.tmp, "sess-a")]
         self.assertEqual(ids, ["row-1"])
         # upsert: a re-delivery refreshes rather than duplicates
         self.dl.record(self.tmp, "sess-a", [row], "pretool")
-        self.assertEqual(self.dl.delivered_ids(self.tmp, "sess-a"), ["row-1"])
+        self.assertEqual([e["id"] for e in self.dl.delivered(self.tmp, "sess-a")],
+                         ["row-1"])
         # entry text captures the matcher fuel, lowercased
         entry = self.dl.delivered(self.tmp, "sess-a")[0]
         self.assertIn("git stash pop", entry["text"])
@@ -238,11 +239,12 @@ class LedgerModuleTest(unittest.TestCase):
         row = {"id": "row-1", "content": "alpha"}
         old = time.time() - 9999
         self.dl.record(self.tmp, "sess-a", [row], "user_prompt", now=old)
-        self.assertEqual(self.dl.delivered_ids(self.tmp, "sess-a"),
+        self.assertEqual([e["id"] for e in self.dl.delivered(self.tmp, "sess-a")],
                          ["row-1"])
         os.environ["ZMEM_DELIVER_WINDOW_S"] = "60"
         try:
-            self.assertEqual(self.dl.delivered_ids(self.tmp, "sess-a"), [])
+            self.assertEqual([e["id"] for e in self.dl.delivered(self.tmp, "sess-a")],
+                         [])
         finally:
             os.environ.pop("ZMEM_DELIVER_WINDOW_S", None)
         # cap: oldest entries dropped beyond the cap
@@ -252,8 +254,9 @@ class LedgerModuleTest(unittest.TestCase):
                 self.dl.record(self.tmp, "sess-cap",
                                [{"id": f"r{i}", "content": f"c{i}"}],
                                "user_prompt", now=time.time() + i)
-            self.assertEqual(self.dl.delivered_ids(self.tmp, "sess-cap"),
-                             ["r2", "r3", "r4"])
+            self.assertEqual([e["id"] for e in self.dl.delivered(self.tmp,
+                                                         "sess-cap")],
+                         ["r2", "r3", "r4"])
         finally:
             os.environ.pop("ZMEM_LEDGER_CAP", None)
 
@@ -286,7 +289,8 @@ class LedgerModuleTest(unittest.TestCase):
             json.dump({"session_id": sid,
                        "ended_at": time.time() - self.dl._DELIVERY_END_MARKER_TTL_S - 1}, f)
         self.dl.record(self.tmp, sid, [{"id": "after"}], "session_start")
-        self.assertEqual(self.dl.delivered_ids(self.tmp, sid), ["after"])
+        self.assertEqual([e["id"] for e in self.dl.delivered(self.tmp, sid)],
+                         ["after"])
 
     def test_delivery_lock_rejects_unusable_host_token(self):
         import host
@@ -318,13 +322,12 @@ class LedgerModuleTest(unittest.TestCase):
         # terminal clear must leave alone, and the .pending file is the
         # exact payload shape park_pending wrote ({"entries": [...]}, one
         # fenced entry) — only its UNLINK is under test here.
-        import hashlib
-        stem = hashlib.sha256(sid.encode("utf-8")).hexdigest()[:32]
-        compact = ops / (stem + ".compact")
+        pending = Path(self.dl.pending_path(self.tmp, sid))
+        compact = ops / (pending.stem + ".compact")
         tasktext = Path(self.dl.tasktext_path(self.tmp, sid))
         compact.write_bytes(b"compact-survives")
         tasktext.write_bytes(b"tasktext-survives")
-        (ops / (stem + ".pending")).write_text(
+        pending.write_text(
             json.dumps({"entries": [
                 {"id": "pending", "moment": "pretool", "ts": time.time(),
                  "fence": "F"}]}),

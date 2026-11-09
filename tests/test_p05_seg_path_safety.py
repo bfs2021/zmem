@@ -83,7 +83,7 @@ def _delivered_bounded(case: unittest.TestCase, data_dir: str, sid: str,
 
     def run():
         try:
-            box["ids"] = dl.delivered_ids(data_dir, sid)
+            box["ids"] = [e["id"] for e in dl.delivered(data_dir, sid)]
         except BaseException as exc:  # surfaced to the case below
             box["exc"] = exc
 
@@ -331,7 +331,8 @@ class PublishFailureTest(_LedgerTmpTestCase):
             dl._publish_segment = real_publish
 
         self.assertIn(
-            "seed-1", dl.delivered_ids(self.tmp, SID, now=now + 60),
+            "seed-1", [e["id"] for e in dl.delivered(self.tmp, SID,
+                                                   now=now + 60)],
             "the seeded segment's row must be in the merged view")
         self.assertFalse(
             os.path.exists(seeded),

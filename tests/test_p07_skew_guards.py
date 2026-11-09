@@ -339,8 +339,9 @@ class InvalidTokenTest(unittest.TestCase):
         # the json.loads below with a clear error).
         doc = json.loads(r.stdout)
         matches = [c for c in doc.get("checks", [])
-                   if "skew" in c.get("id", "")
-                   or ("skew" in json.dumps(c).lower())]
+                   if "delivery-state-skew" in str(c.get("id", "")).lower()
+                   or ("delivery-state" in json.dumps(c).lower()
+                       and "skew" in json.dumps(c).lower())]
         self.assertTrue(matches, "expected a skew warn check")
         blob = json.dumps(matches).lower()
         self.assertIn("zmem_test_ledger_families", blob)
