@@ -2649,10 +2649,12 @@ What one purge does:
   The `<hash>.tasktext` delegation stash IS in scope since issue #253: purge
   needle-scrubs its entries (they carry untrusted host prose and have no
   memory ids) and reaps orphaned `*.tasktext.tmp.*`. The residue verify
-  step still globs only `*.ledger*`, so a stash the scrub SKIPPED because
-  it was unreadable/torn (the reader tolerates those states by design) is
-  exempt from that pass and stays until the ops age sweep; see #336 for the
-  verify-glob trade-off;
+  step scans the full delivery-state scope (all eight registered families
+  plus the broad legacy ledger/reserve globs, issue #322), so a stash the
+  scrub SKIPPED because it was unreadable/torn (the reader tolerates those
+  states by design) is no longer exempt: needle bytes in any scanned
+  family fail the purge closed; see #336 for the historical verify-glob
+  trade-off;
 - records the ids in the `purged_id` deny-list so `ingest-jsonl` will not
   re-insert them from a peer export (child records referencing a purged id
   are skipped or blanked, never fatal);

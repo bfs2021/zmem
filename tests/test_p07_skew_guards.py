@@ -364,7 +364,7 @@ class SeamGatedPurgeTest(unittest.TestCase):
             r = _run_purge(mid, {"ZMEM_TEST_LEDGER_FAMILIES": "ledger"})
             self.assertEqual(r.returncode, 5, r.stderr[-400:])
             self.assertTrue(_row_exists(mid))
-            self.assertIn("ledger.seg", r.stderr)
+            self.assertIn("cc55dd66.ledger.seg.", r.stderr)
         finally:
             seg.unlink(missing_ok=True)
 

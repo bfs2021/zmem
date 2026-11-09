@@ -1155,8 +1155,12 @@ def _verify_ledgers_clean(data_dir: Path, needles: list[str]) -> dict[str, int]:
     if not ops.is_dir():
         return residue
     variants = [v for n in needles for v in _verify_needle_variants(n)]
+    seen: set = set()
     for pattern in _VERIFY_SCOPE_PATTERNS:
         for path in ops.glob(pattern):
+            if path.name in seen:
+                continue
+            seen.add(path.name)
             data = path.read_bytes().lower()
             for v in variants:
                 c = data.count(v.lower())

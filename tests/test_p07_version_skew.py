@@ -89,16 +89,23 @@ _PIN_KEYS = (
     "ZMEM_HOME", "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA",
     "ZMEM_CAPTURE_MODE", "ZMEM_TEST_LEDGER_FAMILIES", "ZMEM_TEST_NOW",
     "ZMEM_INJECT", "ZMEM_BACKUP_DIR",
-    # HOME/USERPROFILE are pinned too (PR #452 review round): doctor reads
-    # Path.home() for the host plugin registry, so an install-skew host
-    # would leak its marketplace-skew/duplicate-install checks into these
-    # legs (tests/test_doctor.py:123 pins both for the same reason).
-    "HOME", "USERPROFILE",
+    # HOME/USERPROFILE are SET to the scratch home for every child (PR
+    # #452 review round): doctor reads Path.home() for the host plugin
+    # registry, so an install-skew host would leak its marketplace-skew /
+    # duplicate-install checks into these legs (tests/test_doctor.py:123
+    # sets both to a scratch home for the same reason).
 )
 
 # Import-time scratch pins so the issue #244 guard (and anything else
 # resolving a store in-process) never sees the operator's real ~/.zmem.
+# _HERMETIC_HOME is a real scratch directory SET as HOME/USERPROFILE in
+# every child env (popping them is not enough: Windows Path.home() falls
+# back through HOMEDRIVE/HOMEPATH, so the host home still leaks — PR #452
+# review round 2). HOMEDRIVE/HOMEPATH are pinned to the scratch drive-root
+# form so that fallback lands inside the scratch home too.
 _BOOT_TMP = tempfile.mkdtemp(prefix="zmem-p07-boot-")
+_HERMETIC_HOME = os.path.join(_BOOT_TMP, "home")
+os.makedirs(_HERMETIC_HOME, exist_ok=True)
 atexit.register(shutil.rmtree, _BOOT_TMP, True)
 _SAVED_ENV = {key: os.environ.get(key) for key in _PIN_KEYS}
 _SAVED_MODULES = {key: value for key, value in list(sys.modules.items())
@@ -157,6 +164,12 @@ class _P07Base(unittest.TestCase):
             if var not in ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODELS_DIR",
                            "ZMEM_MODEL_AUTODOWNLOAD"):
                 self.env.pop(var, None)
+        # Hermetic home (see _HERMETIC_HOME): SET, never just popped —
+        # Windows Path.home() falls back through HOMEDRIVE/HOMEPATH.
+        self.env["HOME"] = _HERMETIC_HOME
+        self.env["USERPROFILE"] = _HERMETIC_HOME
+        self.env["HOMEDRIVE"] = _HERMETIC_HOME[:2]
+        self.env["HOMEPATH"] = _HERMETIC_HOME[2:]
 
     # -- subprocess surfaces -------------------------------------------------
 
@@ -257,11 +270,12 @@ class DoctorSkewTest(_P07Base):
         matched = self._skew_checks(payload)
         self.assertTrue(
             matched,
-            "doctor must surface a skew diagnostic when <data>/ops holds a "
-            "delivery-state file outside the running client's supported "
-            "family set (unknown family aa11bb22.ledger.seg2.*): a check "
-            "whose id contains 'skew' or whose text mentions 'skew' plus "
-            "'ledger.seg'/'ops' (naming the recovery). Got "
+            "doctor must surface a delivery-state skew diagnostic when "
+            "<data>/ops holds a delivery-state file outside the running "
+            "client's supported family set (unknown family "
+            "aa11bb22.ledger.seg2.*): a check whose id names "
+            "delivery-state-skew or whose text carries 'delivery-state' "
+            "plus 'skew' (naming the recovery). Got "
             + str(len(payload.get("checks", []) or [])) + " checks, none "
             "matching: "
             + ", ".join(str(c.get("id")) for c in payload.get("checks", [])))

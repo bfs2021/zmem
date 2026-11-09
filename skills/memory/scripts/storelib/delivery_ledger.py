@@ -11,8 +11,9 @@ parked fences. This module is the delivery-state substrate BOTH lanes share:
   collision class of the old ``.pending`` filename (two distinct 130-char ids
   shared one file before #117).
 - the fallback pending sidecar (legacy, retired with the #158 adapters):
-  no storelib call API remains for them (``pending_path`` stays public
-  for the backup sweep); a file left by a pre-#158 install under the RAW
+  no storelib call API remains for them (``pending_path`` stays public;
+  the terminal clear uses it and the backup sweep reaps ``.pending`` by
+  suffix); a file left by a pre-#158 install under the RAW
   session-id hash is removed by a keyed terminal clear only when no
   principal/harness is presented (the composite key hashes differently -
   the same raw-id caveat documented for ``.tasktext`` below), and is
