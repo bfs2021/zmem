@@ -48,6 +48,18 @@ these, the reference matching is wrong, not the code):
       evaluate_injection_items           -> scripts/eval_inject_runner.py
       injection_per_moment               -> scripts/eval_inject_runner.py
 
+Known LOUD false-strands (PR #452 review round): functions whose only
+references are excluded by the deliberately coarse binding exclusions
+above, each hand-verified wired at the cited site. They are allowlisted
+here — loudly, with evidence — instead of silently wiring the whole
+collision class; a name on this list whose call site disappears must be
+re-reviewed by hand:
+      organize.rows_by_id  -> organize.py:544 calls rows_by_id(rows)
+        (its organize.py Load is excluded by a same-module binding)
+      recall.key           -> nested sort-key closure, used via the
+        ``key=`` keyword binding at its enclosing sort call (keywords are
+        neither Name nor Attribute nodes)
+
 Static analysis only — no store is opened, no ZMEM_* environment is
 pinned, and _store_guard is intentionally not imported (nothing here can
 resolve a store).
@@ -75,6 +87,14 @@ _WIRED_ANCHORS = (
     ("injection_per_moment",
      "skills/memory/scripts/storelib/eval_gold.py"),
 )
+
+# (module_rel_path, function_name) pairs the coarse binding exclusions
+# strand LOUDLY although hand verification proves them wired. See the
+# module docstring's "Known LOUD false-strands" block for the evidence.
+_LOUD_FALSE_STRANDS = frozenset({
+    ("skills/memory/scripts/storelib/organize.py", "rows_by_id"),
+    ("skills/memory/scripts/storelib/recall.py", "key"),
+})
 
 
 @contextmanager
@@ -117,6 +137,7 @@ def _module_references(source: str) -> tuple[set, set]:
         return set(), set()
     loads: set = set()
     stores: set = set()
+    params: set = set()
     attrs: set = set()
     aliases: dict = {}
     imports: set = set()
@@ -126,6 +147,8 @@ def _module_references(source: str) -> tuple[set, set]:
                 loads.add(node.id)
             else:
                 stores.add(node.id)
+        elif isinstance(node, ast.arg):
+            params.add(node.arg)
         elif isinstance(node, ast.Attribute):
             attrs.add(node.attr)
         elif isinstance(node, ast.ImportFrom):
@@ -136,7 +159,7 @@ def _module_references(source: str) -> tuple[set, set]:
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 imports.add(alias.name.split(".")[0])
-    refs = attrs | (loads - stores)
+    refs = attrs | (loads - stores - params)
     refs |= {aliases[a] for a in list(refs) if a in aliases}
     imports |= {aliases[a] for a in list(imports) if a in aliases}
     return refs, imports
@@ -182,7 +205,10 @@ def run_census():
             callers = [crel for crel in sorted(files)
                        if name in refs[crel] or name in imports[crel]]
             if not callers:
-                stranded.append(rel + ":" + name)
+                entry = rel + ":" + name
+                if (rel, name) in _LOUD_FALSE_STRANDS:
+                    continue
+                stranded.append(entry)
             elif name in anchor_names:
                 wired_callers[name] = callers
     return sorted(stranded), wired_callers
