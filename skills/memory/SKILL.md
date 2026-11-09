@@ -531,7 +531,8 @@ additionally carry the transport tokens `reason=store-error` — a store
 child that exited nonzero (e.g. a partial-upgrade store rejecting an
 unknown flag) — and `reason=envelope-error` — a store child that exited
 zero whose stdout was not a JSON envelope (issue #435); both are emitted
-by the hook body and the hermes-provider lane, and miss-rate reporting
+by the hook body, the hermes-provider lane, and the hermes MCP server's
+session prefetch, and miss-rate reporting
 excludes both from the missed count like the
 other negotiation refusals. `reason=injected` is a
 successful decision and `reason=disabled` is the separate kill-switch marker.
@@ -2749,6 +2750,30 @@ import store internals directly.
 `ZMEM_CONVENTION_INTERVAL` remains the legacy cadence for the Hermes
 convention-compatibility hook only. It does not control the commit-only
 `zmem-convention-capture.sh` prompt.
+
+The Hermes convention writer bounds its own `hermes_convention_count_*`
+meta rows (issue #446): once the convention-family row count exceeds
+`ZMEM_CONVENTION_ROW_CAP` (default 64; invalid/negative falls back, 0 is
+a valid aggressive setting), a best-effort prune runs BEFORE the counter
+write with `current_session` = the Hermes payload session id — the live
+session's parseable row consumes one cap slot and is never deleted (a
+legacy value upgrades in place), non-current rows prune oldest-first
+down to the cap, and a first write for a NEW session at an exactly-cap
+population prunes one extra row so the post-write total stays at the
+cap. Malformed counter values are never deleted and sit outside the cap
+arithmetic (they are reported `unparseable`, including a malformed row
+for the live session). When the prune runs it also applies the sweep's
+age rules — non-current rows older than `ZMEM_SENTINEL_SWEEP_DAYS`
+(default 7) and every non-current legacy integer row are deleted
+regardless of the cap value; raising the cap above the family
+population suppresses the prune entirely, so a Hermes-only host with no
+launcher sweep retains stale rows until the population crosses the cap.
+A Hermes-only host (no launcher
+sweep) is bounded by this mechanism alone. The prune serializes against
+`restore` under the maintenance lock and skips (fail-open) when a live
+holder exists; the transaction runs on a dedicated ~1s-timeout
+connection so a contended
+prune skips instead of stalling other store commands behind the lock.
 
 ### queue-list / queue-clear / queue-add — review live-captured corrections (read-only / clear / author a note)
 ```

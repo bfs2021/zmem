@@ -4251,6 +4251,10 @@ class ZmemMemoryProvider(MemoryProvider):
         # flag on every silent outcome (an unbound read crashed remote
         # mode; implementation-review round 1 F1).
         envelope_error = False
+        # Issue #442: same pre-branch binding as envelope_error (the
+        # remote path never runs the local runner, and the ladder below
+        # reads the flag on every silent outcome).
+        store_error = False
         if self._remote_active():
             t0 = time.monotonic()
             envelope = self._transport.session_start(
@@ -4289,7 +4293,19 @@ class ZmemMemoryProvider(MemoryProvider):
                 lane="hermes-provider",
             ), timing=timing)
             elapsed = timing.get("t_ms", 0)
-            payload = _decode_rendered_envelope(result)
+            # Issue #442 (plan-critic r1 finding 2): a FAILED store
+            # child (nonzero rc, or a runner exception converted to an
+            # ok=False result) is a store transport failure whose stdout
+            # is NEVER parsed and NEVER trusted — parse-then-clear still
+            # leaks failed-child ids into the decision record, so the
+            # decoder does not run at all and the payload is forced
+            # empty before any rendering.
+            store_error = not (isinstance(result, dict)
+                               and result.get("ok"))
+            if store_error:
+                payload = {}
+            else:
+                payload = _decode_rendered_envelope(result)
             # Issue #435 (provider twin): a store child that SUCCEEDED
             # (ok) whose stdout never parses as a JSON dict is a corrupted
             # output channel, not an empty pool. Track the shape so the
@@ -4347,6 +4363,15 @@ class ZmemMemoryProvider(MemoryProvider):
         allowed = reasons["INJECT_SILENT_REASONS"]
         if has_rendered:
             reason = reasons["INJECT_REASON_INJECTED"]
+        elif store_error:
+            # Issue #442: a FAILED local store child is a transport
+            # failure, not an empty pool. Route-c (deliberately OUTSIDE
+            # the closed set, mirroring envelope-error below): the
+            # rewrite at the end of the ladder must not fold it back.
+            # store_error implies payload was forced empty, so
+            # has_rendered cannot be true here — the branch order keeps
+            # this classification terminal for a failed child.
+            reason = "store-error"
         elif envelope_error:
             # Issue #435: the zero-exit transport token — same
             # classification as the hook body's ladder. Deliberately

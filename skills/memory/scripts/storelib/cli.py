@@ -2094,6 +2094,104 @@ def cmd_evidence_associations(
         _read_snapshot_finish(conn, started)
 
 
+def _maybe_prune_convention_rows(conn: sqlite3.Connection, *,
+                                 current_session: str,
+                                 session_key: "str | None" = None) -> None:
+    """Best-effort bounded prune of the convention-counter meta rows,
+    fired from the live hermes writer itself (issue #446 items 1+2).
+
+    Hot path: one key-only indexed family count plus a point key-lookup
+    per call; the classification pass runs only when the count exceeds
+    the cap. The
+    transaction runs on a DEDICATED 1s-timeout connection (PRR-007) so
+    the host-wide maintenance lock is never held across the caller's
+    5s busy timeout — a contended prune skips instead of stalling
+    every store command behind it. The lock serializes against
+    restore's store replacement (same protocol as the sweep's meta
+    phase); a live holder skips (fail-open, the caller swallows). The
+    caller owns the outer connection's lifecycle (writer lease); the
+    dedicated connection is opened and closed inside the lock window.
+
+    Cap accounting (PRR-019): the trigger counts the row the writer is
+    about to add — for a NEW session key the cap effectively shrinks by
+    one, so a first write at an exactly-cap population prunes to
+    cap-1 + the new row and the post-write total stays <= cap."""
+    import time as _time
+    from storelib.backup import (
+        SENTINEL_SWEEP_DAYS_DEFAULT,
+        _prune_convention_meta_conn,
+        convention_family_key_count,
+        convention_row_cap,
+    )
+    from storelib.schema import (
+        _acquire_maintenance_lock_with_liveness,
+        _release_named_lock,
+    )
+    cap = convention_row_cap()
+    key_exists = False
+    if session_key:
+        try:
+            key_exists = conn.execute(
+                "SELECT 1 FROM meta WHERE key = ?",
+                (session_key,)).fetchone() is not None
+        except sqlite3.Error:
+            key_exists = False
+    effective = cap if key_exists else cap - 1
+    if convention_family_key_count(conn) <= effective:
+        return
+    # PRR-007: the prune runs on a DEDICATED short-timeout connection to
+    # the SAME database file the caller holds — resolve that file from
+    # the caller (PRAGMA database_list) rather than assuming the frozen
+    # STORE_PATH, so test seams and alternate callers stay correct.
+    db_file = ""
+    try:
+        for _seq, _name, _file in conn.execute("PRAGMA database_list"):
+            if _name == "main" and _file:
+                db_file = _file
+                break
+    except sqlite3.Error:
+        db_file = ""
+    if not db_file:
+        return
+    now = _time.time()
+    cutoff = now - SENTINEL_SWEEP_DAYS_DEFAULT * 86400.0
+    token = _acquire_maintenance_lock_with_liveness()
+    if token is None:
+        return
+    prune_conn = None
+    try:
+        # PRR-007: a dedicated short-timeout connection bounds the
+        # maintenance-lock hold — under WAL contention the prune skips
+        # (busy timeout ~1s) instead of pinning the lock for the
+        # caller's 5s window.
+        uri = Path(db_file).resolve().as_uri() + "?mode=rw"
+        try:
+            prune_conn = sqlite3.connect(uri, uri=True, timeout=1.0)
+        except sqlite3.Error:
+            return
+        try:
+            prune_conn.execute("BEGIN IMMEDIATE")
+            try:
+                _prune_convention_meta_conn(
+                    prune_conn, cutoff_epoch=cutoff,
+                    current_session=current_session, now_epoch=now,
+                    row_cap=effective)
+                prune_conn.commit()
+            except BaseException:
+                try:
+                    prune_conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
+        finally:
+            prune_conn.close()
+    except (sqlite3.Error, OSError):
+        # Fail-open: the counter write below proceeds regardless.
+        pass
+    finally:
+        _release_named_lock("maintenance", token)
+
+
 def cmd_hermes_convention(
     conn: sqlite3.Connection, *, payload: dict[str, object]
 ) -> int:
@@ -2136,6 +2234,21 @@ def cmd_hermes_convention(
                     (f"hermes_pending_failure_{session}",),
                 )
         else:
+            # Issue #446 (items 1+2): bound the convention families from
+            # the ONLY live writer, BEFORE the counter transaction — a
+            # post-write prune would never see a current LEGACY row (the
+            # writer itself upgrades legacy rows on increment), leaving
+            # the retain-and-upgrade rule unreachable for the hermes id
+            # space, and a Hermes-only host (no launcher, no sweep) had
+            # no bound at all. Best-effort and fail-open: any failure
+            # here is swallowed so the counter write below is unaffected
+            # (the same contract as the sweep's meta phase).
+            key = f"hermes_convention_count_{session}"
+            try:
+                _maybe_prune_convention_rows(conn, current_session=session,
+                                             session_key=key)
+            except Exception:
+                pass
             # Issue #128 (release 0.144.0): the counter value is the canonical
             # JSON shape {"count": N, "last_seen": <ISO-Z>} so the sweep can
             # age-prune stale sessions. The read-parse-write runs inside ONE
@@ -2143,7 +2256,6 @@ def cmd_hermes_convention(
             # replacing it with Python-side parsing must not lose concurrent
             # ring increments), and legacy bare-integer values upgrade in
             # place. Malformed values parse as 0 (schema_meta law).
-            key = f"hermes_convention_count_{session}"
             from schema_meta import (  # noqa: PLC0415
                 convention_count_value,
                 parse_convention_count,

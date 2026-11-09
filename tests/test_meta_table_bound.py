@@ -186,7 +186,7 @@ HERMES_FRESH = "hermes_convention_count_11111111-2222-4333-8444-55556666778c"
 HERMES_LEGACY_INT = "hermes_convention_count_11111111-2222-4333-8444-55556666778e"
 HERMES_MALFORMED = "hermes_convention_count_11111111-2222-4333-8444-55556666778f"
 CURRENT_SESSION = "11111111-2222-4333-8444-5555666677f0"
-HERMES_CURRENT_LEGACY = f"hermes_convention_count_{CURRENT_SESSION}"
+LAUNCHER_CURRENT_LEGACY = f"convention_count_sess_{CURRENT_SESSION}"
 MALFORMED_VALUE = "not-json{"
 WRONG_TYPED_JSON = '{"count":"x","last_seen":5}'
 NEAR_MISS_KEYS = (
@@ -197,7 +197,7 @@ NEAR_MISS_KEYS = (
 UNRELATED_KEYS = ("schema_version", "last_backup", "unrelated_note")
 
 REMOVED_KEYS = (LEGACY_PLAIN, LEGACY_SESS, HERMES_STALE, HERMES_LEGACY_INT)
-RETAINED_KEYS = (HERMES_FRESH, HERMES_MALFORMED, HERMES_CURRENT_LEGACY)
+RETAINED_KEYS = (HERMES_FRESH, HERMES_MALFORMED, LAUNCHER_CURRENT_LEGACY)
 
 
 def _is_convention_family(key: str) -> bool:
@@ -246,6 +246,7 @@ _STRIP_ENV = (
     "ZMEM_INJECT_FLOOR_LEX", "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_MODELS_DIR",
     "ZMEM_SESSION", "ZMEM_SESSION_ID", "ZMEM_REMOTE_URL", "ZMEM_AUTO_REKEY",
     "ZMEM_HERMES_CONVENTION_EXISTING_ONLY", "ZMEM_CONVENTION_INTERVAL",
+    "ZMEM_CONVENTION_ROW_CAP",
     "CLAUDE_SESSION_ID", "ZCODE_SESSION_ID", "ZMEM_BACKUP_DIR",
     "CLAUDE_PLUGIN_DATA", "ZCODE_PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT",
     "ZCODE_PLUGIN_ROOT", "PLUGIN_ROOT", "PLUGIN_DATA",
@@ -328,8 +329,14 @@ class MetaTableBoundBase(unittest.TestCase):
             HERMES_MALFORMED: MALFORMED_VALUE,
             # 7: legacy integer for the CURRENT session (named by ZMEM_SESSION
             # in the sweep subprocess) — retained AND upgraded in the real
-            # run; byte-identical '9' in --dry-run.
-            HERMES_CURRENT_LEGACY: "9",
+            # run; byte-identical '9' in --dry-run. CHECK_WRONG amend (issue
+            # filed #446 AC1 / plan-critic r1 finding 1): the pairing is now
+            # PRODUCTION-SHAPED for the sweep surface — the retired hook-era
+            # writer keyed convention_count_sess_<ZMEM_SESSION>, exactly this
+            # shape; the hermes-family pairing (hermes payload session id vs
+            # hermes_convention_count_<sid>) is production-covered end-to-end
+            # by HermesProductionBoundTest below through the CLI entry.
+            LAUNCHER_CURRENT_LEGACY: "9",
             # 8: unrelated meta rows — byte-identical after.
             "schema_version": "19",
             "last_backup": "x",
@@ -431,6 +438,15 @@ class MetaSweepTest(MetaTableBoundBase):
                                 "the corrupt-but-shaped row must be counted "
                                 f"unparseable; stderr: {r.stderr!r}")
 
+    # NOTE (APPLIED, CHECK_WRONG amend — issue #446 (filed AC1) / plan-critic r1
+    # finding 1): the group-7 pairing in this leg (and its --dry-run twin
+    # below) was SYNTHETIC at first freeze (a hermes-prefixed key paired
+    # with ZMEM_SESSION — a pairing production never produced). It is now
+    # PRODUCTION-SHAPED for the sweep surface: the retired hook-era writer
+    # keyed convention_count_sess_<ZMEM_SESSION>, exactly the seeded shape.
+    # The hermes-family production pairing (payload session id vs
+    # hermes_convention_count_<sid>) is pinned end-to-end by
+    # HermesProductionBoundTest below through the real CLI entry.
     def test_sweep_prunes_and_upgrades_convention_meta(self):
         """DISCRIMINATING — at base every convention row survives, nothing
         is upgraded, and no summary line exists."""
@@ -469,7 +485,7 @@ class MetaSweepTest(MetaTableBoundBase):
         # The CURRENT-SESSION legacy row: RETAINED and UPGRADED to canonical
         # JSON with count UNCHANGED (9) and last_seen a fresh ISO-Z stamp
         # (#128 AC2 / REVISION 3) — it must NOT stay byte-identical '9'.
-        raw = meta.get(HERMES_CURRENT_LEGACY)
+        raw = meta.get(LAUNCHER_CURRENT_LEGACY)
         self.assertNotEqual(
             raw, "9",
             f"C4: the current-session legacy row must be UPGRADED to "
@@ -809,7 +825,7 @@ class CadenceSummaryTest(MetaTableBoundBase):
             f"'{EXPECTED_SUMMARY_FRAGMENT}'. Observed output:\n{combined!r}")
         # The current-session legacy row was upgraded by the cadence's sweep
         # step (session threaded from the cadence's session id).
-        raw = self._meta_values().get(HERMES_CURRENT_LEGACY)
+        raw = self._meta_values().get(LAUNCHER_CURRENT_LEGACY)
         self.assertNotEqual(
             raw, "9",
             f"C4 cadence: the current-session legacy row must be upgraded "
@@ -1293,6 +1309,428 @@ class VerifyHookParityTest(MetaTableBoundBase):
             f"storelib resolvable, the hook copy must STILL take the NONZERO "
             f"path and emit the continue nudge. Observed the empty path "
             f"instead. stdout:\n{r.stdout!r}\nstderr:\n{r.stderr!r}")
+
+
+# ============================================================================
+# Issue #446 (filed AC1/AC2, contract D): production-shaped retention pairing and
+# hermes-side bounding, both proven through the REAL production writer entry
+# `store.py hermes-convention` (the same stdin-payload argv the Hermes hook
+# fires — cmd_hermes_convention in storelib/cli.py). The implementer bounds
+# the meta prune at a row-count CAP (target: 64 hermes convention rows per
+# host, per the #446 AC2 "bound documented for that host profile" contract)
+# and threads current_session = the hermes payload session id, so a LIVE
+# hermes session's LEGACY bare-int row is RETAINED and UPGRADED (never
+# deleted-and-recreated at count=1). Frozen at base c78a2d5: the production
+# entry writes/updates the counter but never prunes, so the bound leg fails
+# at base (row count stays at the seeded census size).
+# ============================================================================
+
+
+class HermesProductionBoundTest(MetaTableBoundBase):
+    """#446 (filed AC1) legs (1) and (2): the production hermes-convention entry
+    BOUNDS hermes_convention_count_* rows and retain-and-upgrades the LIVE
+    session's legacy row."""
+
+    # The documented host-profile bound (issue #446 AC2 / trace contract D):
+    # target cap 64 convention rows. The pinned assertion allows CAP + SLACK
+    # (slack 8) so a newest-N or TTL implementation both satisfy the bound.
+    CAP = 64
+    SLACK = 8
+    # Enough stale sessions to exceed any plausible cap AND to be TTL-stale
+    # (legacy bare ints are prunable at their first post-upgrade sweep under
+    # the prune_convention_meta law regardless of the cutoff).
+    STALE_SESSIONS = 200
+    LIVE_SESSION = "99998888-7777-6666-5555-4444333322f0"
+    LIVE_KEY = f"hermes_convention_count_{LIVE_SESSION}"
+    STALE_JSON_LAST_SEEN = "2026-01-01T00:00:00Z"  # far older than any TTL
+
+    def _convention_rows(self) -> dict:
+        # PRR-020: the census counts the FULL convention family (all
+        # CONVENTION_META_PREFIXES), not just the hermes prefix — the cap
+        # spans every family and the bound legs must too.
+        return {k: v for k, v in self._meta_values().items()
+                if k.startswith("convention_count_")
+                or k.startswith("hermes_convention_count_")}
+
+    def _seed_census(self, live_value: str = "5") -> None:
+        """STALE_SESSIONS non-current legacy/stale-JSON rows plus the LIVE
+        session's LEGACY bare-int row, seeded by direct sqlite INSERT (the
+        same seeding channel as the C4 census)."""
+        stale_pairs = [
+            (f"hermes_convention_count_99998888-7777-6666-5555-"
+             f"{4333220000 + i:010d}", "1")
+            if i % 2 == 0 else
+            (f"hermes_convention_count_99998888-7777-6666-5555-"
+             f"{4333220000 + i:010d}",
+             json.dumps({"count": 2, "last_seen": self.STALE_JSON_LAST_SEEN}))
+            for i in range(self.STALE_SESSIONS)
+        ]
+        conn = sqlite3.connect(str(self.store))
+        try:
+            conn.executemany(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                stale_pairs + [(self.LIVE_KEY, live_value)])
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _drive_production_entry(self) -> subprocess.CompletedProcess:
+        """Run the REAL hidden CLI the Hermes hook fires: one JSON payload on
+        stdin carrying the live payload session id."""
+        payload = json.dumps({"payload": {"session_id": self.LIVE_SESSION}})
+        return self._run("hermes-convention", stdin=payload)
+
+    def test_production_entry_bounds_convention_row_count(self):
+        """AC6/AC7 leg (1): seeding many stale hermes sessions' rows then
+        running the production entry BOUNDS the table. Frozen at base: the
+        production entry never prunes, so every seeded row survives."""
+        self._seed_census()
+        before = len(self._convention_rows())
+        self.assertGreaterEqual(
+            before, self.STALE_SESSIONS,
+            f"fixture sanity: {self.STALE_SESSIONS} convention rows must be "
+            f"seeded before the drive; observed {before}")
+        r = self._drive_production_entry()
+        self.assertEqual(r.returncode, 0,
+                         f"hermes-convention must exit 0 (a best-effort "
+                         f"prune must never break the write); observed:\n"
+                         f"{_excerpt(r)}")
+        after = len(self._convention_rows())
+        bound = self.CAP + self.SLACK
+        self.assertLessEqual(
+            after, bound,
+            f"filed #446 AC2 (frozen check C7): running the production hermes-convention entry on a "
+            f"host holding {before} hermes convention rows must bound the "
+            f"table to <= cap {self.CAP} + slack {self.SLACK} = {bound} "
+            f"rows; observed {after} rows surviving (no hermes-side bound "
+            f"ran).")
+
+    def test_live_legacy_row_retained_and_upgraded(self):
+        """AC6 leg (2): a LIVE hermes session's LEGACY bare-int row
+        (seeded directly in sqlite as '5') is RETAINED and UPGRADED to the
+        canonical JSON shape with the count preserved (then incremented by
+        the write) — NOT deleted. A wrong current_session threading deletes
+        the legacy row (non-current legacy = stale) and the write recreates
+        it at count=1, which the count==6 pin catches."""
+        self._seed_census(live_value="5")
+        r = self._drive_production_entry()
+        self.assertEqual(r.returncode, 0,
+                         f"hermes-convention must exit 0; observed:\n"
+                         f"{_excerpt(r)}")
+        rows = self._convention_rows()
+        self.assertIn(
+            self.LIVE_KEY, rows,
+            f"filed #446 AC1 (frozen check C6): the LIVE session's legacy row must be RETAINED by "
+            f"the production entry's prune (current_session = the hermes "
+            f"payload session id); it was DELETED. Surviving rows: "
+            f"{len(rows)}")
+        try:
+            value = json.loads(rows[self.LIVE_KEY])
+        except json.JSONDecodeError as exc:
+            self.fail(
+                f"filed #446 AC1 (frozen check C6): the retained legacy row must be UPGRADED to the "
+                f"canonical JSON shape; observed unparseable value "
+                f"{rows[self.LIVE_KEY]!r} ({exc}).")
+        self.assertIsInstance(value, dict,
+                              f"upgraded value must be a JSON object; "
+                              f"observed {rows[self.LIVE_KEY]!r}")
+        self.assertEqual(
+            value.get("count"), 6,
+            f"filed #446 AC1 (frozen check C6): the live session's legacy '5' must be preserved "
+            f"ACROSS the prune and incremented to count==6 by the write "
+            f"(a deleted-then-recreated row reads count==1 — the retention "
+            f"failure). Observed {value!r} (raw "
+            f"{rows[self.LIVE_KEY]!r}).")
+        self.assertRegex(str(value.get("last_seen") or ""), ISO_Z_RE,
+                         f"upgraded last_seen must be ISO-8601 Z; observed "
+                         f"{value!r}")
+
+    def test_fresh_rows_above_cap_bounded_malformed_retained(self):
+        """AC6 leg (3) — CHECK_WRONG amend (plan-critic r1 finding 6): CAP
+        must be a NUMERIC bound on the DELETABLE population, not a TTL
+        trigger. A census of FRESH non-current JSON rows (last_seen ~now,
+        TTL-immune) exceeding the cap is bounded by row age (oldest
+        pruned); malformed rows are NEVER deleted (#128 operator-inspection
+        contract) and are excluded from the cap arithmetic. At base the
+        production entry never prunes: every row survives -> RED."""
+        fresh_n = 100
+        malformed_n = 3
+        now_iso = _now_iso_z()
+        pairs = [
+            (f"hermes_convention_count_bbbbcccc-dddd-eeee-ffff-"
+             f"{2000000000 + i:010d}",
+             json.dumps({"count": 2, "last_seen": now_iso}))
+            for i in range(fresh_n)
+        ]
+        malformed_keys = [
+            f"hermes_convention_count_bbbbcccc-dddd-eeee-ffff-"
+            f"malformed-{i}" for i in range(malformed_n)
+        ]
+        pairs += [(k, MALFORMED_VALUE) for k in malformed_keys]
+        pairs.append((self.LIVE_KEY, "5"))
+        conn = sqlite3.connect(str(self.store))
+        try:
+            conn.executemany(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                pairs)
+            conn.commit()
+        finally:
+            conn.close()
+        r = self._drive_production_entry()
+        self.assertEqual(r.returncode, 0,
+                         f"hermes-convention must exit 0 (best-effort prune "
+                         f"never breaks the write); observed:\n"
+                         f"{_excerpt(r)}")
+        rows = self._convention_rows()
+        bound = self.CAP + self.SLACK
+        self.assertLessEqual(
+            len(rows), bound,
+            f"filed #446 AC1 (frozen check C6): a FRESH census of {fresh_n} TTL-immune non-current "
+            f"rows must still be bounded to <= cap {self.CAP} + slack "
+            f"{self.SLACK} = {bound} (the cap is a numeric bound on the "
+            f"deletable population, not a TTL trigger); observed "
+            f"{len(rows)} rows surviving.")
+        for key in malformed_keys:
+            self.assertIn(
+                key, rows,
+                f"filed #446 AC1 (frozen check C6): malformed row {key!r} must be RETAINED (never "
+                f"deleted, #128 operator-inspection contract); observed "
+                f"survivors: {sorted(rows)[:10]}...")
+        self.assertIn(self.LIVE_KEY, rows,
+                      "the LIVE session's row must survive the cap prune")
+        self.assertEqual(json.loads(rows[self.LIVE_KEY]).get("count"), 6,
+                         "the live legacy '5' must be retained-and-upgraded "
+                         "then incremented to 6 (same discriminator as "
+                         "leg 2, under cap pressure)")
+
+    def test_malformed_current_counted_unparseable_and_cap_excluded(self):
+        """PRR-009 (CHECK_WRONG amend): a MALFORMED CURRENT row is (a)
+        counted in the returned unparseable tally per the core docstring,
+        (b) retained, and (c) excluded from cap arithmetic — inverting
+        the `kind != "malformed"` gate (charging it a slot) or dropping
+        the unparseable increment fails this leg."""
+        if str(SCRIPTS_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS_DIR))
+        for _k in [k for k in list(sys.modules)
+                   if k == "storelib" or k.startswith("storelib.")]:
+            del sys.modules[_k]
+        from storelib.backup import _prune_convention_meta_conn
+        conn = sqlite3.connect(str(self.store))
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                (self.LIVE_KEY, MALFORMED_VALUE))
+            now_iso = _now_iso_z()
+            for i in range(4):
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                    (f"hermes_convention_count_mc{i:04d}",
+                     json.dumps({"count": 1, "last_seen": now_iso})))
+            conn.commit()
+            res = _prune_convention_meta_conn(
+                conn, cutoff_epoch=0.0,
+                current_session=self.LIVE_SESSION, now_epoch=1_800_000_000.0,
+                row_cap=1)
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(
+            res, (3, 2, 1),
+            f"PRR-009: malformed-current census must be removed=3 "
+            f"(4 fresh - 1 kept at cap 1 with the malformed current "
+            f"excluded), retained=2 (kept fresh + malformed current), "
+            f"unparseable=1 (the malformed CURRENT row is counted); "
+            f"observed {res!r}")
+        rows = self._convention_rows()
+        self.assertIn(self.LIVE_KEY, rows,
+                      "the malformed current row must be RETAINED")
+        self.assertEqual(rows[self.LIVE_KEY], MALFORMED_VALUE,
+                         "the malformed current row must stay byte-identical")
+
+    # ---- wave-2 legs (plan-critic r2 findings 2+3+6); fixtures
+    # corrected wave-3 (r3 findings N3-1/N3-2/N3-3): timestamps are
+    # TTL-FRESH (relative to the test's UTC now — frozen 2026-01..04
+    # stamps were beyond the 7-day TTL and would be deleted before cap
+    # survivor selection, making the legs post-fix-impossible), and keys
+    # are ANTI-CORRELATED with time (newest stamp <-> smallest key) so a
+    # key-only sorter cannot pass. ----
+
+    def _env_with_cap(self, cap: int) -> dict:
+        env = dict(self.env)
+        env["ZMEM_CONVENTION_ROW_CAP"] = str(cap)
+        return env
+
+    @staticmethod
+    def _ttl_fresh_stamps(n: int, hours_back: int = 2) -> list:
+        """n DISTINCT ISO-Z stamps ascending in time, all inside the
+        sweep-default 7-day TTL (r3 N3-1): stamp i is now -
+        (hours_back*(n-i)) hours."""
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        return [
+            (now - timedelta(hours=hours_back * (n - i))).strftime(
+                "%Y-%m-%dT%H:%M:%SZ")
+            for i in range(n)
+        ]
+
+    def _seed_ordered_census(self, stamps, malformed_n=2):
+        """Distinct TTL-fresh last_seen rows + live legacy '5' +
+        malformed. Keys are ANTI-CORRELATED with time (r3 N3-2): the
+        NEWEST stamp carries the SMALLEST key, so only a
+        (bucket, last_seen, key) sorter picks the right survivors.
+        Returns (keys_by_age_oldest_first, malformed_keys)."""
+        n = len(stamps)
+        # key index runs OPPOSITE to time: oldest stamp -> largest key
+        keys = [
+            f"hermes_convention_count_dddd0000-eeee-ffff-"
+            f"{9000000000 + (n - 1 - i):010d}" for i in range(n)
+        ]
+        pairs = [
+            (k, json.dumps({"count": 2, "last_seen": ts}))
+            for k, ts in zip(keys, stamps)
+        ]
+        malformed_keys = [
+            f"hermes_convention_count_dddd0000-eeee-ffff-bad-{i}"
+            for i in range(malformed_n)
+        ]
+        pairs += [(k, MALFORMED_VALUE) for k in malformed_keys]
+        pairs.append((self.LIVE_KEY, "5"))
+        conn = sqlite3.connect(str(self.store))
+        try:
+            conn.executemany(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                pairs)
+            conn.commit()
+        finally:
+            conn.close()
+        return keys, malformed_keys
+
+    def test_cap_prunes_oldest_first_deterministic(self):
+        """Wave-2 leg (r2 finding 3): with a reduced cap, deletion is
+        deterministic oldest-first — distinct last_seen rows are pruned
+        oldest first, exactly the NEWEST (cap - 1) fresh rows survive
+        alongside the live row (which consumes one slot, undeletable),
+        and malformed rows stay byte-identical. At base nothing is
+        pruned, so the exact survivor-set assertion fails."""
+        stamps = self._ttl_fresh_stamps(10)  # ascending, all inside TTL
+        keys, malformed_keys = self._seed_ordered_census(stamps)
+        cap = 4
+        r = self._run(
+            "hermes-convention",
+            stdin=json.dumps({"payload": {"session_id": self.LIVE_SESSION}}),
+            env=self._env_with_cap(cap))
+        self.assertEqual(r.returncode, 0,
+                         f"hermes-convention must exit 0; stderr tail: "
+                         f"{r.stderr[-300:]!r}")
+        meta = self._meta_values()
+        # Accounting law: live row consumes 1 of 4 slots (undeletable);
+        # the 3 NEWEST stamps survive. Keys are anti-correlated with
+        # time, so the survivors are the 3 SMALLEST key VALUES, which
+        # sit at list positions keys[-3:] (the newest stamps' entries) —
+        # a key-only sorter keeps the 3 largest keys and fails here.
+        # (wave-4 fix: the wave-3 slice wrongly expected keys[:3].)
+        expected_survivors = (
+            set(keys[-3:]) | {self.LIVE_KEY} | set(malformed_keys))
+        observed = {k for k in meta
+                    if k.startswith("hermes_convention_count_")}
+        self.assertEqual(
+            observed, expected_survivors,
+            f"filed #446 AC1 (check C6) wave-2: cap {cap} with a live current row must "
+            f"retain exactly the 3 NEWEST fresh rows + the live row + the "
+            f"malformed rows (oldest-first deletion, key tie-break); "
+            f"observed survivors {sorted(observed)!r}, expected "
+            f"{sorted(expected_survivors)!r}")
+        for k in malformed_keys:
+            self.assertEqual(
+                meta.get(k), MALFORMED_VALUE,
+                f"malformed row {k!r} must stay BYTE-IDENTICAL (never "
+                f"rewritten); observed {meta.get(k)!r}")
+
+    def test_cap_tie_broken_by_key(self):
+        """Wave-2 leg (r2 finding 3): same-timestamp rows tie-break by
+        key lexicographic (oldest = smallest key deleted first) — the
+        one-second timestamp resolution makes the tie-breaker
+        load-bearing."""
+        stamps = [self._ttl_fresh_stamps(4)[-1]] * 4  # one identical stamp
+        keys, _ = self._seed_ordered_census(stamps, malformed_n=0)
+        cap = 3  # live consumes 1; 2 same-stamp fresh survive
+        r = self._run(
+            "hermes-convention",
+            stdin=json.dumps({"payload": {"session_id": self.LIVE_SESSION}}),
+            env=self._env_with_cap(cap))
+        self.assertEqual(r.returncode, 0,
+                         f"hermes-convention must exit 0; stderr tail: "
+                         f"{r.stderr[-300:]!r}")
+        meta = self._meta_values()
+        expected = set(sorted(keys)[-2:]) | {self.LIVE_KEY}
+        observed = {k for k in meta
+                    if k.startswith("hermes_convention_count_")}
+        self.assertEqual(
+            observed, expected,
+            f"filed #446 AC1 (check C6) wave-2: a same-timestamp tie must break by KEY "
+            f"(largest keys survive); observed {sorted(observed)!r}, "
+            f"expected {sorted(expected)!r}")
+
+    def test_second_call_steady_state_byte_identical(self):
+        """Wave-3 leg (r3 finding N3-3, replacing the wave-2 shape):
+        steady state under a PERSISTENT above-cap retained population —
+        70 malformed rows (never deletable) + 10 TTL-fresh parseable rows
+        + the live row keep the retained total (81) above cap 64, so the
+        SECOND production call genuinely re-enters the classification
+        pass — and must write NOTHING except the live row's own counter
+        increment (idempotence of the disclosed steady-state path)."""
+        malformed_n = 70
+        fresh_stamps = self._ttl_fresh_stamps(10)
+        fresh_keys = [
+            f"hermes_convention_count_dddd0000-eeee-ffff-"
+            f"steady-{i:010d}" for i in range(10)
+        ]
+        pairs = [
+            (k, json.dumps({"count": 2, "last_seen": ts}))
+            for k, ts in zip(fresh_keys, fresh_stamps)
+        ]
+        pairs += [
+            (f"hermes_convention_count_dddd0000-eeee-ffff-steadbad-{i}",
+             MALFORMED_VALUE)
+            for i in range(malformed_n)
+        ]
+        pairs.append((self.LIVE_KEY, "5"))
+        conn = sqlite3.connect(str(self.store))
+        try:
+            conn.executemany(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                pairs)
+            conn.commit()
+        finally:
+            conn.close()
+        r1 = self._drive_production_entry()
+        self.assertEqual(r1.returncode, 0,
+                         f"first entry must exit 0; stderr tail: "
+                         f"{r1.stderr[-300:]!r}")
+        snapshot = self._meta_values()
+        retained = len(self._convention_rows())
+        self.assertGreater(
+            retained, self.CAP,
+            f"fixture sanity: the retained population ({retained}) must "
+            f"stay ABOVE cap {self.CAP} after the first call so the "
+            f"second call re-enters the classification pass")
+        r2 = self._drive_production_entry()
+        self.assertEqual(r2.returncode, 0,
+                         f"second entry must exit 0; stderr tail: "
+                         f"{r2.stderr[-300:]!r}")
+        after = self._meta_values()
+        self.assertEqual(
+            {k: v for k, v in after.items() if k != self.LIVE_KEY},
+            {k: v for k, v in snapshot.items() if k != self.LIVE_KEY},
+            "filed #446 AC1 (check C6) wave-3: steady state — the second production call "
+            "must leave every meta row byte-identical apart from the live "
+            "row's own counter increment (no prune churn, no upgrades, "
+            "no rewrites)")
+        rows = self._convention_rows()
+        self.assertEqual(
+            json.loads(rows[self.LIVE_KEY]).get("count"), 7,
+            "second-call sanity: the live row's own counter advanced 6->7 "
+            "(writer contract); everything else stayed byte-identical")
 
 
 if __name__ == "__main__":

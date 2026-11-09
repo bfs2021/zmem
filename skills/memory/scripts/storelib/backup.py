@@ -450,40 +450,64 @@ CONVENTION_META_PREFIXES = (
 last_meta_prune: "tuple[int, int, int] | None" = None
 
 
-def prune_convention_meta(store_path, *, cutoff_epoch: float,
-                          current_session: str,
-                          dry_run: bool = False,
-                          now_epoch: "float | None" = None) -> "tuple[int, int, int] | None":
-    """Bound the per-session convention-counter meta rows (issue #128).
+CONVENTION_ROW_CAP_DEFAULT = 64
 
-    Deletes/updates ONLY keys under CONVENTION_META_PREFIXES (true-prefix
-    predicates — never a LIKE wildcard match), in one transaction:
 
-    - non-current LEGACY integer rows are stale by construction (no age
-      evidence, no live writer for the retired families) -> removed;
-    - non-current JSON rows whose ``last_seen`` epoch is strictly older than
-      ``cutoff_epoch`` -> removed (strict ``<``: a row exactly at the cutoff
-      survives);
-    - the CURRENT session's rows are always retained, and a retained legacy
-      row is UPGRADED in the same transaction to the canonical JSON shape
-      with its count UNCHANGED and ``last_seen`` = the injected now
-      (#128 AC2; a dry run returns the same counts and leaves every byte);
-    - malformed JSON rows are retained and counted ``unparseable`` — never
-      deleted (an operator must be able to inspect a corrupted counter).
+def convention_row_cap() -> int:
+    """The per-host bound on retained PARSEABLE convention rows (issue
+    #446 AC2). Env-tunable via ZMEM_CONVENTION_ROW_CAP; an invalid,
+    negative, or unparsable value falls back to the default (the
+    ZMEM_SENTINEL_SWEEP_DAYS finite-check discipline; 0 is a valid
+    aggressive setting — everything deletable goes on every call)."""
+    raw = os.environ.get("ZMEM_CONVENTION_ROW_CAP", "")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return CONVENTION_ROW_CAP_DEFAULT
+    if value < 0:
+        return CONVENTION_ROW_CAP_DEFAULT
+    return value
 
-    Returns ``(removed, retained, unparseable)``, or ``None`` when the store
-    is absent, locked, unreadable, not a database, missing its meta table,
-    or stamped with a schema version newer than this client supports (skip:
-    the sweep must never break on, or touch, a store it cannot safely open).
-    Mid-transaction sqlite errors roll the transaction back and re-raise.
-    The dry-run arm opens through ``storelib.readonly.open_readonly`` — a
-    bare ``?mode=ro`` open is NOT side-effect-free on a WAL store (it
-    materializes ``-wal``/``-shm`` residue that later sidecar-free readers
-    trip over; the readonly module exists precisely for this, issue #345).
-    The real-run arm opens RAW (URI mode=rw — never ``connect()``: the
-    pre-connect sweep must not create stores, rewrite WAL headers, migrate,
-    or rekey) and the schema gate runs INSIDE the write transaction so a
-    concurrent migration cannot race the check."""
+
+def convention_family_key_count(conn) -> int:
+    """Key-only family COUNT over the meta PRIMARY KEY (issue #446): the
+    per-hermes-convention-call trigger probe. Prefix RANGE predicates
+    (never substr, never value parsing) so the index serves the scan;
+    deduped by key because 'convention_count_' is itself a prefix of
+    'convention_count_sess_'."""
+    seen: "set[str]" = set()
+    for prefix in CONVENTION_META_PREFIXES:
+        upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        for row in conn.execute(
+                "SELECT key FROM meta WHERE key >= ? AND key < ?",
+                (prefix, upper)):
+            if row[0] not in seen:
+                seen.add(row[0])
+    return len(seen)
+
+
+def _prune_convention_meta_conn(conn, *, cutoff_epoch: float,
+                                current_session: str,
+                                now_epoch: "float | None" = None,
+                                row_cap: "int | None" = None,
+                                dry_run: bool = False
+                                ) -> "tuple[int, int, int] | None":
+    """Connection-agnostic core (issue #446). The CALLER owns the
+    transaction on real runs (BEGIN IMMEDIATE before, commit/rollback
+    after); a dry run only reads. Returns (removed, retained,
+    unparseable), or None when the schema gate refuses (a pre-init or
+    newer-than-supported store — the documented skip).
+
+    row_cap (issue #446 accounting law) bounds the RETAINED parseable
+    population: a parseable CURRENT row consumes one slot while
+    remaining undeletable; retained parseable non-current rows fill the
+    rest, deleted oldest first by (last_seen, key) — one-second
+    timestamp resolution makes the key tie-breaker load-bearing.
+    Non-current legacy rows never survive the TTL pass (stale by
+    construction), so the cap order never sees a legacy bucket.
+    Malformed rows are NEVER deleted (#128 operator-inspection
+    contract), are EXCLUDED from cap arithmetic, and are counted
+    unparseable."""
     from schema_meta import (
         SUPPORTED_SCHEMA_VERSION,
         classify_convention_count,
@@ -491,137 +515,220 @@ def prune_convention_meta(store_path, *, cutoff_epoch: float,
         convention_count_value,
         parse_convention_count,
     )
-    store_path = Path(store_path)
-    if not store_path.is_file():
-        return None
-    handle = None
-    if dry_run:
-        # Sidecar-free read-only open (issue #345 law; review round PRR-005:
-        # a bare mode=ro open materializes -wal/-shm on a WAL store). A
-        # residue/copy failure raises ReadOnlyStoreError (a RuntimeError, NOT
-        # sqlite3.Error) — the caller's fail-open handler skips the meta
-        # phase exactly like every other unopenable-store arm, so it is in
-        # this catch tuple by contract (delta review r1).
-        from storelib.readonly import open_readonly
-        try:
-            handle = open_readonly(store_path)
-        except (sqlite3.Error, OSError, RuntimeError):
-            return None
-        conn = handle.conn
-    else:
-        uri = store_path.resolve().as_uri() + "?mode=rw"
-        try:
-            conn = sqlite3.connect(uri, uri=True, timeout=1.0)
-        except sqlite3.Error:
-            return None
     try:
-        conn.row_factory = sqlite3.Row
-        if not dry_run:
-            # Locked, garbage, or truncated stores fail HERE (OperationalError
-            # / DatabaseError) — the documented None-skip arms, not a raise
-            # (delta review r1: the BEGIN IMMEDIATE ran outside the skip
-            # contract and the docstring lied about locked/unreadable).
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-            except sqlite3.Error:
-                return None
-        # Schema gate inside the transaction (race-free vs a concurrent
-        # migration); a missing stamp is a pre-init store — leave it alone.
-        # A store with NO meta table (pre-init) or a garbage file raises on
-        # this SELECT: both are the documented None-skip arms, not errors
-        # (review round PRR-017 — the skip must not masquerade as a crash
-        # the caller's blanket handler hides).
-        try:
-            stamp = conn.execute(
-                "SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-        except sqlite3.Error:
-            if not dry_run:
-                conn.rollback()
-            return None
-        try:
-            version = int(stamp[0]) if stamp else None
-        except (TypeError, ValueError):
-            version = None
-        if version is None or version > SUPPORTED_SCHEMA_VERSION:
-            if not dry_run:
-                conn.rollback()
-            return None
+        stamp = conn.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    except sqlite3.Error:
+        return None
+    try:
+        version = int(stamp[0]) if stamp else None
+    except (TypeError, ValueError):
+        version = None
+    if version is None or version > SUPPORTED_SCHEMA_VERSION:
+        return None
 
-        now = time.time() if now_epoch is None else float(now_epoch)
-        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-        current_session = (current_session or "").strip()
+    now = time.time() if now_epoch is None else float(now_epoch)
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+    current_session = (current_session or "").strip()
 
-        removed = retained = unparseable = 0
-        rows: "dict[str, object]" = {}
-        for prefix in CONVENTION_META_PREFIXES:
-            for row in conn.execute(
-                    "SELECT key, value FROM meta WHERE substr(key,1,?) = ?",
-                    (len(prefix), prefix)):
-                # Dedupe by key: 'convention_count_' is itself a prefix of
-                # 'convention_count_sess_', so that family's rows match TWO
-                # prefix scans -- without the dict they would be classified
-                # (and deleted) twice.
-                rows[row["key"]] = row["value"]
-        for key, value in rows.items():
-            suffix = None
-            for prefix in sorted(CONVENTION_META_PREFIXES, key=len,
-                                  reverse=True):
-                if key.startswith(prefix):
-                    suffix = key[len(prefix):]
-                    break
-            is_current = bool(current_session) and suffix == current_session
-            kind = classify_convention_count(value)
-            if is_current:
-                retained += 1
-                if kind == "legacy" and not dry_run:
-                    # #128 AC2: upgrade the retained current-session legacy
-                    # row to canonical JSON, count unchanged.
-                    conn.execute(
-                        "UPDATE meta SET value = ? WHERE key = ?",
-                        (convention_count_value(
-                            parse_convention_count(value), now_iso), key))
-                continue
-            if kind == "legacy":
-                # Non-current legacy rows carry no age evidence and no live
-                # writer exists for any family's integer shape -> stale.
+    removed = retained = unparseable = 0
+    current_parseable = 0
+    kept_json: "list[tuple[float, str]]" = []
+    rows: "dict[str, object]" = {}
+    for prefix in CONVENTION_META_PREFIXES:
+        # PRR-006: prefix RANGE predicates (like the trigger count) so the
+        # meta PRIMARY KEY index serves the scan — a substr() prefix match
+        # here forces a full meta-table SCAN on every classification pass.
+        upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        for row in conn.execute(
+                "SELECT key, value FROM meta WHERE key >= ? AND key < ?",
+                (prefix, upper)):
+            # Dedupe by key: 'convention_count_' is itself a prefix of
+            # 'convention_count_sess_', so that family's rows match TWO
+            # prefix scans -- without the dict they would be classified
+            # (and deleted) twice.
+            rows[row[0]] = row[1]
+    for key, value in rows.items():
+        suffix = None
+        for prefix in sorted(CONVENTION_META_PREFIXES, key=len,
+                              reverse=True):
+            if key.startswith(prefix):
+                suffix = key[len(prefix):]
+                break
+        is_current = bool(current_session) and suffix == current_session
+        kind = classify_convention_count(value)
+        if is_current:
+            retained += 1
+            # Implementation-review round 1 finding 1: a MALFORMED
+            # current row is excluded from cap arithmetic like every
+            # other malformed row (the accounting law) — only a
+            # parseable current row consumes one of the row_cap slots.
+            if kind != "malformed":
+                current_parseable += 1
+            else:
+                # PRR-009: the docstring law counts EVERY malformed row
+                # unparseable — a current malformed row is retained and
+                # cap-excluded, and still reported in the census.
+                unparseable += 1
+            if kind == "legacy" and not dry_run:
+                # #128 AC2: upgrade the retained current-session legacy
+                # row to canonical JSON, count unchanged. A current row
+                # is NEVER a cap-deletion candidate (it consumes a slot
+                # and stays), so it never enters kept_json.
+                conn.execute(
+                    "UPDATE meta SET value = ? WHERE key = ?",
+                    (convention_count_value(
+                        parse_convention_count(value), now_iso), key))
+            continue
+        if kind == "legacy":
+            # Non-current legacy rows carry no age evidence and no live
+            # writer exists for any family's integer shape -> stale.
+            removed += 1
+            if not dry_run:
+                conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+            continue
+        if kind == "json":
+            # classify == "json" guarantees last_seen is an exact
+            # canonical timestamp (schema_meta._valid_convention_last_seen,
+            # impl-review round 1 finding 3), so the ISO parse is exact and
+            # a corrupt heartbeat can never fall through to epoch 0.
+            epoch = _parse_iso_to_epoch(convention_count_last_seen(value))
+            if epoch < cutoff_epoch:
                 removed += 1
                 if not dry_run:
                     conn.execute("DELETE FROM meta WHERE key = ?", (key,))
-                continue
-            if kind == "json":
-                # classify == "json" guarantees last_seen is an exact
-                # canonical timestamp (schema_meta._valid_convention_last_seen,
-                # impl-review round 1 finding 3), so the ISO parse is exact and
-                # a corrupt heartbeat can never fall through to epoch 0.
-                epoch = _parse_iso_to_epoch(convention_count_last_seen(value))
-                if epoch < cutoff_epoch:
-                    removed += 1
-                    if not dry_run:
-                        conn.execute("DELETE FROM meta WHERE key = ?", (key,))
-                else:
-                    retained += 1
-                continue
-            # malformed: retained, counted, never deleted
-            retained += 1
-            unparseable += 1
-        if not dry_run:
-            conn.commit()
-        return (removed, retained, unparseable)
-    except sqlite3.Error:
-        if not dry_run:
+            else:
+                retained += 1
+                kept_json.append((epoch, key))
+            continue
+        # malformed: retained, counted, never deleted
+        retained += 1
+        unparseable += 1
+    if row_cap is not None:
+        # PRR-008: the cap pass computes (and reports) the doomed set in
+        # BOTH arms so a dry run's removed/retained predict the real run;
+        # only the DELETEs are guarded by the dry_run flag.
+        slots = row_cap - current_parseable
+        if slots < 0:
+            slots = 0
+        if len(kept_json) > slots:
+            # Oldest-first (last_seen, key) — kept_json holds ONLY
+            # non-current parseable rows (current rows consume slots
+            # and never enter the candidate list).
+            kept_json.sort()
+            doomed = {key for _, key in kept_json[:len(kept_json) - slots]}
+            if not dry_run:
+                for key in doomed:
+                    conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+            removed += len(doomed)
+            retained -= len(doomed)
+    return (removed, retained, unparseable)
+
+
+def prune_convention_meta(store_path, *, cutoff_epoch: float,
+                          current_session: str,
+                          dry_run: bool = False,
+                          now_epoch: "float | None" = None,
+                          row_cap: "int | None" = None
+                          ) -> "tuple[int, int, int] | None":
+    """Bound the per-session convention-counter meta rows (issue #128;
+    issue #446 adds the maintenance-lock serialization and row_cap).
+
+    Deletes/updates ONLY keys under CONVENTION_META_PREFIXES (true-prefix
+    predicates — never a LIKE wildcard match). The real-run arm runs the
+    core in ONE write transaction; the dry-run arm reads through the
+    sidecar-free readonly opener and deletes nothing.
+
+    Maintenance protocol (filed issue #446 AC3): BOTH arms acquire the
+    maintenance lock BEFORE opening the store and release it only AFTER
+    the handle is closed — on Windows even an IDLE open handle blocks a
+    concurrent restore's os.replace of store.sqlite (reproduced:
+    PermissionError WinError 5), so the lock must cover the whole
+    connection lifetime, and the dry-run handle is no exception. A live
+    holder (e.g. restore mid-replacement) makes this SKIP: return None,
+    the same shape as every other unopenable-store arm — fail-open, the
+    sweep's file phases and exit code are unaffected. cmd_backup needs
+    no such serialization: its online SQLite backup is concurrency-safe
+    against writers by design (single-flight backup lock only).
+
+    row_cap passes through to the core (None = TTL-only, the sweep-path
+    behavior; the hermes-convention inline prune passes the cap).
+
+    Returns ``(removed, retained, unparseable)``, or ``None`` when the
+    store is absent, locked, unreadable, not a database, missing its
+    meta table, stamped newer than this client supports, or the
+    maintenance lock is held (skip: the sweep must never break on, or
+    touch, a store it cannot safely open). Mid-transaction sqlite errors
+    roll back and re-raise."""
+    from storelib.schema import (
+        _acquire_maintenance_lock_with_liveness,
+        _release_named_lock,
+    )
+    store_path = Path(store_path)
+    if not store_path.is_file():
+        return None
+    m_token = _acquire_maintenance_lock_with_liveness()
+    if m_token is None:
+        return None
+    try:
+        handle = None
+        conn = None
+        if dry_run:
+            # Sidecar-free read-only open (issue #345 law; review round
+            # PRR-005: a bare mode=ro open materializes -wal/-shm on a
+            # WAL store). A residue/copy failure raises
+            # ReadOnlyStoreError (a RuntimeError, NOT sqlite3.Error) —
+            # the caller's fail-open handler skips the meta phase
+            # exactly like every other unopenable-store arm, so it is
+            # in this catch tuple by contract (delta review r1).
+            from storelib.readonly import open_readonly
             try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
-        raise
-    finally:
-        # close() on a ReadOnlyHandle is idempotent and also removes the
-        # arm-B staging directory (close-then-remove); a bare conn.close()
-        # would leak it (readonly.py contract).
-        if handle is not None:
-            handle.close()
+                handle = open_readonly(store_path)
+            except (sqlite3.Error, OSError, RuntimeError):
+                return None
+            conn = handle.conn
         else:
-            conn.close()
+            uri = store_path.resolve().as_uri() + "?mode=rw"
+            try:
+                conn = sqlite3.connect(uri, uri=True, timeout=1.0)
+            except sqlite3.Error:
+                return None
+        try:
+            if not dry_run:
+                # Locked, garbage, or truncated stores fail HERE
+                # (OperationalError / DatabaseError) — the documented
+                # None-skip arms, not a raise (delta review r1: the
+                # BEGIN IMMEDIATE ran outside the skip contract and the
+                # docstring lied about locked/unreadable).
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                except sqlite3.Error:
+                    return None
+            result = _prune_convention_meta_conn(
+                conn, cutoff_epoch=cutoff_epoch,
+                current_session=current_session, now_epoch=now_epoch,
+                row_cap=row_cap, dry_run=dry_run)
+            if not dry_run:
+                conn.commit()
+            return result
+        except sqlite3.Error:
+            if not dry_run:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+            raise
+        finally:
+            # close() on a ReadOnlyHandle is idempotent and also removes
+            # the arm-B staging directory (close-then-remove); a bare
+            # conn.close() would leak it (readonly.py contract). The
+            # maintenance lock releases only AFTER the close (AC3).
+            if handle is not None:
+                handle.close()
+            elif conn is not None:
+                conn.close()
+    finally:
+        _release_named_lock("maintenance", m_token)
 
 
 def cmd_sweep(marker_dir: str | None = None,

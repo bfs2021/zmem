@@ -4085,24 +4085,53 @@ def build_server(host: str, port: int, use_tls: bool = False) -> "FastMCP":  # t
             stderr = (r.get("stderr") or "")
             if "--authorized-namespace" in stderr \
                     and "unrecognized arguments" in stderr:
+                # PRR-005: a nonzero child on THIS arm is still a
+                # transport failure — #442's table has no exception for
+                # it, so the decision line must fire before the loud
+                # error return (the arm previously logged nothing).
+                await _append_session_decision_async(
+                    status="silent", reason="store-error", ids=[], all_ids=[],
+                    lane=lane, t_ms=elapsed,
+                )
                 return _error(
                     "store.py at ZMEM_HOME predates this server "
                     "(no --authorized-namespace support): update the zmem "
                     "checkout ZMEM_HOME points at to >= 0.105.0")
+            # Issue #442: a nonzero child is a store transport failure
+            # (the hook-family store-error token, PR #434/#441), never a
+            # deliberate skip. TERMINAL classification — written directly
+            # to the decision log and returned before the local reason
+            # ladder, whose closed-set collapse would fold it back into
+            # empty-pool.
             await _append_session_decision_async(
-                status="silent", reason="omitted", ids=[], all_ids=[], lane=lane,
-                t_ms=elapsed,
+                status="silent", reason="store-error", ids=[], all_ids=[],
+                lane=lane, t_ms=elapsed,
             )
             return _error(_sanitize_store_error(r))
         stdout = (r["stdout"] or "").strip()
+        # Issue #442: a zero-exit stdout that never parses as a JSON
+        # DICT (empty, malformed, or a valid non-dict — list/scalar) is
+        # a corrupted output channel (envelope-error, PR #441's token),
+        # classified TERMINALLY here: before _inject.envelope_results or
+        # any .get() — the non-dict shapes previously crashed rows
+        # extraction ('int' object has no attribute 'get') or flowed
+        # into the local ladder ending at empty-pool.
+        parsed = None
         try:
             parsed = json.loads(stdout) if stdout else None
         except json.JSONDecodeError:
             await _append_session_decision_async(
-                status="silent", reason="omitted", ids=[], all_ids=[], lane=lane,
-                t_ms=elapsed,
+                status="silent", reason="envelope-error", ids=[], all_ids=[],
+                lane=lane, t_ms=elapsed,
             )
             return _error("non-JSON from store.py session prefetch")
+        if not isinstance(parsed, dict):
+            await _append_session_decision_async(
+                status="silent", reason="envelope-error", ids=[], all_ids=[],
+                lane=lane, t_ms=elapsed,
+            )
+            return _error(
+                "store.py session prefetch stdout is not a JSON object")
         if _inject is not None:
             rows = _inject.envelope_results(parsed)
         else:
