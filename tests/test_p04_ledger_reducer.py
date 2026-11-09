@@ -352,8 +352,14 @@ class ClearStripsSegmentsTest(unittest.TestCase):
                       now=now)
         self.assertEqual(dl.delivered_ids(self.tmp, SID, now=now + 60),
                          ["row-1"], "precondition: row lives in a segment")
-        dl.park_pending(self.tmp, SID, [{"id": "p"}], "F", "pretool",
-                        now=now)
+        # Legacy pending sidecar seeded DIRECTLY (the retired park_pending
+        # helper is gone): the exact one-entry fenced shape it wrote — the
+        # file's survival across clear() is the assertion below.
+        pending = Path(dl.pending_path(self.tmp, SID))
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_text(json.dumps({"entries": [
+            {"id": "p", "moment": "pretool", "ts": now, "fence": "F"}]}),
+            encoding="utf-8")
         dl.clear(self.tmp, SID)
         self.assertEqual(dl._seg_paths(self.tmp, SID), [],
                          "clear() left an un-compacted segment behind")

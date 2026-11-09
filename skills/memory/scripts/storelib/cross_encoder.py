@@ -111,20 +111,14 @@ _TRUTHY = {"1", "true", "yes", "on"}
 
 # Test injection seam (issue #63 8.6: "tests that a fake scorer can be
 # injected"). `_scorer_fn(query, texts: list[str]) -> list[float] | None`.
+# Tests assign/patch this module attribute directly (with restore) — the
+# consumer reads it at call time (`fn = _scorer_fn` in maybe_rerank).
 _scorer_fn = None
 
 # When a capture sink is installed, `_emit_reason` records instead of
 # printing — the passive seam re-emits the captured reason itself so each
 # call still produces exactly one terminal line (issue #125 design 6).
 _reason_sink: list | None = None
-
-
-def set_scorer(fn) -> None:
-    """Install a scorer override. Pass a callable `(query, texts)->scores|None`
-    (tests inject deterministic fakes here). Call ``set_scorer(None)`` to
-    restore production behavior."""
-    global _scorer_fn
-    _scorer_fn = fn
 
 
 def enabled() -> bool:

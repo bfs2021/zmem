@@ -378,36 +378,5 @@ class EndedMarkerTest(_LedgerTmpTestCase):
             "ended)")
 
 
-class SnapshotViewTest(_LedgerTmpTestCase):
-
-    def test_snapshot_covers_unmerged_segments(self):
-        """C15 — snapshot_for_compact must snapshot the MERGED view (base
-        ledger + live unmerged segments). Seed a base row via record +
-        _try_compact, publish an unmerged segment holding row "s2", call
-        snapshot_for_compact, then read the .compact sidecar via
-        read_compact_context and assert s2 is present. Base-RED: only the
-        base ledger is read (snapshot ids == ["base-row-1"])."""
-        now = time.time()
-        dl.record(self.tmp, SID, [{"id": "base-row-1", "content": "c"}],
-                  "m", now=now)
-        self.assertFalse(
-            dl._seg_paths(self.tmp, SID),
-            "precondition: the seed row was compacted into the base ledger")
-        seg = dl._publish_segment(self.tmp, SID, [
-            {"id": "s2", "moment": "m", "ts": now, "text": "c"}])
-        self.assertTrue(seg, "precondition: unmerged segment published")
-
-        dl.snapshot_for_compact(self.tmp, SID)
-        summary, entries = dl.read_compact_context(self.tmp, SID)
-        ids = [e.get("id") for e in entries]
-        self.assertIn(
-            "s2", ids,
-            f"snapshot_for_compact must snapshot the MERGED view (base + "
-            f"live segments); snapshot ids were {ids!r} — only the base "
-            f"ledger was read")
-        self.assertIn("base-row-1", ids,
-                      "the seeded base row must survive the snapshot")
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)

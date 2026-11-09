@@ -239,18 +239,18 @@ class CliRerankBehavior(unittest.TestCase):
         """Drive the real CLI dispatch with an optional injected scorer.
         Returns (ids, scorer_call_count, json_text)."""
         extra_args = list(extra_args or [])
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as ce
 
         calls = {"n": 0}
         if scorer is None:
-            set_scorer(None)
+            ce._scorer_fn = None
         else:
 
             def wrapped(query, texts):
                 calls["n"] += 1
                 return scorer(query, texts)
 
-            set_scorer(wrapped)
+            ce._scorer_fn = wrapped
         out, err = io.StringIO(), io.StringIO()
         old_argv = list(sys.argv)
         sys.argv = [
@@ -273,9 +273,7 @@ class CliRerankBehavior(unittest.TestCase):
                     self.assertEqual(e.code or 0, 0)
         finally:
             sys.argv = old_argv
-            from storelib.cross_encoder import set_scorer as reset
-
-            reset(None)
+            ce._scorer_fn = None
         parsed = json.loads(out.getvalue())
         # v13 (issue #65, 10.8): read --json emits the envelope.
         rows = parsed["results"] if isinstance(parsed, dict) else parsed
@@ -338,12 +336,12 @@ class CliRerankBehavior(unittest.TestCase):
         self.assertEqual(n, 0, "passive surfaces must be unreachable")
 
     def test_exception_degrades_to_success(self):
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as ce
 
         def boom(q, t):
             raise RuntimeError("model exploded")
 
-        set_scorer(boom)
+        ce._scorer_fn = boom
         out, err = io.StringIO(), io.StringIO()
         old = list(sys.argv)
         sys.argv = [
@@ -362,7 +360,7 @@ class CliRerankBehavior(unittest.TestCase):
                 cli_main()  # must NOT exit non-zero / raise beyond here
         finally:
             sys.argv = old
-            set_scorer(None)
+            ce._scorer_fn = None
         parsed = json.loads(out.getvalue())
         # v13 (issue #65, 10.8): read --json emits the envelope.
         rows = parsed["results"] if isinstance(parsed, dict) else parsed
@@ -370,9 +368,9 @@ class CliRerankBehavior(unittest.TestCase):
         self.assertNotIn("_ce", rows[0])
 
     def test_transient_score_key_never_leaks(self):
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as ce
 
-        set_scorer(lambda q, t: [float(len(x)) for x in t])
+        ce._scorer_fn = lambda q, t: [float(len(x)) for x in t]
         out, err = io.StringIO(), io.StringIO()
         old = list(sys.argv)
         sys.argv = [
@@ -391,7 +389,7 @@ class CliRerankBehavior(unittest.TestCase):
                 cli_main()
         finally:
             sys.argv = old
-            set_scorer(None)
+            ce._scorer_fn = None
         blob = out.getvalue()
         self.assertNotIn('"_ce"', blob)
 
@@ -571,9 +569,9 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
                 sys.modules.pop(m, None)
 
     def tearDown(self):
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as _ce
 
-        set_scorer(None)
+        _ce._scorer_fn = None
         for k, v in self._saved.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -667,7 +665,7 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
                     os.environ.pop("ZMEM_MODEL_AUTODOWNLOAD", None)
                 else:
                     os.environ["ZMEM_MODEL_AUTODOWNLOAD"] = value
-                ce.set_scorer(None)
+                ce._scorer_fn = None
                 with contextlib.redirect_stderr(io.StringIO()) as err:
                     self.assertIsNone(ce._local_scorer())
                 self.assertEqual(
@@ -779,7 +777,7 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
         fake_tok.Tokenizer = _FakeTok
         entry = profiles.PROFILES[profiles.DEFAULT_PROFILE]
         saved = (entry["sha256"], entry.get("tokenizer_sha256"))
-        ce.set_scorer(None)
+        ce._scorer_fn = None
         _FakeSession.instances = 0
         try:
             with mock.patch.dict(
@@ -815,7 +813,7 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
                 )
         finally:
             entry["sha256"], entry["tokenizer_sha256"] = saved
-            ce.set_scorer(None)
+            ce._scorer_fn = None
 
     def test_profile_path_builds_when_both_pins_match(self):
         # #418 positive guard, falsifiable under F-004's verify-then-reread
@@ -888,7 +886,7 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
         fake_tok.Tokenizer = _FakeTok
         entry = profiles.PROFILES[profiles.DEFAULT_PROFILE]
         saved = (entry["sha256"], entry.get("tokenizer_sha256"))
-        ce.set_scorer(None)
+        ce._scorer_fn = None
         _FakeSession.instances = 0
         model_opens = {"n": 0}
         real_open = builtins.open
@@ -920,7 +918,7 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
                 self.assertIsNone(ce._last_load_failure)
         finally:
             entry["sha256"], entry["tokenizer_sha256"] = saved
-            ce.set_scorer(None)
+            ce._scorer_fn = None
 
     def test_profile_path_refuses_tokenizer_digest_mismatch(self):
         # #418: the tokenizer half of the pair is pinned too — model bytes
@@ -982,7 +980,7 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
         fake_tok.Tokenizer = _FakeTok
         entry = profiles.PROFILES[profiles.DEFAULT_PROFILE]
         saved = (entry["sha256"], entry.get("tokenizer_sha256"))
-        ce.set_scorer(None)
+        ce._scorer_fn = None
         _FakeSession.instances = 0
         try:
             entry["sha256"] = hashlib.sha256(model_bytes).hexdigest()
@@ -995,7 +993,7 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
                 self.assertEqual(ce._last_load_failure, "load-error")
         finally:
             entry["sha256"], entry["tokenizer_sha256"] = saved
-            ce.set_scorer(None)
+            ce._scorer_fn = None
 
     def test_checksum_mismatch_fails_open(self):
         import cross_encoder_profiles as profiles
@@ -1011,7 +1009,7 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
                 REPO_ROOT / "tests" / "fixtures" / "cross_encoder" / "tokenizer.json"
             ).read_bytes()
         )
-        ce.set_scorer(None)
+        ce._scorer_fn = None
         self.assertIsNone(ce._local_scorer())
         # File stays (doctor reports mismatch; load refuses).
         self.assertTrue(dest.exists())
@@ -1029,7 +1027,7 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
         def fake_clock():
             return next(samples)
 
-        ce.set_scorer(lambda q, texts: [1.0 for _ in texts])
+        ce._scorer_fn = lambda q, texts: [1.0 for _ in texts]
         try:
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 out = ce.maybe_rerank("query", rows, clock=fake_clock)
@@ -1043,7 +1041,7 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
             self.assertEqual(len(reason_lines), 1)
             self.assertIn("reason=budget-exhausted", reason_lines[0])
         finally:
-            ce.set_scorer(None)
+            ce._scorer_fn = None
         # CLI leg: budget exhaustion exits through the recall CLI with 0.
         os.environ[ENABLE] = "1"
         os.environ["ZMEM_CROSS_ENCODER_BUDGET_MS"] = "0"
@@ -1091,7 +1089,7 @@ class CrossEncoderProfileAndBudgetTests(unittest.TestCase):
                     code = e.code or 0
         finally:
             sys.argv = old_argv
-            ce.set_scorer(None)
+            ce._scorer_fn = None
         self.assertEqual(code, 0)
         self.assertIn("reason=budget-exhausted", err.getvalue())
 
@@ -1179,9 +1177,9 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
         Path(os.environ["ZMEM_DATA"]).mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as _ce
 
-        set_scorer(None)
+        _ce._scorer_fn = None
         for k, v in self._saved.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -1198,7 +1196,7 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
 
     def test_shadow_logs_deltas_without_reordering(self):
         from storelib import recall as recall_module
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as ce
 
         rows = self._shadow_rows()
         # id2 scores highest -> shadow order id2, id1, id3 (delta -1/+1/0).
@@ -1215,7 +1213,7 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
         def row_content(rid):
             return next(r["content"] for r in rows if r["id"] == rid)
 
-        set_scorer(fake)
+        ce._scorer_fn = fake
         try:
             os.environ[ENABLE] = "1"
             os.environ["ZMEM_CROSS_ENCODER_PASSIVE"] = "1"
@@ -1236,7 +1234,7 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
             self.assertNotIn(b"logit", log_path.read_bytes())
             self.assertNotIn(b'"score"', log_path.read_bytes())
         finally:
-            set_scorer(None)
+            ce._scorer_fn = None
 
     def test_passive_path_scores_only_final_rows(self):
         # AC3: the seam scores ONLY the final admitted set. The pipeline
@@ -1245,7 +1243,7 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
         # rows; the 40-row deep pool is never handed over and must never be
         # evaluated. Shape mirrors the frozen C3 check.
         from storelib import recall as recall_module
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as ce
 
         admitted = [
             {
@@ -1262,7 +1260,7 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
             for i in range(40)
         ]
         scored_texts = []
-        set_scorer(
+        ce._scorer_fn = (
             lambda q, texts: (
                 scored_texts.extend(texts),
                 [float(len(texts) - i) for i in range(len(texts))],
@@ -1289,7 +1287,7 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
             for r in out:
                 self.assertNotIn("score", r)
         finally:
-            set_scorer(None)
+            ce._scorer_fn = None
 
     def _seed(self):
         from storelib.schema import connect as _connect, _prepare_store
@@ -1356,11 +1354,11 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
         return found
 
     def test_production_passive_wiring_scores_final_set(self):
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as ce
 
         admit, lowconf = self._seed()
         scored_texts = []
-        set_scorer(
+        ce._scorer_fn = (
             lambda q, texts: (
                 scored_texts.extend(texts),
                 [float(len(texts) - i) for i in range(len(texts))],
@@ -1413,14 +1411,14 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
                 "exactly one applied terminal reason expected",
             )
         finally:
-            set_scorer(None)
+            ce._scorer_fn = None
 
     def test_passive_lane_requires_double_opt_in(self):
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as ce
 
         admit, _lowconf = self._seed()
         scored_texts = []
-        set_scorer(
+        ce._scorer_fn = (
             lambda q, texts: (scored_texts.extend(texts), [1.0 for _ in texts])[1]
         )
         try:
@@ -1454,18 +1452,18 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
                 scored_texts, [], "PASSIVE unset must keep the scorer untouched"
             )
         finally:
-            set_scorer(None)
+            ce._scorer_fn = None
 
     def test_passive_terminal_reasons(self):
         from storelib import recall as recall_module
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as ce
 
         rows = self._shadow_rows()
         os.environ[ENABLE] = "1"
         os.environ["ZMEM_CROSS_ENCODER_PASSIVE"] = "1"
         os.environ["ZMEM_CROSS_ENCODER_SHADOW"] = "1"
         # Applied: the reason surfaces on stderr exactly once.
-        set_scorer(lambda q, texts: [1.0 for _ in texts])
+        ce._scorer_fn = lambda q, texts: [1.0 for _ in texts]
         try:
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 recall_module.rerank_final_injection_set("query", rows)
@@ -1478,28 +1476,28 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
                 1,
             )
         finally:
-            set_scorer(None)
+            ce._scorer_fn = None
         # Failed attempt: verbatim failure reason, original order.
-        set_scorer(lambda q, texts: None)
+        ce._scorer_fn = lambda q, texts: None
         try:
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 out = recall_module.rerank_final_injection_set("query", rows)
             self.assertIn("reason=invalid-score", err.getvalue())
             self.assertEqual([r["id"] for r in out], SHADOW_IDS)
         finally:
-            set_scorer(None)
+            ce._scorer_fn = None
         # Trivial early exit: no attempt, no reason line.
-        set_scorer(lambda q, texts: [1.0 for _ in texts])
+        ce._scorer_fn = lambda q, texts: [1.0 for _ in texts]
         try:
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 recall_module.rerank_final_injection_set("query", rows[:1])
             self.assertNotIn("cross-encoder reason=", err.getvalue())
         finally:
-            set_scorer(None)
+            ce._scorer_fn = None
 
     def test_shadow_write_failure_emits_load_error(self):
         from storelib import recall as recall_module
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as ce
 
         rows = self._shadow_rows()
         os.environ[ENABLE] = "1"
@@ -1509,7 +1507,7 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
         (Path(os.environ["ZMEM_DATA"]) / "cross-encoder-shadow.jsonl").mkdir(
             parents=True
         )
-        set_scorer(lambda q, texts: [1.0 for _ in texts])
+        ce._scorer_fn = lambda q, texts: [1.0 for _ in texts]
         try:
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 out = recall_module.rerank_final_injection_set("query", rows)
@@ -1520,14 +1518,14 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
             )
             self.assertEqual([r["id"] for r in out], SHADOW_IDS)
         finally:
-            set_scorer(None)
+            ce._scorer_fn = None
 
     def test_queryless_recent_selector_passes_rows(self):
-        from storelib.cross_encoder import set_scorer
+        from storelib import cross_encoder as ce
 
         admit, _lowconf = self._seed()
         scored_texts = []
-        set_scorer(
+        ce._scorer_fn = (
             lambda q, texts: (scored_texts.extend(texts), [1.0 for _ in texts])[1]
         )
         try:
@@ -1564,7 +1562,7 @@ class CrossEncoderShadowAndFinalSetTests(unittest.TestCase):
                     "seeded rows (silent-envelope regression?)",
                 )
         finally:
-            set_scorer(None)
+            ce._scorer_fn = None
 
 
 if __name__ == "__main__":

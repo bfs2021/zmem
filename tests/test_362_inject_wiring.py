@@ -52,7 +52,9 @@ class NonReserveRoutingTest(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
-        dl.clear_delivery_state(_WIRING_TMP, "wiring-session")
+        # Mid-session ledger clear (the CLI ledger-clear dispatch): removes
+        # ledger + segments WITHOUT the terminal end marker.
+        dl.clear(_WIRING_TMP, "wiring-session")
 
     def tearDown(self):
         dl.end_delivery_state(_WIRING_TMP, "wiring-session")

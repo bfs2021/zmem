@@ -10,15 +10,14 @@ parked fences. This module is the delivery-state substrate BOTH lanes share:
   id. The key hashes the FULL session id, ending the sanitize-and-truncate
   collision class of the old ``.pending`` filename (two distinct 130-char ids
   shared one file before #117).
-- the fallback pending sidecar (legacy, env-gated callers only; the current
-  #158 adapters consume the rendered selector envelope): the same hashed
-  naming and atomic write, but append-with-dedup — N parked fences between
-  prompts all survive.
+- the fallback pending sidecar (legacy, retired with the #158 adapters):
+  no storelib API remains; a file left by a pre-#158 install is removed by
+  the terminal clear and reaped by the backup sweep.
 - the compaction sidecar (issue #118, Workstream D-2):
-  ``<data>/ops/<sha256(session_id)[:32]>.compact`` — retained as a
-  backward-compatible storelib API for older callers. The #158 adapters no
-  longer produce or consume it: PreCompact clears the ledger and the
-  following SessionStart uses the ordinary selector.
+  ``<data>/ops/<sha256(session_id)[:32]>.compact`` — the storelib compact
+  API is retired (issue #323); PreCompact clears the ledger, the following
+  SessionStart uses the ordinary selector, and stale files from older
+  installs are reaped by the backup sweep.
 
 Atomicity: every durable surface is tmp-file + ``os.replace`` (the
 correction_queue pattern, inlined here — storelib never imports the
@@ -78,10 +77,9 @@ its ledger after the short race window.
 
 The suppression window and cap are env-tunable (``ZMEM_DELIVER_WINDOW_S``,
 default 6 h; ``ZMEM_LEDGER_CAP``, default 256). Clearing: PreCompact uses
-:func:`clear` to remove only the session ledger; generic
-:func:`clear_delivery_state` removes the ledger and legacy pending sidecar
-without closing the session. The terminal CLI ``delivery-clear`` uses
-:func:`end_delivery_state` to add the bounded marker before removing both.
+:func:`clear` to remove only the session ledger. The terminal CLI
+``delivery-clear`` uses :func:`end_delivery_state` to add the bounded marker
+before removing the ledger and the legacy pending sidecar.
 Context summarized away or a session ending means "already delivered" is
 false.
 
@@ -118,10 +116,6 @@ CAP_DEFAULT = 256
 # PreToolUse can re-admit a delivered row when the operation about to run
 # token-matches it strongly — without a store round-trip on the hot path.
 TEXT_MAX = 400
-# Issue #118: bound on the stashed compact_summary. This remains for the
-# backward-compatible storelib compact helpers; #158 adapters do not call
-# them.
-COMPACT_SUMMARY_MAX = 2000
 
 # Issue #119: bounds for the subagent task-text stash — the delegating
 # prompt/description parked at PreToolUse(Agent) and consumed at the
@@ -274,22 +268,10 @@ def pending_path(data_dir: str, session_id: str) -> Optional[str]:
     return os.path.join(data_dir, "ops", name)
 
 
-def compact_path(data_dir: str, session_id: str) -> Optional[str]:
-    """Path of the legacy compaction sidecar (issue #118).
-
-    Kept for backward-compatible storelib callers. The #158 hook and
-    SessionStart adapters no longer write or read this path.
-    """
-    name = _hashed_name(session_id, ".compact")
-    if not name or not data_dir:
-        return None
-    return os.path.join(data_dir, "ops", name)
-
-
 def tasktext_path(data_dir: str, session_id: str) -> Optional[str]:
     """Path of the session's subagent task-text stash (issue #119, same
     hash key). Parked at PreToolUse(Agent), consumed (entry-removed) at the
-    child's SubagentStart. NOT part of ``clear_delivery_state``: a
+    child's SubagentStart. NOT part of the mid-session ledger clear: a
     subagent's task text must survive another moment's delivery-state
     clear; the suppression-window prune and the backup sweep own its
     lifecycle instead."""
@@ -1440,84 +1422,6 @@ def clear(data_dir: str, session_id: str,
         pass
 
 
-def park_pending(data_dir: str, session_id: str, rows: List[Dict[str, Any]],
-                 fence: str, moment: str,
-                 now: Optional[float] = None) -> None:
-    """Fallback sidecar (older host builds): append-with-dedup, atomic.
-
-    Unlike the pre-#117 ``open(path, "w")`` sidecar, N parked fences between
-    two prompts ALL survive; a fence whose memory ids are all already parked
-    is not appended twice (dedup by id, not by text).
-
-    Issue #252 scope note: this legacy sidecar keeps the locked
-    read-modify-write whose deadline-loss silently drops a parked fence —
-    the same loss class record() just shed. Deliberately out of #252's
-    scope ("make record() safe"): the #158 adapters no longer call this
-    (env-gated legacy callers only), so the race has no live trigger on
-    current hosts. Disclosed in the PR; do not silently re-derive it as
-    fixed."""
-    path = pending_path(data_dir, session_id)
-    if not path or not fence:
-        return
-    if now is None:
-        now = time.time()
-    try:
-        with _delivery_state_lock(data_dir):
-            if _delivery_state_ended(data_dir, session_id):
-                return
-            entries = _load_entries(path, now)
-            parked_ids = {e["id"] for e in entries}
-            new_rows = [r for r in rows
-                        if isinstance(r, dict) and isinstance(r.get("id"), str)
-                        and r["id"] not in parked_ids]
-            if not new_rows:
-                return  # every id in this fence is already parked — dedup
-            for i, r in enumerate(new_rows):
-                entries.append({
-                    "id": r["id"],
-                    "moment": str(moment or ""),
-                    "ts": now,
-                    # Issue #151 review (COPILOT-2): the fence covers ALL new rows
-                    # of this park call — store it ONCE (on the first entry) so
-                    # consume cannot join the identical fence N times for an
-                    # N-row event; consume_pending drops empty fences.
-                    "fence": fence if i == 0 else "",
-                })
-            _atomic_write_json(path, {"entries": entries})
-    except (OSError, DeliveryStateLockError):
-        pass
-
-
-def consume_pending(data_dir: str, session_id: str) -> str:
-    """Concatenated parked fences (each id once), clearing the sidecar."""
-    path = pending_path(data_dir, session_id)
-    if not path:
-        return ""
-    try:
-        with _delivery_state_lock(data_dir):
-            entries = _load_entries(path, time.time())
-            _unlink_delivery_path(path)
-    except (OSError, DeliveryStateLockError):
-        return ""
-    fences = [e.get("fence", "") for e in entries if e.get("fence")]
-    ctx = "\n\n".join(f for f in fences if isinstance(f, str) and f.strip())
-    return ctx
-
-
-def clear_delivery_state(data_dir: str, session_id: str,
-                         principal: Optional[str] = None,
-                         harness: Optional[str] = None) -> None:
-    """Compaction / session end: "already delivered" is false again."""
-    key = _session_key(session_id, principal, harness)
-    if not ledger_path(data_dir, key):
-        return
-    try:
-        with _delivery_state_lock(data_dir):
-            _clear_delivery_sidecars_locked(data_dir, key)
-    except (OSError, DeliveryStateLockError):
-        pass
-
-
 def end_delivery_state(data_dir: str, session_id: str,
                        principal: Optional[str] = None,
                        harness: Optional[str] = None) -> None:
@@ -1540,99 +1444,6 @@ def end_delivery_state(data_dir: str, session_id: str,
             os.unlink(tp)
     except OSError:
         pass
-
-
-def _load_compact(path: Optional[str]) -> Dict[str, Any]:
-    """Read the legacy compaction sidecar, degrading to an empty stash."""
-    if not path:
-        return {"entries": [], "summary": None, "ts": 0}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (OSError, ValueError):
-        return {"entries": [], "summary": None, "ts": 0}
-    if not isinstance(raw, dict):
-        return {"entries": [], "summary": None, "ts": 0}
-    entries = raw.get("entries", [])
-    if not isinstance(entries, list):
-        entries = []
-    summary = raw.get("summary")
-    if not isinstance(summary, str):
-        summary = None
-    return {"entries": entries, "summary": summary, "ts": raw.get("ts", 0) or 0}
-
-
-def snapshot_for_compact(data_dir: str, session_id: str,
-                         now: Optional[float] = None) -> None:
-    """Legacy #118 PreCompact snapshot helper.
-
-    Retained for older direct storelib callers. The #158 PreCompact adapter
-    intentionally uses ``ledger-clear`` instead and never calls this helper.
-    Issue #320 (0.118.0): the snapshot covers the MERGED view (base ledger
-    plus any live segments) — the base-only read under-reported while
-    segments lingered."""
-    path = compact_path(data_dir, session_id)
-    if not path:
-        return
-    if now is None:
-        now = time.time()
-    try:
-        entries = delivered(data_dir, session_id, now=now)
-        _atomic_write_json(path, {
-            "entries": entries,
-            "summary": None,
-            "ts": now,
-        })
-    except OSError:
-        pass
-
-
-def park_compact_summary(data_dir: str, session_id: str, summary: str,
-                         now: Optional[float] = None) -> None:
-    """Legacy #118 PostCompact summary helper, retained for compatibility.
-
-    #158 adapters do not call this function, so live PostCompact events never
-    create the old compact sidecar.
-    """
-    path = compact_path(data_dir, session_id)
-    if not path or not summary or not summary.strip():
-        return
-    if now is None:
-        now = time.time()
-    stash = _load_compact(path)
-    stash["summary"] = summary[:COMPACT_SUMMARY_MAX]
-    stash["ts"] = now
-    try:
-        _atomic_write_json(path, stash)
-    except OSError:
-        pass
-
-
-def read_compact_context(data_dir: str, session_id: str):
-    """Read the legacy compact stash without consuming it."""
-    path = compact_path(data_dir, session_id)
-    if not path:
-        return (None, [])
-    stash = _load_compact(path)
-    return (stash.get("summary"), stash.get("entries") or [])
-
-
-def discard_compact_context(data_dir: str, session_id: str) -> None:
-    """Drop the legacy compact stash once its old caller completes."""
-    path = compact_path(data_dir, session_id)
-    if not path:
-        return
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
-
-
-def consume_compact_context(data_dir: str, session_id: str):
-    """Read-and-discard convenience for legacy compact callers."""
-    summary, entries = read_compact_context(data_dir, session_id)
-    discard_compact_context(data_dir, session_id)
-    return (summary, entries)
 
 
 def _load_tasktext(path: Optional[str], now: float) -> List[Dict[str, Any]]:
