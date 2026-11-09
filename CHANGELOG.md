@@ -5,6 +5,16 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.147.0] - 2026-11-08
+
+### Added
+
+- **Mixed-version delivery-state skew guard (issue #322).** purge now fails closed BEFORE the store deletion commits when `<data>/ops` holds delivery-state files belonging to a family this client cannot scrub (exit 5 with the store intact and the recovery named, instead of exit 5 after the deletion committed). A `SUPPORTED_DELIVERY_FAMILIES` registry in `storelib/purge.py` is the single source for the eight scrub families (membership only — scrub phase order is unchanged); `doctor --format json` gains a conditional `delivery-state-skew` check naming the skew, the unsupported files, this client's supported family set, and the recovery step. Inspection failures fail closed (`os.scandir`, never `Path.glob`); the `ZMEM_TEST_LEDGER_FAMILIES` test seam replaces the supported set wherever it is consulted and fails loud on unknown tokens (purge exit 2; doctor warn).
+
+### Changed
+
+- **Stranded-storelib census closure (issue #323).** 19 zero-caller functions left behind by the #158/#117 retirement family are removed with their dead test pins (14 stranded at base by the census plus 5 transitively dead helpers); fixture-only test uses were rewired to the live surfaces (`clear` for mid-session cleanup, `end_delivery_state` for terminal SessionEnd), preserving live behavioral coverage. Removed: delivery_ledger `park_pending`, `consume_pending`, `park_compact_summary`, `consume_compact_context`, `snapshot_for_compact`, `clear_delivery_state`, `read_compact_context`, `discard_compact_context`, `_load_compact`, `compact_path`; cli `_require_capture_governance`, `_require_payload_fields`; ops_tokens `read_retry_state`, `write_retry_state`, `read_delivered_cursor`; beliefs `_head_valid_at`; recall `_explain_target_row`; schema `get_meta`; cross_encoder `set_scorer` (tests inject `_scorer_fn` directly). `tests/test_stranded_census.py` guards the class permanently (RED at base enumerating the stranded set; green only at the empty set).
+
 ## [0.146.0] - 2026-11-08
 
 ### Fixed (issues #448 + #449, collated)
