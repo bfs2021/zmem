@@ -87,7 +87,8 @@ class WedgeBudgetScaleTest(unittest.TestCase):
             f"{elapsed:.3f}s - the wedge budget must be O(1) in the backlog "
             f"(bounded drain stops at the first failed acquire; the reaper "
             f"scans <= _MAX_SEGMENTS_PER_COMPACT oldest-first)")
-        self.assertIn("row-new", dl.delivered_ids(self.tmp, SID),
+        self.assertIn("row-new",
+                      [e["id"] for e in dl.delivered(self.tmp, SID)],
                       "the row must still be published under the wedge")
 
 

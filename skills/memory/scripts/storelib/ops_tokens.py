@@ -461,21 +461,6 @@ def _marker_path(data_dir: str, session_id: str, suffix: str) -> str:
     return os.path.join(data_dir, "ops", _sidecar_stem(session_id) + suffix)
 
 
-def read_delivered_cursor(data_dir: str, session_id: str) -> tuple:
-    """Read the delivery marker ``<data>/ops/<session>.delivered`` — the
-    last ``(ts, count)`` cursor a delivery surface already handled. Sidecar
-    by design (final-critic finding): the #85 direction-C surfaces keep ALL
-    their persistence under the ops/ sidecar namespace and never grow the
-    store's meta table from a read path. (0.0, 0) when absent/unreadable."""
-    try:
-        with open(_marker_path(data_dir, session_id, ".delivered"),
-                  "r", encoding="utf-8", errors="replace") as f:
-            parts = f.read().split()
-        return (float(parts[0]), int(parts[1]))
-    except (OSError, ValueError, IndexError):
-        return (0.0, 0)
-
-
 def write_delivered_cursor(data_dir: str, session_id: str, cursor: tuple) -> None:
     """Persist a delivery cursor marker (best-effort; never raises). Issue
     #122 pins the file bytes as ``"<ts> <count>\\n"`` (final LF, no CRLF
@@ -501,42 +486,6 @@ def write_delivered_cursor(data_dir: str, session_id: str, cursor: tuple) -> Non
 # ---------------------------------------------------------------------------
 
 _ATTEMPTS_SUFFIX = ".attempts"
-
-
-def read_retry_state(data_dir: str, session_id: str,
-                     cursor: tuple[float, int]) -> int:
-    """Attempts already burned on THIS cursor's timestamp; 0 when the marker
-    is absent, unreadable, or belongs to a different cursor ts."""
-    try:
-        with open(_marker_path(data_dir, session_id, _ATTEMPTS_SUFFIX), "r",
-                  encoding="utf-8", errors="replace") as f:
-            parts = f.read().split()
-        if len(parts) >= 2 and float(parts[0]) == float(cursor[0]):
-            return int(parts[1])
-    except (OSError, ValueError, IndexError):
-        pass
-    return 0
-
-
-def write_retry_state(data_dir: str, session_id: str, cursor: tuple[float, int],
-                      attempts: int) -> None:
-    """Persist the burned-attempt count for one cursor (best-effort; never
-    raises). Same-dir temp + fsync + os.replace, matching the ring-trim
-    discipline: an interrupted write must never leave partial bytes."""
-    path = _marker_path(data_dir, session_id, _ATTEMPTS_SUFFIX)
-    tmp = path + ".tmp"
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-            f.write("{0} {1}\n".format(float(cursor[0]), int(attempts)))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except OSError:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
 
 
 def clear_retry_state(data_dir: str, session_id: str) -> None:

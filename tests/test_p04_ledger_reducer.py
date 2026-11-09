@@ -141,7 +141,8 @@ class ReducerLawTest(unittest.TestCase):
             dl.record(self.tmp, SID,
                       [{"id": "fresh", "content": "new"}], "subagent",
                       now=now)
-        self.assertEqual(dl.delivered_ids(self.tmp, SID, now=now + 60),
+        self.assertEqual([e["id"] for e in dl.delivered(self.tmp, SID,
+                                                   now=now + 60)],
                          ["fresh"],
                          "an out-of-window segment row must be pruned")
 
@@ -230,7 +231,7 @@ class Round2FixPinsTest(unittest.TestCase):
             {"id": f"sur-{now}", "content": "lone \ud800 surrogate"},
             {"id": f"sep-{now}", "content": "line sep \u2028 here"},
         ], "subagent", now=now)
-        ids = set(dl.delivered_ids(self.tmp, SID, now=now + 60))
+        ids = set(e["id"] for e in dl.delivered(self.tmp, SID, now=now + 60))
         self.assertEqual(len(ids), 2, "both rows must round-trip")
 
     def test_torn_multibyte_tail_keeps_intact_lines(self):
@@ -303,7 +304,7 @@ class CompactionInterleavingTest(unittest.TestCase):
                         "destroyed (re-glob-at-unlink mutation)")
         self.assertFalse(os.path.exists(seg_a),
                          "the merge-input segment should have been compacted")
-        ids = set(dl.delivered_ids(self.tmp, SID, now=now + 60))
+        ids = set(e["id"] for e in dl.delivered(self.tmp, SID, now=now + 60))
         self.assertEqual(ids, {"a-row", "b-row"})
 
 
@@ -326,7 +327,8 @@ class TerminalMarkerSelfUnlinkTest(unittest.TestCase):
         segs = dl._seg_paths(self.tmp, SID)
         self.assertEqual(segs, [],
                          "segment survived a fresh terminal marker")
-        self.assertEqual(dl.delivered_ids(self.tmp, SID, now=now + 60), [])
+        self.assertEqual([e["id"] for e in dl.delivered(self.tmp, SID,
+                                                   now=now + 60)], [])
 
 
 class ClearStripsSegmentsTest(unittest.TestCase):
@@ -350,15 +352,23 @@ class ClearStripsSegmentsTest(unittest.TestCase):
         with patch.object(dl, "_try_compact", lambda *a, **k: None):
             dl.record(self.tmp, SID, [_entry("row-1", now)], "subagent",
                       now=now)
-        self.assertEqual(dl.delivered_ids(self.tmp, SID, now=now + 60),
+        self.assertEqual([e["id"] for e in dl.delivered(self.tmp, SID,
+                                                   now=now + 60)],
                          ["row-1"], "precondition: row lives in a segment")
-        dl.park_pending(self.tmp, SID, [{"id": "p"}], "F", "pretool",
-                        now=now)
+        # Legacy pending sidecar seeded DIRECTLY (the retired park_pending
+        # helper is gone): the exact one-entry fenced shape it wrote — the
+        # file's survival across clear() is the assertion below.
+        pending = Path(dl.pending_path(self.tmp, SID))
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_text(json.dumps({"entries": [
+            {"id": "p", "moment": "pretool", "ts": now, "fence": "F"}]}),
+            encoding="utf-8")
         dl.clear(self.tmp, SID)
         self.assertEqual(dl._seg_paths(self.tmp, SID), [],
                          "clear() left an un-compacted segment behind")
         self.assertEqual(
-            dl.delivered_ids(self.tmp, SID, now=now + 60), [],
+            [e["id"] for e in dl.delivered(self.tmp, SID, now=now + 60)],
+            [],
             "rows stayed suppressed after PreCompact re-admission")
         self.assertTrue(os.path.exists(dl.pending_path(self.tmp, SID)),
                         "clear() must not touch the legacy pending sidecar")

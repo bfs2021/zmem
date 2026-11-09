@@ -1107,6 +1107,78 @@ def _check_node_and_bash() -> list[dict]:
     return checks
 
 
+def _check_delivery_state_skew(resolved_store: Path) -> list[dict]:
+    """Issue #322 AC1: surface delivery-state family skew under ops/.
+
+    Emits a check ONLY when unsupported files exist — a clean, inspectable
+    ops dir emits nothing (the skew diagnostic is expected only when skew
+    exists; an always-present healthy check would defeat the negative
+    control). Import failures (partial deployment) and inspection failures
+    degrade to a warn check naming the problem: never a silent clean,
+    never a crash.
+    """
+    try:
+        from storelib.purge import (
+            supported_delivery_families,
+            unsupported_delivery_state_files,
+        )
+    except Exception as exc:
+        return [
+            _check(
+                "delivery-state-skew",
+                "warn",
+                "delivery-state skew probe unavailable (storelib.purge "
+                "import failed: %s); the ops delivery-state layout could "
+                "not be verified" % exc,
+            )
+        ]
+    try:
+        unsupported = unsupported_delivery_state_files(
+            resolved_store.parent)
+        families = supported_delivery_families()
+    except ValueError as exc:
+        # Misconfigured test seam: warn, never a traceback, never a
+        # silent fall-back to the default set.
+        return [
+            _check(
+                "delivery-state-skew",
+                "warn",
+                "invalid ZMEM_TEST_LEDGER_FAMILIES configuration: %s" % exc,
+            )
+        ]
+    except OSError as exc:
+        return [
+            _check(
+                "delivery-state-skew",
+                "warn",
+                "delivery-state inspection failed (%s) - the ops layout "
+                "could not be verified, not confirmed clean" % exc,
+            )
+        ]
+    if not unsupported:
+        return []
+    return [
+        _check(
+            "delivery-state-skew",
+            "warn",
+            "%d delivery-state file(s) under ops/ belong to a family this "
+            "zmem client does not support (a newer client may have "
+            "upgraded the on-disk delivery-state layout): %s%s - recovery: "
+            "upgrade zmem on this host, or quiesce writers and delete the "
+            "unsupported files listed above; supported families: %s"
+            % (
+                len(unsupported),
+                ", ".join(unsupported[:5]),
+                " ..." if len(unsupported) > 5 else "",
+                ", ".join(families),
+            ),
+            files=unsupported[:20],
+            file_count=len(unsupported),
+            supported_families=list(families),
+        )
+    ]
+
+
 def _check_store_access(resolved_store: Path) -> dict:
     store_exists = resolved_store.exists()
     existing_parent = resolved_store.parent
@@ -5989,6 +6061,9 @@ def build_report(
     access_check = _check_store_access(resolved_store)
     checks.append(access_check)
     checks.append(_check_schema(resolved_store, access_check))
+    # Issue #322 AC1: conditional skew diagnostic (emits only when the ops
+    # dir holds unsupported-family delivery-state files).
+    checks.extend(_check_delivery_state_skew(resolved_store))
     # Issue #135: local capture tables and completion associations are audited
     # read-only; the check never initializes or repairs the side tables.
     checks.append(_check_training_capture_health(resolved_store))

@@ -129,11 +129,10 @@ class FakeLocalScorerExecutes(unittest.TestCase):
         self._FakeSession.run_impl = staticmethod(run_impl)
 
     def test_production_pair_scores_differ_by_candidate_and_reorder(self):
-        from storelib.cross_encoder import (
-            _local_scorer, maybe_rerank, set_scorer,
-        )
+        from storelib import cross_encoder as _ce
+        from storelib.cross_encoder import _local_scorer, maybe_rerank
 
-        set_scorer(None)
+        _ce._scorer_fn = None
         # Score DERIVES from the session inputs: under a query-only-regression
         # both candidates would encode identically and this ordering breaks —
         # giving model-absent CI a mutation guard for the pair contract.
@@ -162,16 +161,17 @@ class FakeLocalScorerExecutes(unittest.TestCase):
                              ["b text", "a text"],
                              "higher-scoring candidate must take rank 0")
         finally:
-            set_scorer(None)
+            _ce._scorer_fn = None
 
     def test_production_scorer_raise_evicts_cache_and_rebuilds(self):
         """Reviewer round: a build-ok/score-always-throws production scorer
         must be evicted from _SCORER_CACHE on first failure and rebuilt on
         the next call — regression-proof for the `fn is not _scorer_fn` gate."""
+        from storelib import cross_encoder as _ce
         from storelib.cross_encoder import (
-            _local_scorer, maybe_rerank, set_scorer, _SCORER_CACHE,
+            _local_scorer, maybe_rerank, _SCORER_CACHE,
         )
-        set_scorer(None)
+        _ce._scorer_fn = None
         self._patch_session_run(
             lambda _s, _i: (_ for _ in ()).throw(RuntimeError("always broken")))
         try:
@@ -197,7 +197,7 @@ class FakeLocalScorerExecutes(unittest.TestCase):
                 builds_at_first + 1,
                 "second call must rebuild (session constructed again)")
         finally:
-            set_scorer(None)
+            _ce._scorer_fn = None
             _SCORER_CACHE.clear()
 
 
@@ -278,16 +278,15 @@ class RealFixtureOnnxIntegration(unittest.TestCase):
         self.assertTrue(onnx_path.is_file(), onnx_path)
         self.assertTrue(tok_path.is_file(), tok_path)
 
-        from storelib.cross_encoder import (
-            _local_scorer, maybe_rerank, set_scorer,
-        )
+        from storelib import cross_encoder as _ce
+        from storelib.cross_encoder import _local_scorer, maybe_rerank
 
         saved = {k: os.environ.get(k) for k in
                  ("ZMEM_CROSS_ENCODER", "ZMEM_CROSS_ENCODER_MODEL")}
         os.environ["ZMEM_CROSS_ENCODER"] = "1"
         os.environ["ZMEM_CROSS_ENCODER_MODEL"] = str(onnx_path)
         try:
-            set_scorer(None)  # production path only
+            _ce._scorer_fn = None  # production path only
             fn = _local_scorer()
             if fn is None:
                 # #93 A2 (PR-review PRR-026 hardening): a silent None trains
@@ -325,7 +324,7 @@ class RealFixtureOnnxIntegration(unittest.TestCase):
             # tokenizers path stays file-based by design (same-dir artifact).
             self.assertEqual(Path(str(tok_path)).is_file(), True)
         finally:
-            set_scorer(None)
+            _ce._scorer_fn = None
             for k, v in saved.items():
                 if v is None:
                     os.environ.pop(k, None)

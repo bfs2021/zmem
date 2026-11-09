@@ -79,9 +79,9 @@ OTHER_CONTENT = "unrelated flange calibration lesson kept"
 _LEDGER_CHILD = (
     "import sys\n"
     "sys.path.insert(0, sys.argv[1])\n"
-    "from storelib.delivery_ledger import delivered_ids\n"
-    "for _id in delivered_ids(sys.argv[2], sys.argv[3]):\n"
-    "    print(_id)\n"
+    "from storelib.delivery_ledger import delivered\n"
+    "for _entry in delivered(sys.argv[2], sys.argv[3]):\n"
+    "    print(_entry['id'])\n"
 )
 
 
@@ -192,7 +192,7 @@ class _PurgeBase(unittest.TestCase):
         return total
 
     def _delivered_ids(self, session_id):
-        """delivered_ids(<data_dir>, <session>) computed in a CHILD process
+        """the delivered(data_dir, <session>) id view computed in a CHILD process
         that imports storelib.delivery_ledger from the repo's scripts dir —
         the same module the hooks' store uses to read the ledger."""
         r = subprocess.run(

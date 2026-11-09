@@ -83,7 +83,7 @@ def _delivered_bounded(case: unittest.TestCase, data_dir: str, sid: str,
 
     def run():
         try:
-            box["ids"] = dl.delivered_ids(data_dir, sid)
+            box["ids"] = [e["id"] for e in dl.delivered(data_dir, sid)]
         except BaseException as exc:  # surfaced to the case below
             box["exc"] = exc
 
@@ -331,7 +331,8 @@ class PublishFailureTest(_LedgerTmpTestCase):
             dl._publish_segment = real_publish
 
         self.assertIn(
-            "seed-1", dl.delivered_ids(self.tmp, SID, now=now + 60),
+            "seed-1", [e["id"] for e in dl.delivered(self.tmp, SID,
+                                                   now=now + 60)],
             "the seeded segment's row must be in the merged view")
         self.assertFalse(
             os.path.exists(seeded),
@@ -376,37 +377,6 @@ class EndedMarkerTest(_LedgerTmpTestCase):
             "the corrupt-marker law must hold: a marker whose ended_at "
             "cannot be coerced falls back to st_mtime (fresh marker => "
             "ended)")
-
-
-class SnapshotViewTest(_LedgerTmpTestCase):
-
-    def test_snapshot_covers_unmerged_segments(self):
-        """C15 — snapshot_for_compact must snapshot the MERGED view (base
-        ledger + live unmerged segments). Seed a base row via record +
-        _try_compact, publish an unmerged segment holding row "s2", call
-        snapshot_for_compact, then read the .compact sidecar via
-        read_compact_context and assert s2 is present. Base-RED: only the
-        base ledger is read (snapshot ids == ["base-row-1"])."""
-        now = time.time()
-        dl.record(self.tmp, SID, [{"id": "base-row-1", "content": "c"}],
-                  "m", now=now)
-        self.assertFalse(
-            dl._seg_paths(self.tmp, SID),
-            "precondition: the seed row was compacted into the base ledger")
-        seg = dl._publish_segment(self.tmp, SID, [
-            {"id": "s2", "moment": "m", "ts": now, "text": "c"}])
-        self.assertTrue(seg, "precondition: unmerged segment published")
-
-        dl.snapshot_for_compact(self.tmp, SID)
-        summary, entries = dl.read_compact_context(self.tmp, SID)
-        ids = [e.get("id") for e in entries]
-        self.assertIn(
-            "s2", ids,
-            f"snapshot_for_compact must snapshot the MERGED view (base + "
-            f"live segments); snapshot ids were {ids!r} — only the base "
-            f"ledger was read")
-        self.assertIn("base-row-1", ids,
-                      "the seeded base row must survive the snapshot")
 
 
 if __name__ == "__main__":

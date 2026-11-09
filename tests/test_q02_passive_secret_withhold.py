@@ -96,12 +96,13 @@ _POP_ENV = ("ZMEM_TEST_NOW", "ZMEM_INJECT_TOKEN_BUDGET", "ZMEM_EMBED_PROFILE",
 
 # Child-process reader for the session delivery ledger. storelib is imported
 # only in the child (this test process never imports it), and the data dir
-# rides argv — never env — exactly as delivery_ledger.delivered_ids expects.
+# rides argv — never env — exactly as delivery_ledger.delivered expects.
 _LEDGER_IDS_CHILD = (
     "import json, sys\n"
     "sys.path.insert(0, sys.argv[1])\n"
-    "from storelib.delivery_ledger import delivered_ids\n"
-    "print(json.dumps(delivered_ids(sys.argv[2], sys.argv[3])))\n"
+    "from storelib.delivery_ledger import delivered\n"
+    "print(json.dumps([e['id'] for e in delivered(sys.argv[2],"
+    " sys.argv[3])]))\n"
 )
 
 
@@ -202,7 +203,7 @@ class _WithholdBase(unittest.TestCase):
                       "check proves nothing")
 
     def _delivered_ids(self):
-        """delivered_ids(<data_dir>, <session_id>) read in a CHILD process."""
+        """the delivered(data_dir, <session_id>) id view read in a CHILD process."""
         r = subprocess.run(
             [PYTHON, "-c", _LEDGER_IDS_CHILD, str(SCRIPTS_DIR),
              self.data_dir, SESSION_ID],
