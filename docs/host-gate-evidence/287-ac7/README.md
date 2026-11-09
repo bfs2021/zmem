@@ -83,3 +83,51 @@ when capturing production hook behavior.
 > place (structural fence headers, the probe question, hook events and
 > model output untouched) — the two-way disclosure in point 2 above
 > supersedes the original "redacted exactly one way" wording.
+
+## Guard widening (2026-11-08, issue #448)
+
+`scripts/host_evidence_guard.py` grew three additive surfaces beside the
+unchanged `stdout_raw` payload rule:
+
+- `unsafe_incident_shape_paths` — flags a capture-shaped `*.json` dict
+  (a `remote_url` key OR any `://` string value) whose string values
+  carry a credential key=value assignment (the incident shape that
+  leaked through `refs/pull/402/head`; values are non-space semantics,
+  4+ chars, quoted forms included). A duplicate-key document or an
+  undecodable file is FLAGGED under any name (hostile parse semantics —
+  never silently skipped); only an unparseable or unreadable file is
+  skipped, exactly like the frozen payload rule.
+- `unsafe_jsonl_transcript_paths` — scans `*.jsonl` transcripts line by
+  line (split on `\n` only; a UTF-8 BOM is stripped): a malformed line,
+  a DUPLICATE-KEY line (last-wins parsing could hide an unredacted fence
+  behind the surviving member), a non-UTF-8 file, a live or neutralized
+  fence open marker whose body carries no `[REDACTED:` notice, AND a
+  capture-shaped line carrying a credential key=value assignment (the
+  incident shape is governed in transcripts too) — each flags the file
+  fail-closed.
+- the allowlist — a reviewed true-positive may be suppressed only by an
+  entry pinning `path` + `detector` + the file's CURRENT whole-file git
+  blob sha + `occurrence_position` (the ZERO-BASED HIT ORDINAL in the
+  detector's deterministic hit sequence — one hit per offending physical
+  line for the jsonl detector, one per credential match for the incident
+  detector; never a line number) + `count` (the total hits for that
+  path+detector). There is no shipped allowlist FILE today; the surface
+  is Python-only via `parse_allowlist` / `validate_allowlist`, and a
+  hash of a matched secret span is structurally refused — the only hash
+  field accepted is the whole-file blob identity. One REVIEWED hit
+  exists in the shipped corpus and is pinned (with its allowlist entry)
+  by the frozen jsonl check: the 287-ac7 transcript's `world_state`
+  record carries the deliberate SSRF-probe test values from the AC7
+  evidence session; the check proves the unsuppressed scan flags it and
+  the whole-file entry suppresses it — a regenerated transcript
+  (new blob) invalidates the entry and fails the check, which is the
+  designed re-review trigger.
+
+## Guard hardening (2026-11-08, PR #451 review round)
+
+The credential key family matches ANYWHERE (no prefix restriction —
+camelCase `clientSecret`/`accessToken` and suffix compounds
+`SECRET_KEY`/`PRIVATE_KEY` all flag; a benign word containing a family
+substring over-matches, accepted noise for a human-review flag), and
+values may contain quote characters. `parse_allowlist` refuses
+duplicate-key documents.

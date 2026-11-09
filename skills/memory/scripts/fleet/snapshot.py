@@ -546,12 +546,57 @@ def _build_from_payload(payload: dict, env: dict[str, str]) -> Path:
 
 _REFUSAL_LINE_CHARS = 200
 
+_DECISION_LOG_NAME = "zmem-decisions.log"
 
-def _refuse_refresh(refusal_class: str, detail: object) -> None:
+
+def _log_refusal_decision(env, refusal_class: str) -> None:
+    """Issue #449: persist one bounded decision line naming the refresh
+    refusal class next to the stderr line, so doctor/miss-rate can
+    attribute refresh refusals after the fact (the #437 stderr surface is
+    not persisted). The line is parseable by the shipped decision-log
+    reader (miss_rate.parse_bg_log) via the additive terminal
+    ``snapshot_refresh=refused`` group; no enrichment trio (lane=/ver=/t_ms=)
+    rides the line, so the reader's enrichment veto stays untriggered.
+
+    Failure-independent by design: rotation problems never suppress the
+    append, and the whole body is guarded so a refused/readonly data dir
+    loses the line without ever breaking the fail-open refresh ladder.
+    """
+    try:
+        effective_env = dict(os.environ) if env is None else env
+        data_dir = _data_dir(effective_env)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        log_path = data_dir / _DECISION_LOG_NAME
+        try:
+            # Lazy import: the hermes provider loads this module by file
+            # path and purges non-preexisting modules under the scripts
+            # dir (issue #290's structural purge law). Rotation failure
+            # is isolated so it can never suppress the append.
+            from storelib.log_rotate import rotate_on_append  # noqa: PLC0415 - lazy
+            rotate_on_append(log_path)
+        except Exception:
+            pass
+        with open(log_path, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                "[%d] zmem-hook status=silent reason=%s ids=[] all=[] "
+                "snapshot_refresh=refused\n"
+                % (int(time.time()), refusal_class))
+    except Exception:
+        pass
+
+
+def _refuse_refresh(refusal_class: str, detail: object,
+                    env: dict[str, str] | None = None) -> None:
     """Issue #437: one bounded stderr line naming the refresh refusal
     class (broker.py's PRR-009 pattern). The detail is normalized to one
     line BEFORE the cap so hub-exception newlines cannot split it; the
     write is guarded so a closed stderr never breaks the fail-open ladder.
+
+    Issue #449: the same refusal is ALSO appended to the guarded decision
+    log via ``_log_refusal_decision`` — in a SEPARATE guard, so a closed
+    or raising stderr never suppresses the persistent line (and vice
+    versa). ``env`` is the caller's environment map (``_refresh`` passes
+    its own); None resolves through the ambient os.environ.
     """
     try:
         text = " ".join(str(detail or "").split())
@@ -559,6 +604,10 @@ def _refuse_refresh(refusal_class: str, detail: object) -> None:
             text = text[:_REFUSAL_LINE_CHARS]
         print("[zmem] snapshot refresh refused (%s): %s"
               % (refusal_class, text), file=sys.stderr)
+    except Exception:
+        pass
+    try:
+        _log_refusal_decision(env, refusal_class)
     except Exception:
         pass
 
@@ -585,7 +634,7 @@ def _refresh(http: Any, env: dict[str, str],
     try:
         payload = http.snapshot(deadline_ms=deadline_ms)
     except Exception as exc:  # noqa: BLE001 - refresh is best-effort
-        _refuse_refresh("hub-unreachable", exc)
+        _refuse_refresh("hub-unreachable", exc, env)
         _write_backoff_marker(env, _BACKOFF_KIND_TRANSPORT)
         return False
     # Affirmative-success gate: every hub-ANSWERED refusal ({error: ...}
@@ -610,10 +659,10 @@ def _refresh(http: Any, env: dict[str, str],
     if not isinstance(payload, dict) or payload.get("ok") is not True:
         failure_reason = payload.get("reason") if isinstance(payload, dict) else None
         if isinstance(failure_reason, str) and failure_reason:
-            _refuse_refresh("hub-unreachable", failure_reason)
+            _refuse_refresh("hub-unreachable", failure_reason, env)
             _write_backoff_marker(env, _BACKOFF_KIND_TRANSPORT)
             return False
-        _refuse_refresh("hub-refused", "hub answered without ok=True")
+        _refuse_refresh("hub-refused", "hub answered without ok=True", env)
         _write_backoff_marker(env, _BACKOFF_KIND_REFUSED)
         return False
     # Implementation-review round 1: a non-int-like payload_bytes raised
@@ -623,14 +672,15 @@ def _refresh(http: Any, env: dict[str, str],
     try:
         _payload_bytes = int(payload.get("payload_bytes", 0))
     except (TypeError, ValueError, OverflowError) as exc:
-        _refuse_refresh("payload-invalid", exc)
+        _refuse_refresh("payload-invalid", exc, env)
         _write_backoff_marker(env, _BACKOFF_KIND_REFUSED)
         return False  # hub-answered nonsense: operator/hub condition
     if _payload_bytes > MAX_SNAPSHOT_BYTES:
         _refuse_refresh(
             "payload-invalid",
             "payload_bytes %d over cap %d" % (_payload_bytes,
-                                              MAX_SNAPSHOT_BYTES))
+                                              MAX_SNAPSHOT_BYTES),
+            env)
         _write_backoff_marker(env, _BACKOFF_KIND_REFUSED)
         return False
     try:
@@ -642,7 +692,7 @@ def _refresh(http: Any, env: dict[str, str],
         # transient LOCAL condition (torn scratch, locked db — PRR-010f):
         # transport kind, so recovery is retried at the next moment
         # instead of suppressing refresh for the whole interval.
-        _refuse_refresh("payload-invalid", exc)
+        _refuse_refresh("payload-invalid", exc, env)
         _write_backoff_marker(env, _BACKOFF_KIND_TRANSPORT)
         return False
 
