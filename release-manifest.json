@@ -1,6 +1,6 @@
 {
   "algorithm": "sha256-crlf-norm",
-  "digest": "52efe599e3a2a88a724e744fa6df588176628c2cc902beb1c27ef205d2aac83b",
+  "digest": "2f9a9628dd837b7ffdd7a63da0c5d501f319c5c9ea6866c5011520901d56a264",
   "files": {
     ".agents/plugins/marketplace.json": "547525118f3ebda1fd753664932aa5afd01c514d9c248bd4bf24661129d6abb0",
     ".claude-plugin/marketplace.json": "418bae6fa316801df58bfeb71fbfa6cfc39b231a01293b87f9049af322308e88",
@@ -36,7 +36,7 @@
     "hooks/hooks.zcode.json": "8c1f63f4f8be8cd1bf28fe1cb36f5aaf316cb9c293d2db941e6b25b9cf63134c",
     "hooks/lib/zmem-capture-entry.py": "1ccd97cf28f0b5048fb637f050f67fcbb5aa9969202a6dfbd104b81da17e5762",
     "hooks/lib/zmem-log-rotate.py": "d39b64d4b38856771fc91b6a2060ae585028baea6dc2415a9060cc96364f72d0",
-    "hooks/lib/zmem-recall-body.py": "615fe642e0fc8f0576dd9098bfd8dc0f7f27f2f74e5b3bd2879b5017422dbffe",
+    "hooks/lib/zmem-recall-body.py": "ff005b0466f0748d6c9ecca52c887b6adfea00bf5dc11a0841cb724b26850f42",
     "hooks/lib/zmem-retain-process.py": "2d51fd826c43f96a6b53f60cf274c99156227d05244a4ed8f24fd7937e925639",
     "hooks/lib/zmem-session-start-payload.py": "ac71b58ff7f59eebcb73195286e923fc5db33e78655debb8841b75ad5923d318",
     "hooks/lib/zmem-tilde-expand.sh": "c026ac5d29070a25bfb46aec140b1487908a51d70e8f413934d0265a7e4cbe88",

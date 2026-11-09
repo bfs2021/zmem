@@ -595,10 +595,11 @@ def _free_text_arg(option: str, value: str) -> list[str]:
     return [option + "=" + value] if value.startswith("-") else [option, value]
 
 
-# Issue #428: mirror of storelib.delivery_ledger.normalize_correlation_id
-# (the #158 boundary keeps storelib imports out of this adapter; a parity
-# test pins the two). Valid = string, stripped, non-empty, at most 128
-# chars, no C0/DEL controls, not option-shaped; anything else is ABSENT.
+# Issue #428: mirror of the store-side task-text ledger's
+# normalize_correlation_id (the #158 boundary keeps the store library out of
+# this adapter; tests/test_tasktext_correlation_supp.py pins the two). Valid =
+# string, stripped, non-empty, at most 128 chars, no C0/DEL controls, not
+# option-shaped; anything else is ABSENT.
 _CORRELATION_ID_MAX = 128
 
 
