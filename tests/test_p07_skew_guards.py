@@ -50,7 +50,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STORE_PY = REPO_ROOT / "skills" / "memory" / "scripts" / "store.py"
 DOCTOR_PY = REPO_ROOT / "skills" / "memory" / "scripts" / "doctor.py"
 
+import atexit
+import shutil
+
 _SCRATCH = Path(tempfile.mkdtemp(prefix="zmem-p07-supp-"))
+atexit.register(shutil.rmtree, _SCRATCH, True)
 _PIN_KEYS = ("ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODELS_DIR",
              "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_TEST_LEDGER_FAMILIES")
 _SAVED_ENV = {key: os.environ.get(key) for key in _PIN_KEYS}
@@ -101,8 +105,6 @@ def _env(extra=None):
     # passed dict REPLACE the environment - subprocesses then lose
     # PATH/HOME/USERPROFILE and crash in unrelated checks).
     env = dict(os.environ)
-    if extra:
-        env.update(extra)
     env.update({
         "ZMEM_STORE": str(_SCRATCH / "store.sqlite"),
         "ZMEM_DATA": str(_SCRATCH),
@@ -110,6 +112,10 @@ def _env(extra=None):
         "ZMEM_MODEL_AUTODOWNLOAD": "0",
         "PYTHONUTF8": "1",
     })
+    # Per-test extras override the module pins (an ops-absent leg needs its
+    # own ZMEM_STORE/ZMEM_DATA; module pins run BEFORE extras, never after).
+    if extra:
+        env.update(extra)
     return env
 
 
@@ -125,8 +131,11 @@ def _add_row(namespace="project:p07supp", content="p07supp needle alpha beta"):
 
 
 def _row_exists(mid, store=None):
-    store = store or (_SCRATCH / "store.sqlite")
-    con = sqlite3.connect("file:%s?mode=ro" % store, uri=True)
+    store = (store or (_SCRATCH / "store.sqlite"))
+    # as_posix: sqlite URI mode mis-parses Windows drive-letter paths with
+    # backslashes ("unable to open database file").
+    con = sqlite3.connect("file:%s?mode=ro" % Path(store).as_posix(),
+                          uri=True)
     try:
         return con.execute("SELECT COUNT(*) FROM memory WHERE id = ?",
                            (mid,)).fetchone()[0] == 1
@@ -209,9 +218,13 @@ class SeamOrderingTest(unittest.TestCase):
             from storelib import purge as purge_mod
             reduced = [t for t in EXPECTED_FAMILY_ORDER
                        if t != "ledger.seg"]
+            # Shuffled on purpose (review round 1 nit): an implementation
+            # iterating the ENV token order would scrub in that order and
+            # fail the expected-sequence assert below.
+            shuffled = list(reversed(reduced))
             with mock.patch.dict(os.environ,
                                  {"ZMEM_TEST_LEDGER_FAMILIES":
-                                  ",".join(reduced)}):
+                                  ",".join(shuffled)}):
                 rec, recorder = _make_glob_recorder()
                 with mock.patch.object(Path, "glob", recorder):
                     purge_mod.scrub_ledgers(_SCRATCH, set(), [])
@@ -264,13 +277,53 @@ class FaultInjectionTest(unittest.TestCase):
 class InvalidTokenTest(unittest.TestCase):
     """Bogus seam token: purge exit 2; doctor warn; never a traceback."""
 
-    def test_purge_refuses_exit_2_naming_token(self):
-        mid = _add_row(content="p07supp invalidtoken needle row")
-        self.assertTrue(_row_exists(mid))
-        r = _run_purge(mid, {"ZMEM_TEST_LEDGER_FAMILIES": "bogus"})
+    def _assert_exit_2(self, r, mid):
         self.assertEqual(r.returncode, 2, r.stderr[-400:])
         self.assertIn("bogus", r.stderr)
         self.assertTrue(_row_exists(mid))
+
+    def test_purge_refuses_exit_2_naming_token(self):
+        # Self-contained ops-present leg (review round 1: the shared
+        # scratch's ops dir must not be an ordering dependency).
+        (_SCRATCH / "ops").mkdir(exist_ok=True)
+        mid = _add_row(content="p07supp invalidtoken needle row")
+        self.assertTrue(_row_exists(mid))
+        self._assert_exit_2(
+            _run_purge(mid, {"ZMEM_TEST_LEDGER_FAMILIES": "bogus"}), mid)
+
+    def test_purge_refuses_exit_2_with_ops_absent(self):
+        # Ops-absent leg (review round 1 MAJOR): the seam must validate
+        # BEFORE the absent-dir early return, or the token error surfaces
+        # post-deletion inside scrub_ledgers (exit 5, row gone) instead of
+        # the pre-transaction exit 2.
+        fresh = Path(tempfile.mkdtemp(prefix="zmem-p07-tok-"))
+        try:
+            r = subprocess.run(
+                [sys.executable, "-X", "utf8", str(STORE_PY), "add",
+                 "--namespace", "project:p07supp", "--type", "fact",
+                 "--content", "p07supp invalidtoken absent needle row",
+                 "--tags", "supp", "--json"],
+                capture_output=True, text=True,
+                env=_env({"ZMEM_STORE": str(fresh / "store.sqlite"),
+                          "ZMEM_DATA": str(fresh)}),
+                timeout=180, cwd=str(REPO_ROOT))
+            self.assertEqual(r.returncode, 0, r.stderr[-300:])
+            mid = json.loads(r.stdout)["id"]
+            self.assertFalse((fresh / "ops").exists(),
+                             "fixture must start with no ops dir")
+            pr = subprocess.run(
+                [sys.executable, "-X", "utf8", str(STORE_PY), "purge",
+                 "--id", mid],
+                capture_output=True, text=True,
+                env=_env({"ZMEM_STORE": str(fresh / "store.sqlite"),
+                          "ZMEM_DATA": str(fresh),
+                          "ZMEM_TEST_LEDGER_FAMILIES": "bogus"}),
+                timeout=600, cwd=str(REPO_ROOT))
+            self.assertEqual(pr.returncode, 2, pr.stderr[-400:])
+            self.assertIn("bogus", pr.stderr)
+            self.assertTrue(_row_exists(mid, fresh / "store.sqlite"))
+        finally:
+            shutil.rmtree(fresh, ignore_errors=True)
 
     def test_doctor_warns_naming_misconfiguration(self):
         r = subprocess.run(

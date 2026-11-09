@@ -842,14 +842,20 @@ def unsupported_delivery_state_files(data_dir: Path) -> list[str]:
     "no skew". A genuinely absent ops dir is clean (no delivery state at
     all); every other inspection failure propagates to the caller, which
     fails closed.
+
+    The seam is validated BEFORE the absent-dir early return (review
+    finding, PR round 1): an invalid ZMEM_TEST_LEDGER_FAMILIES token must
+    refuse at the caller's boundary (purge exit 2, doctor warn) even when
+    no ops dir exists — validating only after the early return let the
+    token error surface post-deletion inside scrub_ledgers instead.
     """
+    supported = supported_delivery_families()
     ops = data_dir / "ops"
     if not ops.exists():
         return []
     if not ops.is_dir():
         # A file named "ops" is an inspection failure, not "no skew".
         raise NotADirectoryError(str(ops))
-    supported = supported_delivery_families()
     patterns = [SUPPORTED_DELIVERY_FAMILIES[t] for t in supported]
     unsupported: list[str] = []
     with os.scandir(ops) as it:
