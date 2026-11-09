@@ -156,6 +156,11 @@ _BG_LINE_RE = re.compile(
     # (state=dirty|clean|unavailable) rides only when a probe/seam ran —
     # same additive rule as every field above; absent on all other lines.
     r"(?: state=(\S+))?"
+    # Issue #449: the fleet snapshot-refresh refusal line's terminal marker
+    # (snapshot_refresh=refused) — appended LAST so every positional group
+    # index before it (eval_replay reads lane/ver/t_ms at groups[11..13])
+    # is preserved; same additive rule as every field above.
+    r"(?: snapshot_refresh=(\S+))?"
     r"\s*$"
 )
 
@@ -269,7 +274,8 @@ def parse_bg_log(path) -> list:
             (ts, status, reason, omitted, ids_raw, all_raw, _tok, ops,
              exc, sid, moment, lane, version, t_ms_raw, arms, _batch,
              _tools, _paths, margin, margin_pruned_raw, _store_timeout,
-             rewrite_raw, _state_hint) = m.groups()
+             rewrite_raw, _state_hint,
+             snapshot_refresh) = m.groups()
             try:
                 ts = int(ts)
             except ValueError:
@@ -349,6 +355,10 @@ def parse_bg_log(path) -> list:
                 "margin": margin,
                 "margin_pruned": (_parse_id_list(margin_pruned_raw)
                                    if margin_pruned_raw else None),
+                # Issue #449: the fleet snapshot-refresh refusal marker
+                # (snapshot_refresh=refused). None on every line that
+                # predates the field — additive parsed parity only.
+                "snapshot_refresh": snapshot_refresh,
             }
             if rewrite:
                 parsed_row["rewrite"] = True

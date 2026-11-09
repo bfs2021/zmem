@@ -5,6 +5,71 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.146.0] - 2026-11-08
+
+### Fixed (issues #448 + #449, collated)
+
+- **Host-gate evidence guard: incident-shape detection, `.jsonl` transcript
+  scanning, and a whole-file-identity allowlist (#448).**
+  `scripts/host_evidence_guard.py` grows three additive surfaces beside the
+  unchanged `stdout_raw` payload rule. `unsafe_incident_shape_paths` flags
+  a capture-shaped `*.json` dict (a `remote_url` key or any `://` string
+  value) whose string values carry a credential key=value assignment — the
+  structural shape of the credential that leaked through
+  `refs/pull/402/head` (issue #438), which the shipped detector set missed
+  because its `\S{8,}` value floor and family-specific shapes predate the
+  incident; the new detector uses non-space value semantics (4+ chars,
+  quoted forms included, punctuation-bearing values caught).
+  `unsafe_jsonl_transcript_paths` scans `.jsonl` transcripts line by line
+  (the corpus's only evidence transcript was structurally invisible to the
+  `*.json` glob): a malformed line flags the file fail-closed
+  (`.jsonl`-only — the claude-run2 malformed-`.json` tolerance is
+  unchanged), and a live or neutralized fence open marker whose body
+  carries no `[REDACTED:` notice flags its line; memory text is walked
+  from every nested string carrier. The allowlist surface
+  (`parse_allowlist`/`validate_allowlist`) admits only entries pinning
+  path + detector id + the file's CURRENT whole-file git blob sha + the
+  zero-based hit ordinal + the total hit count — a hash of a matched
+  secret span is structurally refused (the only accepted hash field is
+  the whole-file blob identity). The credential key family matches
+  ANYWHERE (camelCase `clientSecret`/`accessToken` and suffix compounds
+  `SECRET_KEY`/`PRIVATE_KEY` flag; a benign word containing a family
+  substring over-matches — accepted noise for a human-review flag), a
+  duplicate-key document or undecodable file is FLAGGED fail-closed
+  (never silently skipped, never a scan-aborting exception), and the
+  incident shape is governed in `.jsonl` transcripts too. The shipped
+  corpus's one reviewed hit — the 287-ac7 transcript's deliberate
+  SSRF-probe record — is pinned by the frozen jsonl check with its
+  whole-file allowlist entry (unsuppressed scan flags it; the entry
+  suppresses it; a regenerated transcript invalidates the entry and
+  fails the check, the designed re-review trigger).
+- **Snapshot-refresh refusal lines also land in the guarded decision log
+  (#449, completing #437 AC1's post-hoc-attribution intent).** A refused
+  refresh (any shipped class: `hub-unreachable`, `hub-refused`,
+  `payload-invalid` — all six refusal branches) appends one bounded line
+  to `<data_dir>/zmem-decisions.log` beside the byte-identical #437
+  stderr line: `status=silent reason=<class> ids=[] all=[]
+  snapshot_refresh=refused`. The shipped decision-log reader
+  (`miss_rate.parse_bg_log`) gains the additive TERMINAL
+  `snapshot_refresh=` optional group in the same commit (appended after
+  `state=` so every earlier positional group index — eval_replay reads
+  lane/ver/t_ms at groups[11..13] — is preserved); parsed rows carry the
+  field verbatim, `None` on lines that predate it. The two writes are
+  failure-independent (rotation problems and a closed/raising stderr
+  never suppress the persistent line), the writer creates a missing data
+  dir, and `env=None` resolves through the ambient environment.
+  Disclosed bounds: a FULL hub outage writes zero refusal lines (the
+  broker's offline-snapshot branch returns before the refresh attempt —
+  the reconnect stamp, not the decision log, is the outage-window
+  evidence); refusal lines appear only when a refresh was attempted and
+  then refused. The rows dilute hook-decision aggregates that count all
+  parsed lines (`sid_coverage_pct`, period bounds, attribution
+  counters); no shipped report branches on `snapshot_refresh` yet.
+  Mixed version: a pre-0.146 decision-log reader skips these lines
+  whole, and a pre-0.146 `scripts/eval_replay.py` REFUSES the log
+  (ReplayError on the unknown terminal field) — do not point an older
+  replay evaluator at a 0.146 data dir.
+
 ## [0.145.0] - 2026-11-07
 
 ### Fixed (issues #442 + #446, collated)

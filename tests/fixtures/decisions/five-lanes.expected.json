@@ -17,12 +17,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-claude",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 40,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [],
@@ -37,12 +38,13 @@
       "ops": null,
       "reason": "empty-pool",
       "sid": "fixture-claude",
+      "snapshot_refresh": null,
       "status": "silent",
       "t_ms": 30,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -61,12 +63,13 @@
       "ops": null,
       "reason": "already-delivered",
       "sid": "fixture-claude",
+      "snapshot_refresh": null,
       "status": "silent",
       "t_ms": 10,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [],
@@ -81,12 +84,13 @@
       "ops": null,
       "reason": "empty-pool",
       "sid": "fixture-claude",
+      "snapshot_refresh": null,
       "status": "silent",
       "t_ms": 20,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -105,12 +109,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-codex",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 40,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -129,12 +134,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-codex",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 30,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -153,12 +159,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-codex",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 10,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -177,12 +184,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-codex",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 20,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -201,12 +209,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-deepseek",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 40,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -225,12 +234,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-deepseek",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 30,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -249,12 +259,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-deepseek",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 10,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -273,12 +284,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-deepseek",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 20,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -297,12 +309,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-hermes-compat",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 40,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -321,12 +334,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-hermes-compat",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 30,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -345,12 +359,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-hermes-compat",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 10,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -369,12 +384,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-hermes-compat",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 20,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -393,12 +409,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-hermes-provider",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 40,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -417,12 +434,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-hermes-provider",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 30,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -441,12 +459,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-hermes-provider",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 10,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -465,12 +484,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-hermes-provider",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 20,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -489,12 +509,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-zcode",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 40,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -513,12 +534,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-zcode",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 30,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -537,12 +559,13 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-zcode",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 10,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     },
     {
       "all": [
@@ -561,18 +584,19 @@
       "ops": null,
       "reason": "injected",
       "sid": "fixture-zcode",
+      "snapshot_refresh": null,
       "status": "injected",
       "t_ms": 20,
       "tok_budget": null,
       "tok_used": null,
       "ts": 1780272000,
-      "ver": "0.145.0"
+      "ver": "0.146.0"
     }
   ],
   "fixture": {
     "generated_at": "2026-06-01T00:00:00Z",
     "namespace": "project:fixture",
-    "version": "0.145.0"
+    "version": "0.146.0"
   },
   "matrix": [
     {
@@ -586,9 +610,9 @@
       "t_ms": 40,
       "t_ms_avg": 40,
       "t_ms_max": 40,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -602,9 +626,9 @@
       "t_ms": 30,
       "t_ms_avg": 30,
       "t_ms_max": 30,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -618,9 +642,9 @@
       "t_ms": 10,
       "t_ms_avg": 10,
       "t_ms_max": 10,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -634,9 +658,9 @@
       "t_ms": 20,
       "t_ms_avg": 20,
       "t_ms_max": 20,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -650,9 +674,9 @@
       "t_ms": 40,
       "t_ms_avg": 40,
       "t_ms_max": 40,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -666,9 +690,9 @@
       "t_ms": 30,
       "t_ms_avg": 30,
       "t_ms_max": 30,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -682,9 +706,9 @@
       "t_ms": 10,
       "t_ms_avg": 10,
       "t_ms_max": 10,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -698,9 +722,9 @@
       "t_ms": 20,
       "t_ms_avg": 20,
       "t_ms_max": 20,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -714,9 +738,9 @@
       "t_ms": 40,
       "t_ms_avg": 40,
       "t_ms_max": 40,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -730,9 +754,9 @@
       "t_ms": 30,
       "t_ms_avg": 30,
       "t_ms_max": 30,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -746,9 +770,9 @@
       "t_ms": 10,
       "t_ms_avg": 10,
       "t_ms_max": 10,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -762,9 +786,9 @@
       "t_ms": 20,
       "t_ms_avg": 20,
       "t_ms_max": 20,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -778,9 +802,9 @@
       "t_ms": 40,
       "t_ms_avg": 40,
       "t_ms_max": 40,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -794,9 +818,9 @@
       "t_ms": 30,
       "t_ms_avg": 30,
       "t_ms_max": 30,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -810,9 +834,9 @@
       "t_ms": 10,
       "t_ms_avg": 10,
       "t_ms_max": 10,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -826,9 +850,9 @@
       "t_ms": 20,
       "t_ms_avg": 20,
       "t_ms_max": 20,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -842,9 +866,9 @@
       "t_ms": 40,
       "t_ms_avg": 40,
       "t_ms_max": 40,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -858,9 +882,9 @@
       "t_ms": 30,
       "t_ms_avg": 30,
       "t_ms_max": 30,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -874,9 +898,9 @@
       "t_ms": 10,
       "t_ms_avg": 10,
       "t_ms_max": 10,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -890,9 +914,9 @@
       "t_ms": 20,
       "t_ms_avg": 20,
       "t_ms_max": 20,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -906,9 +930,9 @@
       "t_ms": 40,
       "t_ms_avg": 40,
       "t_ms_max": 40,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -922,9 +946,9 @@
       "t_ms": 30,
       "t_ms_avg": 30,
       "t_ms_max": 30,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -938,9 +962,9 @@
       "t_ms": 10,
       "t_ms_avg": 10,
       "t_ms_max": 10,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     },
     {
@@ -954,9 +978,9 @@
       "t_ms": 20,
       "t_ms_avg": 20,
       "t_ms_max": 20,
-      "ver": "0.145.0",
+      "ver": "0.146.0",
       "versions": [
-        "0.145.0"
+        "0.146.0"
       ]
     }
   ]

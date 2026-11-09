@@ -531,8 +531,7 @@ additionally carry the transport tokens `reason=store-error` — a store
 child that exited nonzero (e.g. a partial-upgrade store rejecting an
 unknown flag) — and `reason=envelope-error` — a store child that exited
 zero whose stdout was not a JSON envelope (issue #435); both are emitted
-by the hook body, the hermes-provider lane, and the hermes MCP server's
-session prefetch, and miss-rate reporting
+by the hook body and the hermes-provider lane, and miss-rate reporting
 excludes both from the missed count like the
 other negotiation refusals. `reason=injected` is a
 successful decision and `reason=disabled` is the separate kill-switch marker.
@@ -756,6 +755,38 @@ rows (a bump never rescues them). The hint rides the recall query branch
 only — the queryless `recent` lane stays state-blind. Test seam:
 `ZMEM_TEST_REPO_STATE=dirty|clean|unavailable` overrides the probe
 entirely.
+
+#### Snapshot-refresh refusal decision lines — issue #449
+
+Since 0.146.0 a refused snapshot refresh (any shipped refusal class:
+`hub-unreachable`, `hub-refused`, `payload-invalid`) appends ONE bounded
+line to the guarded decisions log beside the unchanged #437 stderr line:
+`[<ts>] zmem-hook status=silent reason=<class> ids=[] all=[]
+snapshot_refresh=refused`. The line is parseable by the shipped
+decision-log reader via the additive TERMINAL `snapshot_refresh=` optional
+group (appended after `state=` so every earlier positional group index is
+preserved); parsed rows carry `snapshot_refresh` verbatim (None on lines
+that predate the field). No enrichment trio (`lane=`/`ver=`/`t_ms=`) rides
+the line, so the reader's enrichment veto stays untriggered. The two
+writes are failure-independent: rotation problems and a closed/raising
+stderr never suppress the persistent line (and vice versa); the whole
+writer body is guarded so a refused/readonly data dir only loses the line,
+never the refresh ladder.
+
+Known bounds (PR #451 review, disclosed): a FULL hub outage writes ZERO
+refusal lines — the broker takes its offline-snapshot branch and returns
+BEFORE the refresh attempt, so the stamp (not the decision log) is the
+outage-window evidence; refusal lines appear only when a refresh was
+ATTEMPTED and then refused (fresh-pair transport failures retry per
+moment, one line each — the rotation family bounds the growth). The rows
+dilate hook-decision aggregates that count all parsed lines
+(`sid_coverage_pct`, period bounds, attribution counters — a refusal row
+carries no `sid=`); no shipped report branches on `snapshot_refresh` yet
+(parsing is the shipped contract; a dedicated refusal surface is future
+work). Mixed version: a pre-0.146 decision-log READER skips these lines
+whole, and a pre-0.146 `scripts/eval_replay.py` REFUSES the log
+(ReplayError on the unknown terminal field) — do not point an older
+replay evaluator at a 0.146 data dir.
 
 #### Write-path capture guards and the session closeout — issues #398 / #246 / #247
 
@@ -2750,30 +2781,6 @@ import store internals directly.
 `ZMEM_CONVENTION_INTERVAL` remains the legacy cadence for the Hermes
 convention-compatibility hook only. It does not control the commit-only
 `zmem-convention-capture.sh` prompt.
-
-The Hermes convention writer bounds its own `hermes_convention_count_*`
-meta rows (issue #446): once the convention-family row count exceeds
-`ZMEM_CONVENTION_ROW_CAP` (default 64; invalid/negative falls back, 0 is
-a valid aggressive setting), a best-effort prune runs BEFORE the counter
-write with `current_session` = the Hermes payload session id — the live
-session's parseable row consumes one cap slot and is never deleted (a
-legacy value upgrades in place), non-current rows prune oldest-first
-down to the cap, and a first write for a NEW session at an exactly-cap
-population prunes one extra row so the post-write total stays at the
-cap. Malformed counter values are never deleted and sit outside the cap
-arithmetic (they are reported `unparseable`, including a malformed row
-for the live session). When the prune runs it also applies the sweep's
-age rules — non-current rows older than `ZMEM_SENTINEL_SWEEP_DAYS`
-(default 7) and every non-current legacy integer row are deleted
-regardless of the cap value; raising the cap above the family
-population suppresses the prune entirely, so a Hermes-only host with no
-launcher sweep retains stale rows until the population crosses the cap.
-A Hermes-only host (no launcher
-sweep) is bounded by this mechanism alone. The prune serializes against
-`restore` under the maintenance lock and skips (fail-open) when a live
-holder exists; the transaction runs on a dedicated ~1s-timeout
-connection so a contended
-prune skips instead of stalling other store commands behind the lock.
 
 ### queue-list / queue-clear / queue-add — review live-captured corrections (read-only / clear / author a note)
 ```
