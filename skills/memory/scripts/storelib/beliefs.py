@@ -595,13 +595,6 @@ def belief_head_rows(conn: sqlite3.Connection, *, query: str,
     return matched
 
 
-def _head_valid_at(conn: sqlite3.Connection, head_id: str, as_of: str) -> bool:
-    row = conn.execute(
-        "SELECT MAX(source_ingestion_ts) FROM belief_head_source "
-        "WHERE head_id=?", (head_id,)).fetchone()
-    return bool(row and row[0] and row[0] <= as_of)
-
-
 def _virtual_row(head: sqlite3.Row, member_rows: list[dict],
                  evidence: list[str]) -> dict:
     """Build one virtual recall row from pre-fetched, LIVE member rows

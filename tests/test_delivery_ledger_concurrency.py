@@ -22,7 +22,8 @@ memory ids THIS call admitted (absent from the ledger at admit time).
 Two concurrent writers racing for the SAME (session_id, memory id) pair
 resolve cross-process to exactly one winner — the id appears in the
 winner's returned list — while the loser gets an empty list back and the
-id is already present in ``delivered_ids(data_dir, session_id)`` (the
+id is already present in the ``delivered(data_dir, session_id)`` view
+(projected to ids by the caller; the
 "already-delivered" observation). This test is RED at base (the API does
 not exist) and GREEN after the fix.
 
@@ -96,7 +97,8 @@ admitted = dl.record_undelivered(
     data_dir, sid,
     [{"id": "t05-race-row-1", "content": "concurrent admit-once race row"}],
     "user_prompt")
-sees_delivered = "t05-race-row-1" in dl.delivered_ids(data_dir, sid)
+sees_delivered = any(
+    e["id"] == "t05-race-row-1" for e in dl.delivered(data_dir, sid))
 print("RESULT " + json.dumps({
     "admitted": [str(i) for i in (admitted or [])],
     "sees_delivered": bool(sees_delivered),
@@ -193,12 +195,12 @@ def test_concurrent_record_admits_one():
             f"the losing writer also claims admission: {results}")
         assert loser["sees_delivered"], (
             "the losing writer must observe the pair as already-delivered "
-            f"(delivered_ids after its call): {results}")
+            f"(delivered view after its call): {results}")
 
         # The merged ledger view holds the pair exactly once.
-        assert dl.delivered_ids(tmp, sid) == [ROW_ID], (
+        assert [e["id"] for e in dl.delivered(tmp, sid)] == [ROW_ID], (
             "the ledger view after the race must hold exactly the one "
-            f"admitted id: {dl.delivered_ids(tmp, sid)}")
+            f"admitted id: {[e['id'] for e in dl.delivered(tmp, sid)]}")
 
 
 _TESTS = (

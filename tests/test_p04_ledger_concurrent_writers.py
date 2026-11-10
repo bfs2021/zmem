@@ -96,7 +96,7 @@ class ConcurrentThreadWritersTest(unittest.TestCase):
         for t in threads:
             t.join(timeout=60.0)
 
-        n = len(set(delivery_ledger.delivered_ids(
+        n = len(set(e["id"] for e in delivery_ledger.delivered(
             self.tmp, SHARED_SID, now=base)))
         self.assertEqual(n, 200)
 
@@ -134,7 +134,7 @@ class ConcurrentProcessWritersTest(unittest.TestCase):
             rc = child.wait(timeout=120)
             self.assertEqual(rc, 0, f"child writer {w} exited {rc}")
 
-        n = len(set(delivery_ledger.delivered_ids(
+        n = len(set(e["id"] for e in delivery_ledger.delivered(
             self.tmp, SHARED_SID, now=base)))
         self.assertEqual(n, 200)
 
@@ -194,7 +194,8 @@ class WedgedLockPrimitiveTest(unittest.TestCase):
 
         rid = "wedged-1"
         self.assertIn(
-            rid, delivery_ledger.delivered_ids(self.tmp, sid, now=base),
+            rid, [e["id"] for e in delivery_ledger.delivered(
+            self.tmp, sid, now=base)],
             f"{rid} not delivered after wedged lock (elapsed={elapsed:.2f}s)")
 
 

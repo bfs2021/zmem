@@ -175,11 +175,13 @@ class TaskTextSidecarUnitTest(unittest.TestCase):
 
     def test_clear_delivery_state_keeps_tasktext_stash(self):
         # The load-bearing lifecycle claim: a subagent's task text must
-        # survive another moment's delivery-state clear.
+        # survive another moment's delivery-state clear (the mid-session
+        # ``clear`` — CLI ledger-clear — shape; only the terminal
+        # end_delivery_state removes the stash).
         self.dl.record(self._tmp, "s5", [{"id": "k", "content": "z"}],
                        "user_prompt")
         self.dl.park_task_text(self._tmp, "s5", "survivor task")
-        self.dl.clear_delivery_state(self._tmp, "s5")
+        self.dl.clear(self._tmp, "s5")
         self.assertFalse(_ops_path(self._tmp, "s5", ".ledger").exists())
         self.assertTrue(_ops_path(self._tmp, "s5", ".tasktext").exists())
         self.assertEqual(self.dl.consume_task_text(self._tmp, "s5"),

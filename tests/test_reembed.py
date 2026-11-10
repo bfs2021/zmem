@@ -174,6 +174,13 @@ class ReembedBase(unittest.TestCase):
         self._conn.commit()
         return ids
 
+    def get_meta(self, conn, key):
+        """Test-local meta reader (schema.get_meta retired with issue #323);
+        reads the live row on the connection, never cached."""
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
     def state_fingerprint(self):
         """Everything the rebuild contract promises to leave untouched."""
         rows = self._conn.execute(
@@ -250,7 +257,7 @@ class AllRebuildSemantics(ReembedBase):
                          "--all is idempotent: identical bytes reapplied")
         declared = self.R._declared_vec0_dim(self._conn)
         self.assertEqual(declared, 384)
-        meta = self.S.get_meta(self._conn, "embedding_profile")
+        meta = self.get_meta(self._conn, "embedding_profile")
         self.assertEqual(meta, "minilm")
 
     def _blob_map(self):
@@ -314,7 +321,7 @@ class DimensionConversion(ReembedBase):
         self.assertEqual(rc, 0)
         self.assertIn("profile 'fake', dim 16", out)
         self.assertEqual(self.R._declared_vec0_dim(self._conn), 16)
-        self.assertEqual(self.S.get_meta(self._conn, "embedding_profile"),
+        self.assertEqual(self.get_meta(self._conn, "embedding_profile"),
                          "fake")
         rows = self._conn.execute(
             "SELECT DISTINCT length(embedding)/4 AS d FROM memory "
@@ -365,7 +372,7 @@ class DimensionConversion(ReembedBase):
         self.assertEqual(self.R._declared_vec0_dim(self._conn), pre_declared)
         self.assertEqual(self._blob_map_all(), pre_blobs)
         self.assertEqual(
-            self.S.get_meta(self._conn, "embedding_profile"), "minilm",
+            self.get_meta(self._conn, "embedding_profile"), "minilm",
             "rolled-back conversion must leave the PRIOR committed marker",
         )
         self.assertFalse(getattr(boom, "fake_warned", False),

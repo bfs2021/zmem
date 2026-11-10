@@ -445,16 +445,6 @@ def _vec0_create_sql(dim: int) -> str:
     )
 
 
-def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
-    """Read one meta key (call-time read, NEVER cached). Returns None when the
-    row is absent."""
-    try:
-        row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
-    except sqlite3.Error:
-        return None
-    return row["value"] if row else None
-
-
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     """Upsert one meta key. Old clients only ever address meta rows by exact
     key (WHERE key=?), so extra keys written by newer clients are inert for

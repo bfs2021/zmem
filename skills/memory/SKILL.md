@@ -2670,10 +2670,12 @@ What one purge does:
   The `<hash>.tasktext` delegation stash IS in scope since issue #253: purge
   needle-scrubs its entries (they carry untrusted host prose and have no
   memory ids) and reaps orphaned `*.tasktext.tmp.*`. The residue verify
-  step still globs only `*.ledger*`, so a stash the scrub SKIPPED because
-  it was unreadable/torn (the reader tolerates those states by design) is
-  exempt from that pass and stays until the ops age sweep; see #336 for the
-  verify-glob trade-off;
+  step scans the full delivery-state scope (all eight registered families
+  plus the broad legacy ledger/reserve globs, issue #322), so a stash the
+  scrub SKIPPED because it was unreadable/torn (the reader tolerates those
+  states by design) is no longer exempt: needle bytes in any scanned
+  family fail the purge closed; see #336 for the historical verify-glob
+  trade-off;
 - records the ids in the `purged_id` deny-list so `ingest-jsonl` will not
   re-insert them from a peer export (child records referencing a purged id
   are skipped or blanked, never fatal);
@@ -2716,10 +2718,17 @@ verification: memory content that is a substring of SQLite's own schema DDL
 text (contrived single-word contents like `namespace`) cannot be
 distinguished from schema bytes, so no needle is scanned for it. Surviving
 rows that still quote purged-content tokens (e.g. a mid-chain `update`
-successor, kept by design) are listed as WARNINGs in the summary. On exit **5**
-the deny-list rows are already recorded while content may remain: clean the
-named surface, then delete those rows from `purged_id` (or re-purge the
-surviving carrier) so peer imports stay denied only while content exists.
+successor, kept by design) are listed as WARNINGs in the summary. Exit **5**
+has two shapes: (a) residue detected after deletion — the deny-list rows are
+already recorded while content may remain: clean the named surface, then
+delete those rows from `purged_id` (or re-purge the surviving carrier) so
+peer imports stay denied only while content exists; (b) the delivery-state
+skew refusal (issue #322) — `<data>/ops` held delivery-state files from a
+family this client does not support, and the purge refused BEFORE touching
+the store: nothing was deleted, no `purged_id` rows exist, and the named
+files must be handled per the refusal's recovery text (upgrade this client,
+or remove the listed files after quiescing writers). Exit **2** also covers
+an invalid `ZMEM_TEST_LEDGER_FAMILIES` value (test seam misconfiguration).
 Detection scope note: the read-time-style scan here covers the row's
 content, source_ref and tags; a credential stored ONLY as an entity
 name is not detected by purge's needle scan or by the passive lane's

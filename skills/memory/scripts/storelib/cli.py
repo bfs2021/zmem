@@ -382,19 +382,6 @@ def _read_training_capture_input(path_value: object) -> dict[str, object]:
     return payload
 
 
-def _require_payload_fields(payload: Mapping[str, object], fields: tuple[str, ...]) -> None:
-    for field in fields:
-        value = payload.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"missing governance field: {field}")
-
-
-def _require_capture_governance(payload: Mapping[str, object]) -> None:
-    _require_payload_fields(payload, (
-        "consent_scope", "content_license", "redaction_policy_version",
-    ))
-
-
 def _has_capture_governance(payload: Mapping[str, object]) -> bool:
     return all(isinstance(payload.get(field), str) and payload[field].strip()
                for field in ("consent_scope", "content_license", "redaction_policy_version"))

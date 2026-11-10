@@ -52,7 +52,9 @@ class NonReserveRoutingTest(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
-        dl.clear_delivery_state(_WIRING_TMP, "wiring-session")
+        # Mid-session ledger clear (the CLI ledger-clear dispatch): removes
+        # ledger + segments WITHOUT the terminal end marker.
+        dl.clear(_WIRING_TMP, "wiring-session")
 
     def tearDown(self):
         dl.end_delivery_state(_WIRING_TMP, "wiring-session")
@@ -91,7 +93,7 @@ class NonReserveRoutingTest(unittest.TestCase):
         finally:
             conn.close()
         self.assertIsNotNone(result)
-        ids = dl.delivered_ids(_WIRING_TMP, "wiring-session")
+        ids = [e["id"] for e in dl.delivered(_WIRING_TMP, "wiring-session")]
         self.assertIn("wiring-1", ids,
                       "the delivered row must land in the ledger through the "
                       "admission API when record() is sabotaged")

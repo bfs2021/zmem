@@ -78,8 +78,10 @@ def invoke_session_end(data_dir: Path, session_id: str,
 
     def fake_run(argv, *args, **kwargs):
         calls.append(list(argv))
+        # Mimic what the real `store.py delivery-clear` subprocess runs:
+        # the TERMINAL clear (marker + ledger/pending/segment removal).
         from storelib import delivery_ledger
-        delivery_ledger.clear_delivery_state(str(data_dir), session_id)
+        delivery_ledger.end_delivery_state(str(data_dir), session_id)
         scheduler.advance(25.0)
         return subprocess.CompletedProcess(argv, 0, "", "")
 

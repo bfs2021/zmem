@@ -3,7 +3,7 @@
 Surfaces pinned here:
 - storelib.delivery_ledger: hashed collision-free naming, record/prune/cap,
   atomic write (no tmp residue), strong_token_match escalation rule,
-  fallback pending sidecar append-with-dedup, clear_delivery_state.
+  terminal end_delivery_state clears.
 - store CLI: --exclude on recall/recent/search filters pre-gate and reports
   the envelope ``excluded`` count (candidate_ids stays PRE-exclude).
 - hook body: pending sidecars are retired, session_end clears delivery state
@@ -225,11 +225,12 @@ class LedgerModuleTest(unittest.TestCase):
     def test_record_delivered_roundtrip_and_upsert(self):
         row = {"id": "row-1", "content": STASH_TEXT}
         self.dl.record(self.tmp, "sess-a", [row], "user_prompt")
-        ids = self.dl.delivered_ids(self.tmp, "sess-a")
+        ids = [e["id"] for e in self.dl.delivered(self.tmp, "sess-a")]
         self.assertEqual(ids, ["row-1"])
         # upsert: a re-delivery refreshes rather than duplicates
         self.dl.record(self.tmp, "sess-a", [row], "pretool")
-        self.assertEqual(self.dl.delivered_ids(self.tmp, "sess-a"), ["row-1"])
+        self.assertEqual([e["id"] for e in self.dl.delivered(self.tmp, "sess-a")],
+                         ["row-1"])
         # entry text captures the matcher fuel, lowercased
         entry = self.dl.delivered(self.tmp, "sess-a")[0]
         self.assertIn("git stash pop", entry["text"])
@@ -238,11 +239,12 @@ class LedgerModuleTest(unittest.TestCase):
         row = {"id": "row-1", "content": "alpha"}
         old = time.time() - 9999
         self.dl.record(self.tmp, "sess-a", [row], "user_prompt", now=old)
-        self.assertEqual(self.dl.delivered_ids(self.tmp, "sess-a"),
+        self.assertEqual([e["id"] for e in self.dl.delivered(self.tmp, "sess-a")],
                          ["row-1"])
         os.environ["ZMEM_DELIVER_WINDOW_S"] = "60"
         try:
-            self.assertEqual(self.dl.delivered_ids(self.tmp, "sess-a"), [])
+            self.assertEqual([e["id"] for e in self.dl.delivered(self.tmp, "sess-a")],
+                         [])
         finally:
             os.environ.pop("ZMEM_DELIVER_WINDOW_S", None)
         # cap: oldest entries dropped beyond the cap
@@ -252,8 +254,9 @@ class LedgerModuleTest(unittest.TestCase):
                 self.dl.record(self.tmp, "sess-cap",
                                [{"id": f"r{i}", "content": f"c{i}"}],
                                "user_prompt", now=time.time() + i)
-            self.assertEqual(self.dl.delivered_ids(self.tmp, "sess-cap"),
-                             ["r2", "r3", "r4"])
+            self.assertEqual([e["id"] for e in self.dl.delivered(self.tmp,
+                                                         "sess-cap")],
+                         ["r2", "r3", "r4"])
         finally:
             os.environ.pop("ZMEM_LEDGER_CAP", None)
 
@@ -275,32 +278,6 @@ class LedgerModuleTest(unittest.TestCase):
         # case-insensitive on both sides
         self.assertTrue(f("NEVER GIT STASH POP", ["git", "stash"]))
 
-    def test_fallback_sidecar_append_with_dedup(self):
-        fence1 = "<<<ZMEM_UNTRUSTED_FENCE>>> F1 <<<END_ZMEM_UNTRUSTED_FENCE>>>"
-        fence2 = "<<<ZMEM_UNTRUSTED_FENCE>>> F2 <<<END_ZMEM_UNTRUSTED_FENCE>>>"
-        self.dl.park_pending(self.tmp, "sess-a",
-                             [{"id": "r1"}], fence1, "pretool")
-        # a different id appends (N events all survive — the pre-#117 bug)
-        self.dl.park_pending(self.tmp, "sess-a",
-                             [{"id": "r2"}], fence2, "pretool")
-        # the same id does not duplicate
-        self.dl.park_pending(self.tmp, "sess-a",
-                             [{"id": "r2"}], fence2, "pretool")
-        ctx = self.dl.consume_pending(self.tmp, "sess-a")
-        self.assertIn("F1", ctx)
-        self.assertIn("F2", ctx)
-        self.assertEqual(ctx.count("F2"), 1)
-        # consumed clears
-        self.assertEqual(self.dl.consume_pending(self.tmp, "sess-a"), "")
-
-    def test_clear_delivery_state_clears_both(self):
-        self.dl.record(self.tmp, "sess-a",
-                       [{"id": "r", "content": "x"}], "user_prompt")
-        self.dl.park_pending(self.tmp, "sess-a", [{"id": "r"}], "F", "p")
-        self.dl.clear_delivery_state(self.tmp, "sess-a")
-        self.assertEqual(self.dl.delivered_ids(self.tmp, "sess-a"), [])
-        self.assertEqual(self.dl.consume_pending(self.tmp, "sess-a"), "")
-
     def test_terminal_marker_expires_for_resumed_session(self):
         sid = "resume-session"
         self.dl.record(self.tmp, sid, [{"id": "before"}], "pretool")
@@ -312,7 +289,8 @@ class LedgerModuleTest(unittest.TestCase):
             json.dump({"session_id": sid,
                        "ended_at": time.time() - self.dl._DELIVERY_END_MARKER_TTL_S - 1}, f)
         self.dl.record(self.tmp, sid, [{"id": "after"}], "session_start")
-        self.assertEqual(self.dl.delivered_ids(self.tmp, sid), ["after"])
+        self.assertEqual([e["id"] for e in self.dl.delivered(self.tmp, sid)],
+                         ["after"])
 
     def test_delivery_lock_rejects_unusable_host_token(self):
         import host
@@ -339,11 +317,21 @@ class LedgerModuleTest(unittest.TestCase):
         sid = "race-session"
         ops = Path(self.tmp) / "ops"
         ops.mkdir(parents=True, exist_ok=True)
-        compact = Path(self.dl.compact_path(self.tmp, sid))
+        # Legacy-sidecar fixtures seeded DIRECTLY (the retired park/compact
+        # helpers are gone): the .compact file is a pre-#158 leftover the
+        # terminal clear must leave alone, and the .pending file is the
+        # exact payload shape park_pending wrote ({"entries": [...]}, one
+        # fenced entry) — only its UNLINK is under test here.
+        pending = Path(self.dl.pending_path(self.tmp, sid))
+        compact = ops / (pending.stem + ".compact")
         tasktext = Path(self.dl.tasktext_path(self.tmp, sid))
         compact.write_bytes(b"compact-survives")
         tasktext.write_bytes(b"tasktext-survives")
-        self.dl.park_pending(self.tmp, sid, [{"id": "pending"}], "F", "pretool")
+        pending.write_text(
+            json.dumps({"entries": [
+                {"id": "pending", "moment": "pretool", "ts": time.time(),
+                 "fence": "F"}]}),
+            encoding="utf-8")
 
         def start(mode):
             return subprocess.Popen(
@@ -397,20 +385,6 @@ class LedgerModuleTest(unittest.TestCase):
         # tests/test_session_end_cleanup.py's ledger-clear leg.
         self.assertFalse(tasktext.exists())
         self.assertFalse((Path(self.tmp) / "store.sqlite").exists())
-
-    def test_park_multi_row_single_fence_stored_once(self):
-        # Issue #151 review (COPILOT-2): a single pretool event selecting
-        # N rows parks ONE fence — never N copies of the same fence.
-        fence = "<<<ZMEM_UNTRUSTED_FENCE>>> F <<<END_ZMEM_UNTRUSTED_FENCE>>>"
-        rows = [{"id": f"r{i}", "content": f"row {i}"} for i in range(3)]
-        self.dl.park_pending(self.tmp, "sess-m", rows, fence, "pretool")
-        ctx = self.dl.consume_pending(self.tmp, "sess-m")
-        self.assertEqual(ctx.count(fence), 1,
-                         "multi-row park must store the fence once")
-        # the parked ids are all recorded (dedup preserved)
-        self.dl.park_pending(self.tmp, "sess-m2", rows, fence, "pretool")
-        self.dl.park_pending(self.tmp, "sess-m2", rows, fence, "pretool")
-        self.assertEqual(self.dl.consume_pending(self.tmp, "sess-m2").count(fence), 1)
 
     def test_strong_token_match_boundaries(self):
         # Issue #151 review (CUBIC-ledger-287): tokens must match as whole

@@ -4025,20 +4025,6 @@ def _recall_memory_impl(
 # Issue #82: `recall --explain` — the read-only retrieval debugger.
 # ---------------------------------------------------------------------------
 
-def _explain_target_row(conn: sqlite3.Connection, mid: str) -> sqlite3.Row | None:
-    """Single-row any-state fetch with the extra columns the verdict gates
-    need (superseded_at, embedding, content_norm). Lineage read, never a
-    ranking input."""
-    return conn.execute(
-        """SELECT id, namespace, type, content, tags, source_ref, source_hash,
-                  confidence, signal, valid_from, valid_until, update_of,
-                  taint, superseded_at, content_norm, embedding,
-                  applied_count, violated_count
-           FROM memory WHERE id = ?""",
-        (mid,),
-    ).fetchone()
-
-
 def _explain_scope_ns(conn: sqlite3.Connection, namespace: str | None,
                       include_global: bool) -> tuple[list[str] | None, list[str] | None]:
     """The (project, global) namespace match sets explain shares with

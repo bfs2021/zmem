@@ -182,58 +182,16 @@ def _seed_divergent_store(env: dict, ns: str) -> None:
           "the mountain routes freeze zmem118newerd")
 
 
-class CompactSidecarUnitTest(unittest.TestCase):
-    """Backward-compatible delivery_ledger compact-sidecar API tests."""
+class CompactSidecarSweepTest(unittest.TestCase):
+    """The backup sweep reaps stale .compact sidecar files by age (the
+    retired compact-sidecar API is gone; leftover files from pre-#158
+    installs must not accumulate forever)."""
 
     def setUp(self):
-        import storelib.delivery_ledger as dl
-        self.dl = dl
         self._tmp = tempfile.mkdtemp(prefix="zmem118-unit-")
 
     def tearDown(self):
         shutil.rmtree(self._tmp, ignore_errors=True)
-
-    def test_snapshot_then_merge_then_consume(self):
-        rows = [{"id": "r1", "content": "alpha " + LEDGER_MARKER}]
-        self.dl.record(self._tmp, "s1", rows, "user_prompt")
-        self.dl.snapshot_for_compact(self._tmp, "s1")
-        stash = json.loads(_ops_path(self._tmp, "s1", ".compact")
-                           .read_text(encoding="utf-8"))
-        self.assertEqual([e["id"] for e in stash["entries"]], ["r1"])
-        self.assertIsNone(stash["summary"])
-        self.dl.park_compact_summary(self._tmp, "s1", "S" * 3000)
-        summary, entries = self.dl.consume_compact_context(self._tmp, "s1")
-        self.assertEqual(len(summary), self.dl.COMPACT_SUMMARY_MAX)
-        self.assertEqual([e["id"] for e in entries], ["r1"])
-        summary2, entries2 = self.dl.consume_compact_context(self._tmp, "s1")
-        self.assertIsNone(summary2)
-        self.assertEqual(entries2, [])
-
-    def test_park_creates_stash_when_precompact_never_ran(self):
-        self.dl.park_compact_summary(self._tmp, "s2", "summary only")
-        summary, entries = self.dl.consume_compact_context(self._tmp, "s2")
-        self.assertEqual(summary, "summary only")
-        self.assertEqual(entries, [])
-
-    def test_second_compaction_snapshot_supersedes(self):
-        self.dl.record(self._tmp, "s3", [{"id": "old", "content": "x"}],
-                       "user_prompt")
-        self.dl.snapshot_for_compact(self._tmp, "s3")
-        self.dl.park_compact_summary(self._tmp, "s3", "stale summary")
-        self.dl.record(self._tmp, "s3", [{"id": "new", "content": "y"}],
-                       "user_prompt")
-        self.dl.snapshot_for_compact(self._tmp, "s3")
-        summary, entries = self.dl.consume_compact_context(self._tmp, "s3")
-        self.assertIsNone(summary)
-        self.assertEqual([e["id"] for e in entries], ["old", "new"])
-
-    def test_clear_delivery_state_keeps_compact_stash(self):
-        self.dl.record(self._tmp, "s4", [{"id": "k", "content": "z"}],
-                       "user_prompt")
-        self.dl.snapshot_for_compact(self._tmp, "s4")
-        self.dl.clear_delivery_state(self._tmp, "s4")
-        self.assertFalse(_ops_path(self._tmp, "s4", ".ledger").exists())
-        self.assertTrue(_ops_path(self._tmp, "s4", ".compact").exists())
 
     def test_sweep_reaps_stale_compact_stash(self):
         stash = _ops_path(self._tmp, "s5", ".compact")

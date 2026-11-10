@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import fnmatch
 import os
 import re
 import sqlite3
@@ -771,6 +772,110 @@ def compact_and_verify(store_path: Path, needles: list[str]) -> tuple[dict[str, 
 
 
 # --------------------------------------------------------------------------
+# Delivery-state family registry (issue #322)
+# --------------------------------------------------------------------------
+# Single source for WHICH file families under <data>/ops this client's
+# scrubber owns. The dict documents MEMBERSHIP only — the procedural order
+# of the per-family loops in scrub_ledgers below is the code's own and must
+# never be derived from dict iteration. Keyed in the scrubber's phase order
+# purely for readability; every consumer must look patterns up BY TOKEN.
+SUPPORTED_DELIVERY_FAMILIES: dict[str, str] = {
+    "ledger.tmp": "*.ledger.tmp.*",
+    "tasktext.tmp": "*.tasktext.tmp.*",
+    "signals.tmp": "*.signals.tmp.*",
+    "reserve.tmp": "*.reserve.tmp.*",
+    "reserve": "resv-*.reserve",
+    "ledger": "*.ledger",
+    "tasktext": "*.tasktext",
+    "ledger.seg": "*.ledger.seg.*",
+}
+
+# The delivery-state scan scope: every pattern the scrubber owns (from the
+# registry, so a family is never scrubbed-but-unverified) PLUS the broad
+# legacy ledger/reserve globs that also catch unknown newer-client
+# variants (e.g. <hash>.ledger.seg2.<hex>). Needle bytes must not hide in
+# ANY ops file this client would otherwise silently skip: the residue
+# verify (_verify_ledgers_clean) and the skew preflight both enumerate
+# exactly this list.
+_VERIFY_SCOPE_PATTERNS = (
+    tuple(SUPPORTED_DELIVERY_FAMILIES.values())
+    + ("*.ledger*", "*.reserve"))
+
+# Test-only seam (frozen contract in tests/test_p07_version_skew.py):
+# when set to a comma-separated list of family tokens, EXACTLY that set is
+# the supported delivery-state family set, replacing the built-in default
+# wherever the supported set is consulted (doctor skew detection, purge
+# preflight, scrub-family gating). Unknown tokens fail loud.
+_SEAM_ENV = "ZMEM_TEST_LEDGER_FAMILIES"
+
+
+def supported_delivery_families() -> tuple[str, ...]:
+    """Effective supported delivery-state family tokens.
+
+    Default: every family in SUPPORTED_DELIVERY_FAMILIES, in registry
+    order. ZMEM_TEST_LEDGER_FAMILIES (test seam) replaces the set; an
+    unknown token raises ValueError so a typo'd seam can never silently
+    fall back to defaults. Callers at CLI/doctor boundaries catch the
+    ValueError and refuse/degrade with the token named.
+    """
+    raw = os.environ.get(_SEAM_ENV)
+    if raw is None:
+        return tuple(SUPPORTED_DELIVERY_FAMILIES)
+    tokens = [t.strip() for t in raw.split(",") if t.strip()]
+    unknown = [t for t in tokens if t not in SUPPORTED_DELIVERY_FAMILIES]
+    if unknown:
+        raise ValueError(
+            "ZMEM_TEST_LEDGER_FAMILIES has unknown token(s): %s "
+            "(known: %s)" % (", ".join(unknown),
+                             ", ".join(SUPPORTED_DELIVERY_FAMILIES)))
+    if not tokens:
+        raise ValueError("ZMEM_TEST_LEDGER_FAMILIES is set but empty")
+    return tuple(tokens)
+
+
+def unsupported_delivery_state_files(data_dir: Path) -> list[str]:
+    """Ops-dir files the running client cannot scrub (version skew).
+
+    Returns the sorted names of files under <data>/ops that match the
+    residue-verify scope but NO pattern of the effective supported family
+    set — the exact set that would make purge's fail-closed residue verify
+    fire AFTER the store deletion (issue #322 AC2) and that doctor must
+    surface as delivery-state skew (AC1).
+
+    Enumeration uses os.scandir, NOT Path.glob: pathlib's wildcard
+    traversal swallows PermissionError (pathlib.py ~:353-375 on this
+    runtime), which would silently convert an uninspectable directory into
+    "no skew". A genuinely absent ops dir is clean (no delivery state at
+    all); every other inspection failure propagates to the caller, which
+    fails closed.
+
+    The seam is validated BEFORE the absent-dir early return (review
+    finding, PR round 1): an invalid ZMEM_TEST_LEDGER_FAMILIES token must
+    refuse at the caller's boundary (purge exit 2, doctor warn) even when
+    no ops dir exists — validating only after the early return let the
+    token error surface post-deletion inside scrub_ledgers instead.
+    """
+    supported = supported_delivery_families()
+    ops = data_dir / "ops"
+    if not ops.exists():
+        return []
+    if not ops.is_dir():
+        # A file named "ops" is an inspection failure, not "no skew".
+        raise NotADirectoryError(str(ops))
+    patterns = [SUPPORTED_DELIVERY_FAMILIES[t] for t in supported]
+    unsupported: list[str] = []
+    with os.scandir(ops) as it:
+        for entry in it:
+            name = entry.name
+            if not any(fnmatch.fnmatch(name, p) for p in _VERIFY_SCOPE_PATTERNS):
+                continue
+            if any(fnmatch.fnmatch(name, p) for p in patterns):
+                continue
+            unsupported.append(name)
+    return sorted(unsupported)
+
+
+# --------------------------------------------------------------------------
 # Ledger scrub
 # --------------------------------------------------------------------------
 
@@ -785,12 +890,25 @@ def scrub_ledgers(data_dir: Path, drop_ids: set[str],
     like the reader skips those states (the byte-level residue verify still
     scans skipped files); a file with no matching entries is left untouched
     (a segment with only torn lines is cleaned)."""
+    # Issue #322: validate the seam BEFORE the absent-ops early return so
+    # an invalid token can never silently no-op the scrub (the CLI
+    # preflight already refuses, but this is a public function).
+    families = supported_delivery_families()
     ops = data_dir / "ops"
     stats = {"files_scrubbed": 0, "entries_dropped": 0, "tmp_removed": 0,
              "segments_skipped": 0}
     if not ops.is_dir():
         return stats
-    for path in ops.glob("*.ledger.tmp.*"):
+    # The effective supported family set gates every phase
+    # below (single source: SUPPORTED_DELIVERY_FAMILIES + the
+    # ZMEM_TEST_LEDGER_FAMILIES seam). Loop ORDER is this function's own
+    # and is never derived from the registry's key order.
+    patterns = {tok: SUPPORTED_DELIVERY_FAMILIES[tok] for tok in families}
+
+    def _family(token: str):
+        pat = patterns.get(token)
+        return ops.glob(pat) if pat is not None else ()
+    for path in _family("ledger.tmp"):
         # Issue #252: record()'s segment publication and the segment scrub
         # below both stage through this tmp family, so a writer's os.replace
         # can win the glob-to-unlink race. Same benign-race posture as the
@@ -814,13 +932,13 @@ def scrub_ledgers(data_dir: Path, drop_ids: set[str],
     # between os.open and os.replace orphans it until a reaper collects
     # it: THIS scrub matches *.tasktext.tmp.* immediately (issue #336) and
     # the backup age sweep matches the same shapes as a backstop.
-    for path in ops.glob("*.tasktext.tmp.*"):
+    for path in _family("tasktext.tmp"):
         try:
             path.unlink()
             stats["tmp_removed"] += 1
         except OSError:
             pass
-    for path in ops.glob("*.signals.tmp.*"):
+    for path in _family("signals.tmp"):
         try:
             path.unlink()
             stats["tmp_removed"] += 1
@@ -829,7 +947,7 @@ def scrub_ledgers(data_dir: Path, drop_ids: set[str],
     # Issue #284 (T-05): reservation sidecars stage through
     # _atomic_write_json's uuid tmp pattern; reap crashed-write orphans so
     # ops/ never leaks the family (the .tasktext.tmp.* precedent).
-    for path in ops.glob("*.reserve.tmp.*"):
+    for path in _family("reserve.tmp"):
         try:
             path.unlink()
             stats["tmp_removed"] += 1
@@ -839,7 +957,7 @@ def scrub_ledgers(data_dir: Path, drop_ids: set[str],
     # they follow the FULL ledger scrub law (drop_ids AND folded-needle
     # entries removed; an emptied reservation file is deleted) — otherwise
     # the fail-closed *.reserve verify below could never complete.
-    for path in ops.glob("resv-*.reserve"):
+    for path in _family("reserve"):
         try:
             doc = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -867,7 +985,7 @@ def scrub_ledgers(data_dir: Path, drop_ids: set[str],
                 stats["entries_dropped"] += 1
             except OSError:
                 pass
-    for path in ops.glob("*.ledger"):
+    for path in _family("ledger"):
         doc = json.loads(path.read_text(encoding="utf-8"))
         entries = doc.get("entries")
         if not isinstance(entries, list):
@@ -900,7 +1018,7 @@ def scrub_ledgers(data_dir: Path, drop_ids: set[str],
     # applies (there are no memory ids to drop by). Entries left with no
     # text are dropped; an emptied file is removed. Best-effort like the
     # tmp reaps: an unreadable stash must not abort a fail-closed scrub.
-    for path in ops.glob("*.tasktext"):
+    for path in _family("tasktext"):
         try:
             doc = json.loads(path.read_text(encoding="utf-8"))
             entries = doc.get("entries") if isinstance(doc, dict) else None
@@ -943,7 +1061,7 @@ def scrub_ledgers(data_dir: Path, drop_ids: set[str],
     # lock-protected, so it can re-create a segment a concurrent
     # compaction/clear just unlinked — over-suppression in the benign
     # direction, reaped by the next sweep/compaction.
-    for path in ops.glob("*.ledger.seg.*"):
+    for path in _family("ledger.seg"):
         try:
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -1037,12 +1155,18 @@ def _verify_ledgers_clean(data_dir: Path, needles: list[str]) -> dict[str, int]:
     if not ops.is_dir():
         return residue
     variants = [v for n in needles for v in _verify_needle_variants(n)]
-    for path in list(ops.glob("*.ledger*")) + list(ops.glob("*.reserve")):
-        data = path.read_bytes().lower()
-        for v in variants:
-            c = data.count(v.lower())
-            if c:
-                residue[str(path.name)] = residue.get(str(path.name), 0) + c
+    seen: set = set()
+    for pattern in _VERIFY_SCOPE_PATTERNS:
+        for path in ops.glob(pattern):
+            if path.name in seen:
+                continue
+            seen.add(path.name)
+            data = path.read_bytes().lower()
+            for v in variants:
+                c = data.count(v.lower())
+                if c:
+                    residue[str(path.name)] = (
+                        residue.get(str(path.name), 0) + c)
     return residue
 
 
@@ -1121,9 +1245,12 @@ def cmd_purge(*, ids: list[str], scrub_backups: bool = False,
               out_dir: str | None = None, as_json: bool = False) -> int:
     """`store.py purge --id <id> [...] [--scrub-backups --out-dir DIR]`.
 
-    Exit ladder: 0 clean; 2 bad usage; 3 unknown id; 4 maintenance, schema,
-    backup, consolidate, or live-writer refusal; 5 residue detected; 6
-    compaction/scrub failure."""
+    Exit ladder: 0 clean; 2 bad usage (incl. an invalid
+    ZMEM_TEST_LEDGER_FAMILIES token); 3 unknown id; 4 maintenance, schema,
+    backup, consolidate, or live-writer refusal; 5 residue detected OR the
+    delivery-state skew refusal (an ops file family this client cannot
+    scrub — in that case NOTHING was deleted, the store was not even
+    opened, and no purged_id rows exist); 6 compaction/scrub failure."""
     from storelib import schema as schema_mod
 
     if not ids:
@@ -1186,6 +1313,45 @@ def cmd_purge(*, ids: list[str], scrub_backups: bool = False,
                 print("[zmem]   active writer lease: %s" % lease.name,
                       file=sys.stderr)
             return 4
+
+        # Issue #322 AC2: fail closed BEFORE any store access when the
+        # ops dir holds delivery-state files this client cannot scrub (a
+        # newer client's family). Without this preflight the residue
+        # verify at the END of the purge converts "exit 5" into "exit 5
+        # with the store deletion already committed". Placed before
+        # connect()/init_db so a refusal performs ZERO store writes (the
+        # refusal message's "store is untouched" is literally true), and
+        # unconditionally so the empty-chain scrub-retry path passes
+        # through it too. Inspection failures are NOT "no skew": the
+        # helper propagates them (os.scandir, never Path.glob) and we
+        # refuse with the store intact rather than delete what we could
+        # not inspect.
+        try:
+            unsupported = unsupported_delivery_state_files(STORE_PATH.parent)
+        except ValueError as e:
+            # Misconfigured test seam (ZMEM_TEST_LEDGER_FAMILIES) is
+            # usage-class: refuse pre-transaction, never a traceback,
+            # never a silent default.
+            print("[zmem] purge REFUSED: %s" % e, file=sys.stderr)
+            return 2
+        except OSError as e:
+            print("[zmem] purge REFUSED: delivery-state inspection "
+                  "failed (%s) - the store is untouched; re-run after "
+                  "making %s listable" % (
+                      e, STORE_PATH.parent / "ops"), file=sys.stderr)
+            return 5
+        if unsupported:
+            print("[zmem] purge REFUSED: %d delivery-state file(s) under "
+                  "ops/ belong to a family this zmem client does not "
+                  "support (a newer client may have upgraded the on-disk "
+                  "delivery-state layout): %s%s - the store is untouched; "
+                  "recovery: upgrade zmem on this host, or quiesce writers "
+                  "and delete the unsupported files listed above" % (
+                      len(unsupported),
+                      ", ".join(unsupported[:5]),
+                      " ..." if len(unsupported) > 5 else ""),
+                  file=sys.stderr)
+            return 5
 
         conn = schema_mod.connect()
         try:
