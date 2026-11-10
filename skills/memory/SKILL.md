@@ -3678,7 +3678,9 @@ zero links (the 0.101.0 CHANGELOG discloses the behavior — only the entity
 lane's grouping changes; content and FTS recall are unaffected). This
 command reports — and, behind `--apply`, merges — those orphans back onto
 the entity that now owns the suffix alias, so BOTH alias forms resolve to
-one identity. Run it AFTER upgrading past a widening and BEFORE the next
+one identity. (Dry-run's `mergeable` counts every orphan that HAS an owner;
+apply additionally refuses cyclic chains, so `merged` can be smaller than
+`mergeable` by exactly the `skipped_cycle` count.) Run it AFTER upgrading past a widening and BEFORE the next
 `purge` (a purge reaps linkless entities and would delete the old alias form
 with the orphan).
 

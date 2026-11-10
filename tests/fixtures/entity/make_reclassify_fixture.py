@@ -39,9 +39,10 @@ def emit_store(path, *, extra_tool: bool = False, env=None) -> None:
     """Build the seeded fixture store at `path` — the EXACT seeding
     ReclassifyTest drives (issue #368: one source of truth for the oracle).
 
-    Creates the store through the real `store.py init` (env must pin
-    ZMEM_STORE to `path`, or be passed explicitly), then inserts the FIXED
-    memory/entity/alias/link rows from RECLASSIFY verbatim.
+    Creates the store through the real `store.py init` (the target path is
+    FORCED into the child env — no caller env pinning required), then
+    inserts the FIXED memory/entity/alias/link rows from RECLASSIFY
+    verbatim.
     `extra_tool=True` additionally inserts the non-`other` tool row the
     non-other-rows-untouched pin depends on (never in the oracle fixture).
     """
