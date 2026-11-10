@@ -194,14 +194,18 @@ class CapShieldTest(unittest.TestCase):
         now = time.time()
         for i in range(_dl.TASK_TEXT_CAP + 2):
             _dl.park_task_text(d, sid, "untagged-%d" % i, now=now - 700 + i)
-        texts = [e.get("text") for e in
-                 _dl._load_tasktext(_dl.tasktext_path(d, sid),
-                                    time.time())]
-        self.assertEqual(sorted(texts),
-                         sorted("untagged-%d" % i for i in
-                                range(2, _dl.TASK_TEXT_CAP + 2)),
-                         "all-untagged cap eviction is byte-identical "
-                         "to the legacy oldest-first behavior")
+        entries = _dl._load_tasktext(_dl.tasktext_path(d, sid),
+                                     time.time())
+        # PR #453 review round 3: compare the FULL ordered entry tuples
+        # (text + agent_id + ts), not a sorted-text bag — a reorder
+        # mutant must fail here too.
+        self.assertEqual(
+            [(e.get("text"), e.get("agent_id"), e.get("ts"))
+             for e in entries],
+            [("untagged-%d" % i, "", now - 700 + i)
+             for i in range(2, _dl.TASK_TEXT_CAP + 2)],
+            "all-untagged cap eviction is byte-identical "
+            "to the legacy oldest-first behavior (order included)")
 
 
 class ParkIdRedactionTest(unittest.TestCase):
@@ -314,6 +318,10 @@ class HookConsumeInvalidIdTest(unittest.TestCase):
         self.assertNotIn("--consume-agent-id", store_argv,
                          "invalid consume id must be treated as absent: "
                          "%r" % (agent_id_value,))
+        self.assertNotIn(
+            True, [a.startswith("--consume-agent-id=") for a in store_argv],
+            "invalid consume id must be absent in attached form too: %r"
+            % (agent_id_value,))
         self.assertIn("--consume-tasktext", store_argv,
                       "non-vacuity control: the grant itself must still "
                       "be present")
@@ -371,7 +379,7 @@ class RemoteBehaviorPinTest(unittest.TestCase):
             "include_cross_project": ["--include-cross-project"],
             "legacy_unscoped": ["--legacy-unscoped"],
             "min_confidence": ["--min-confidence", "0.5"],
-            "link_hops": ["--link-hops", "2"],
+            "link_hops": ["--link-hops", "0"],
             "link_budget": ["--link-budget", "3"],
             "target": ["--target", "x"],
             "exclude": ["--exclude", "00000000-0000-0000-0000-000000000000"],
@@ -450,12 +458,16 @@ class RemoteBehaviorPinTest(unittest.TestCase):
     def test_every_read_default_refused_e2e(self):
         """Kill the READ_DEFAULTS false-green direction end to end: for
         EVERY refused dest of recall/recent, supplying it remotely must
-        exit 2 with the flag named (not a hub-unreachable envelope)."""
+        exit 2 with the refusal phrase naming the flag — NOT an argparse
+        usage error (a usage error would satisfy rc 2 while never
+        reaching _refuse_read_flags, i.e. deleting the refusal stays
+        green) and NOT a hub-unreachable envelope."""
         for cmd in ("recall", "recent"):
             for dest in self._refused_dests_from_live_code(cmd):
                 argv_tail = self.DEST_ARGV.get(cmd, {}).get(dest)
                 if argv_tail is None:
                     continue  # meta dests (json/no_auto_rekey/limit/...)
+                flag_token = argv_tail[0].split("=")[0]
                 with self.subTest(cmd=cmd, dest=dest):
                     base = [cmd, "--json"]
                     if cmd == "recall":
@@ -467,7 +479,11 @@ class RemoteBehaviorPinTest(unittest.TestCase):
                                      "rc=%s out=%r" % (cmd, dest,
                                                        r.returncode,
                                                        combined[:200]))
-                    self.assertIn("--" + dest.replace("_", "-"), combined)
+                    self.assertIn("not supported in remote mode", combined,
+                                  "%s %s: rc 2 came from something other "
+                                  "than the remote-gate refusal (usage "
+                                  "error?)" % (cmd, dest))
+                    self.assertIn(flag_token, combined)
 
     def test_prefetch_refusals_refused_e2e(self):
         """Kill the _route_prefetch false-green: EVERY inline prefetch
@@ -491,16 +507,68 @@ class RemoteBehaviorPinTest(unittest.TestCase):
 
     def test_route_read_forwards_real_kwargs(self):
         """Kill the FORWARDED_OR_META literal: _route_read must hand the
-        real query/namespace/limit to the hub recall call."""
+        real query/namespace/limit to the hub call for BOTH recall and
+        recent — deleting a branch's forward (e.g. limit=args.limit on
+        recent) fails here (PR #453 review round 3: the recent branch was
+        previously unpinned)."""
+        for cmd, expected in (
+                ("recall", {"query": "probe-query",
+                            "namespace": "project:pin", "limit": 4}),
+                ("recent", {"namespace": "project:pin", "limit": 4})):
+            seen = {}
+
+            class FakeHTTP:
+                def recall(self, query, namespace=None, limit=None, **kw):
+                    seen.update(query=query, namespace=namespace,
+                                limit=limit)
+                    raise SystemExit(1)
+
+                def recent(self, namespace=None, limit=None, **kw):
+                    seen.update(namespace=namespace, limit=limit)
+                    raise SystemExit(1)
+
+            class FakeTransport:
+                def resolve_deadline_s(self, env):
+                    return 1.0
+
+            class FakeOpQueue:
+                def render_pending(self, *a, **k):
+                    return ""
+
+                def flush(self, *a, **k):
+                    return None
+
+            args = argparse.Namespace(
+                query="probe-query", namespace="project:pin", limit=4,
+                json=True)
+            env = dict(os.environ)
+            env.pop("ZMEM_STORE", None)
+            env.pop("ZMEM_DATA", None)
+            env["ZMEM_REMOTE_URL"] = self.REMOTE_ENV["ZMEM_REMOTE_URL"]
+            env["CLAUDE_PLUGIN_DATA"] = _SCRATCH
+            with self.subTest(cmd=cmd):
+                with mock.patch.dict(os.environ, env), \
+                     mock.patch.object(_rg, "_import_fleet",
+                                       return_value=(FakeOpQueue(),
+                                                     FakeTransport())), \
+                     mock.patch.object(_rg, "_hub", return_value=FakeHTTP()):
+                    with self.assertRaises(SystemExit):
+                        _rg._route_read(cmd, args)
+                self.assertEqual(seen, expected,
+                                 "%s forward dropped or altered" % cmd)
+
+    def test_forward_prefetch_forwards_real_kwargs(self):
+        """The prefetch route's forwarded surface (query, namespace,
+        session_id, moment, lane, reserve, ops_tokens, consume_tasktext)
+        must reach the hub call verbatim (PR #453 review round 3: the
+        forward half of the prefetch route was unpinned; the consume-grant
+        verbatim pin lives in tests/test_tasktext_fleet_grant.py)."""
         seen = {}
 
         class FakeHTTP:
-            def recall(self, query, namespace=None, limit=None, **kw):
+            def prefetch(self, query, **kw):
                 seen["query"] = query
-                seen["namespace"] = namespace
-                seen["limit"] = limit
-                # _route_read's post-call handling requires a well-formed
-                # failure envelope; the kwargs are already captured.
+                seen.update(kw)
                 raise SystemExit(1)
 
         class FakeTransport:
@@ -515,8 +583,11 @@ class RemoteBehaviorPinTest(unittest.TestCase):
                 return None
 
         args = argparse.Namespace(
-            query="probe-query", namespace="project:pin", limit=4,
-            json=True)
+            query="probe-q", namespace="project:pin", session_id="supp-sid",
+            moment="subagent", lane=None, reserve=True,
+            ops_tokens=["tok"], consume_tasktext=True, consume_agent_id="",
+            exclude_ids=None, principal=None, harness=None, state_hint=None,
+            for_injection=False, authorized_namespace=None)
         env = dict(os.environ)
         env.pop("ZMEM_STORE", None)
         env.pop("ZMEM_DATA", None)
@@ -526,11 +597,16 @@ class RemoteBehaviorPinTest(unittest.TestCase):
              mock.patch.object(_rg, "_import_fleet",
                                return_value=(FakeOpQueue(),
                                              FakeTransport())), \
-             mock.patch.object(_rg, "_hub", return_value=FakeHTTP()):
+             mock.patch.object(_rg, "_hub", return_value=FakeHTTP()), \
+             mock.patch.object(_rg.time, "monotonic", side_effect=[0.0, 0.0]):
             with self.assertRaises(SystemExit):
-                _rg._route_read("recall", args)
-        self.assertEqual(seen, {"query": "probe-query",
-                                "namespace": "project:pin", "limit": 4})
+                _rg._forward_prefetch(args, FakeHTTP(), 1000)
+        self.assertEqual(seen, {
+            "query": "probe-q", "namespace": "project:pin",
+            "session_id": "supp-sid", "moment": "subagent", "lane": None,
+            "reserve": True, "ops_tokens": ["tok"], "consume_tasktext": True,
+            "deadline_ms": 1000,
+        })
 
     def test_completeness_map_covers_read_defaults(self):
         """Every refused recall/recent dest must have a DEST_ARGV entry
@@ -546,6 +622,24 @@ class RemoteBehaviorPinTest(unittest.TestCase):
                     missing, [],
                     "refused dest(s) %r lack behavior pins: add argv to "
                     "RemoteBehaviorPinTest.DEST_ARGV[%r]" % (missing, cmd))
+
+    def test_dest_argv_keys_are_live_refused_dests(self):
+        """The REVERSE direction (PR #453 review round 3): every
+        DEST_ARGV key must still be a refused dest in the LIVE
+        _READ_DEFAULTS. Without this, deleting a refusal entry (e.g.
+        link_hops) makes the e2e loop silently skip that dest — the list
+        and the check would collapse into one self-referential source."""
+        META = {"help", "json", "limit", "namespace", "no_auto_rekey"}
+        for cmd in ("recall", "recent"):
+            stale = sorted(
+                d for d in self.DEST_ARGV.get(cmd, {})
+                if d not in META and d not in _rg._READ_DEFAULTS[cmd])
+            with self.subTest(cmd=cmd):
+                self.assertEqual(
+                    stale, [],
+                    "DEST_ARGV[%r] pin(s) %r are no longer refused "
+                    "remotely: restore the _READ_DEFAULTS entry or delete "
+                    "the stale pin" % (cmd, stale))
 
     def test_completeness_map_covers_prefetch_refusals(self):
         """The prefetch refusal argv map must cover the pinned refusal
@@ -629,8 +723,10 @@ class RemoteReadFlagCompletenessTest(unittest.TestCase):
         self.assertEqual(
             sorted(actual - expected), [],
             "new prefetch flag(s): decide the remote disposition in "
-            "remote_gate._route_prefetch (forward or refuse by name), then "
-            "add them here")
+            "remote_gate._route_prefetch (forward or refuse by name), add "
+            "them to this pinned set AND to RemoteBehaviorPinTest (an e2e "
+            "refusal leg for a refused dest / a forward capture for a "
+            "forwarded one)")
 
 
 if __name__ == "__main__":

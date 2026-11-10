@@ -53,9 +53,9 @@ so every leg is hermetic:
     it changed (on a non-root host the write is denied by the OS anyway;
     this guards a root dev box). The ps1 legs additionally require a
     `python` on PATH (PRR-013: the tailscale.cmd stub delegates to it),
-    and the sh namespace probe verifies /etc/systemd/system exists and is
-    bindable (PRR-012) so a systemd-less host skips instead of hard-failing
-    with the mount's exit 99.
+    and the sh namespace probe verifies /etc/systemd/system exists (PRR-012;
+    existence is the check — a systemd-less host skips instead of
+    hard-failing with the mount's exit 99).
   * ps1:  cmdlets can only be shadowed by same-name PowerShell functions,
     so a generated wrapper defines shadow functions (each appends a line to
     the side-effect log) and dot-sources the real installer with its real
@@ -459,25 +459,41 @@ def run_sh_installer_namespaced(installer: Path, args: list[str],
 
 
 def _sh_unit_snapshot() -> tuple[bool, str | None]:
-    """(exists, sha256-or-None) of the REAL unit file, read via sudo."""
+    """(exists, sha256-or-None) of the REAL unit file — via sudo when
+    available, directly when this process is POSIX root (PR #453 review
+    round 3: the guard must also work on a root host with no sudo)."""
     sudo = shutil.which("sudo")
-    if not sudo:
-        raise RuntimeError("_sh_unit_snapshot called without sudo available")
-    exists_proc = subprocess.run(
-        [sudo, "-n", "test", "-e", UNIT_PATH], capture_output=True,
-        text=True, timeout=30)
-    exists = exists_proc.returncode == 0
-    sha: str | None = None
-    if exists:
-        sha_proc = subprocess.run(
-            [sudo, "-n", "sha256sum", UNIT_PATH], capture_output=True,
+    direct = (not sudo and os.name == "posix"
+              and hasattr(os, "geteuid") and os.geteuid() == 0)
+    if not sudo and not direct:
+        raise RuntimeError("_sh_unit_snapshot called without sudo available "
+                           "and not POSIX root")
+
+    def _exists_sha(read_prefix: list) -> tuple[bool, str | None]:
+        exists_proc = subprocess.run(
+            read_prefix + ["test", "-e", UNIT_PATH], capture_output=True,
             text=True, timeout=30)
-        if sha_proc.returncode != 0 or not sha_proc.stdout.split():
-            raise RuntimeError(
-                f"sha256sum of the real {UNIT_PATH} failed "
-                f"rc={sha_proc.returncode} err={sha_proc.stderr[-200:]!r}")
-        sha = sha_proc.stdout.split()[0]
-    return (exists, sha)
+        exists = exists_proc.returncode == 0
+        sha = None
+        if exists:
+            sha_proc = subprocess.run(
+                read_prefix + ["sha256sum", UNIT_PATH], capture_output=True,
+                text=True, timeout=30)
+            if sha_proc.returncode != 0 or not sha_proc.stdout.split():
+                raise RuntimeError(
+                    f"sha256sum of the real {UNIT_PATH} failed "
+                    f"rc={sha_proc.returncode} err={sha_proc.stderr[-200:]!r}")
+            sha = sha_proc.stdout.split()[0]
+        return (exists, sha)
+
+    if direct:
+        from pathlib import Path as _P
+        import hashlib as _h
+        p = _P(UNIT_PATH)
+        exists = p.exists()
+        sha = _h.sha256(p.read_bytes()).hexdigest() if exists else None
+        return (exists, sha)
+    return _exists_sha([sudo, "-n"])
 
 
 def _sh_unit_guard(case: unittest.TestCase) -> None:
@@ -486,16 +502,23 @@ def _sh_unit_guard(case: unittest.TestCase) -> None:
     that is a property of the code under test, exactly what a regression
     changes. Snapshot the real unit file and FAIL (never skip) if it
     changed, so a preflight regression on a ROOT host is caught even
-    though the installer's own write succeeded. No-op where sudo is
-    unavailable (Windows dev boxes, non-root CI runners — there the OS
-    itself denies the write; ubuntu CI's runner user is non-root)."""
+    though the installer's own write succeeded. No-op on hosts that can
+    neither sudo nor read the unit as POSIX root (Windows dev boxes,
+    non-root CI runners — there the OS itself denies the write; ubuntu
+    CI's runner user is non-root)."""
     sudo = shutil.which("sudo")
-    if not sudo:
-        return
-    probe = subprocess.run([sudo, "-n", "true"], capture_output=True,
-                           text=True, timeout=30)
-    if probe.returncode != 0:
-        return
+    has_working_sudo = False
+    if sudo:
+        probe = subprocess.run([sudo, "-n", "true"], capture_output=True,
+                               text=True, timeout=30)
+        has_working_sudo = probe.returncode == 0
+    if not has_working_sudo:
+        # PR #453 review round 3: a POSIX-root host WITHOUT a sudo binary
+        # is exactly where the OS would NOT deny a regressed write — read
+        # the unit directly there instead of no-oping.
+        if not (os.name == "posix" and hasattr(os, "geteuid")
+                and os.geteuid() == 0):
+            return
     snapshot_before = _sh_unit_snapshot()
 
     def assert_real_unit_unchanged() -> None:

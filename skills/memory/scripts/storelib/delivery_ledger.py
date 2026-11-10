@@ -1496,8 +1496,9 @@ def _load_tasktext(path: Optional[str], now: float) -> List[Dict[str, Any]]:
 def park_task_text(data_dir: str, session_id: str, text: str,
                    agent_id: str = "", now: Optional[float] = None) -> None:
     """Issue #119: park a delegating task text at PreToolUse(Agent) for the
-    child's SubagentStart to consume. Append, cap oldest-first, atomic
-    write, fail-open.
+    child's SubagentStart to consume. Append, tag-aware cap (untagged
+    entries evicted first — PR #453 review PRR-001), atomic write,
+    fail-open.
 
     ``agent_id`` is the delegation correlation id (issue #428), normalized
     by normalize_correlation_id: a host that names the child's id in the
