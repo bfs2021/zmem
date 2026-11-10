@@ -1,6 +1,6 @@
 {
   "algorithm": "sha256-crlf-norm",
-  "digest": "da6afa75f61a012809f1443d55700785859f3ee53499611ba88230e0823a5a24",
+  "digest": "302b67731dacfc3d95ca12351c53cc2b866804578d908024d7ab44878ffb241e",
   "files": {
     ".agents/plugins/marketplace.json": "547525118f3ebda1fd753664932aa5afd01c514d9c248bd4bf24661129d6abb0",
     ".claude-plugin/marketplace.json": "418bae6fa316801df58bfeb71fbfa6cfc39b231a01293b87f9049af322308e88",
@@ -116,7 +116,7 @@
     "skills/memory/scripts/storelib/cross_encoder.py": "175a3cc3cb7241ecc317f1d138863e437ae0585b5112062caf97c94125ba8ed4",
     "skills/memory/scripts/storelib/dataset.py": "ba6e70a3e3adbd75bbfd6af761c22e27c43d75562231a4003ef303b23f9c0128",
     "skills/memory/scripts/storelib/decision_report.py": "453107144d11e8a41f68e0cdb2db9bd9cf78a231fb001ded42d62d562af9c2e1",
-    "skills/memory/scripts/storelib/delivery_ledger.py": "d99f427d6fb261d1f99a5e413c53ae435c427ac49230014548693b5a3cecc238",
+    "skills/memory/scripts/storelib/delivery_ledger.py": "3c87501aaf729cc35df64e030b0ea879af0368e6ae1d4d1a774644db59e84e78",
     "skills/memory/scripts/storelib/entity.py": "880754b2219909a8d79e510707ed251b7bed53e029ada1e0fbd1586bec3352f7",
     "skills/memory/scripts/storelib/episodes.py": "e22bfff4ce4c6176af6c744d3c4d00195b0d99ff3579c8643676e354152d94cb",
     "skills/memory/scripts/storelib/eval_gold.py": "5cd8f5d91731bd3814720118b18e8480a4b13045c07de399a777a85b65528963",
