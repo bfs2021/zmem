@@ -932,8 +932,12 @@ delegation (disclosed residual); the accepted (unlocked, #330) races are the
 parallel-park last-writer-wins (jittered N=8 parks left 2-7 survivors;
 CORRECTED from "drop-not-swap" in 0.138.0), a parallel-consume overlap
 (two concurrent children can load the same head entry before either
-rewrite lands — both receive that same delegation (duplicated delivery —
-the text is served twice, not lost); degraded relevance only, never a
+rewrite lands — on UNTAGGED entries both receive that same delegation
+(duplicated delivery — the text is served twice, not lost); on TAGGED
+entries each consume drops its own index and rewrites the whole file, so
+the loser's stale rewrite resurrects the winner's already-consumed entry
+(last-writer-wins; a tagged entry stays inert until its own id arrives);
+degraded relevance only, never a
 crash), and the parked-against-consume overlap in BOTH directions: a fresh park
 loses its entry to a concurrent rewrite (unlink-wipe) or an
 already-consumed entry is re-delivered (resurrection). An ORPHANED park
@@ -950,7 +954,13 @@ ages out, and a live child delayed past 300 s can lose its prompt to a
 strictly newer delegation - a failure mode the heuristic introduces
 (pre-0.138.0 a delayed child consumed its own head entry). A host that
 supplies the correlation id on both sides retires both residuals for its
-delegations (issue #428); the 300 s band is unchanged. The 6h window and
+delegations (issue #428); the 300 s band is unchanged. PR #453 review
+residuals, disclosed: the 16-entry park cap evicts UNTAGGED entries first
+(a tagged entry is only evicted when the stash holds no untagged entry to
+drop — an ALL-TAGGED stash over the cap still drops its oldest), and a
+TAGGED entry with a corrupted unparseable timestamp survives the 6h
+window prune (park always writes a finite timestamp; bounded by the cap,
+the session-end unlink and the ops age sweep). The 6h window and
 16-entry cap bound how long any
 shift lasts, not how many children it affects. Since 0.138.0 the consume
 is CALLER-GATED (issue #339): only the SubagentStart hook lane
@@ -1454,6 +1464,7 @@ second budget run.
   [--ops-token <token>]... [--exclude <memory-id>]... \
   [--authorized-namespace <ns>]... [--reserve] \
   [--principal <id>] [--harness <id>] [--consume-tasktext]
+  [--consume-agent-id <id>]
 <interpreter> <store.py> prefetch-ack --reservation <id>
 ```
 

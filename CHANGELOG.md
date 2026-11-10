@@ -57,6 +57,37 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   and a remote read-flag completeness guardrail (every `recall`/`recent` dest
   must be refused-by-name or forwarded; the `prefetch` dest set is pinned).
 
+### Review round (swarm-pr-review on this PR, all findings resolved)
+
+- **The park cap is TAG-AWARE (review PRR-001):** untagged entries are
+  evicted first; a tagged entry is evicted only when the stash holds no
+  untagged entry to drop (an all-tagged over-cap stash still drops its
+  oldest — disclosed in SKILL.md and the docstrings). A 17-park session can
+  no longer evict a tagged park before its child arrives.
+- **Id validators reject unpaired surrogates (U+D800-U+DFFF) and the C1
+  control range (review PRR-002):** such an id previously passed validation
+  and raised inside the POSIX argv encoder, silently dropping the parent's
+  whole recall; it now degrades to the untagged path, the id flags carry a
+  per-flag argv-safety guard as defense in depth, and the parity corpus
+  pins the new shapes.
+- **Retargeted onto main post-PR #452 (review PRR-003):** CHANGELOG union
+  newest-first, release surfaces re-emitted, and the tagged-cap behavior
+  re-verified against the merged text.
+- **The remote read-flag guardrail is behavior-level (review PRR-007):**
+  every refused `recall`/`recent` dest and every inline prefetch refusal
+  now has an end-to-end pin (exit 2 naming the flag), and the forwarded
+  query/namespace/limit are captured against the hub call — deleting a
+  live refusal or forward fails the suite.
+- Parked ids clear the same secret-redactor as the text (a secret-shaped
+  id parks untagged with an audit line), a stash of only tag-reserved
+  entries emits a bounded stderr diagnostic, the SubagentStart consume
+  branch has invalid-id legs, the installer harness's unnamespaced legs
+  snapshot the real unit file (PRR-011), the namespace probe verifies
+  `/etc/systemd/system` exists (PRR-012), the ps1 legs require `python`
+  on PATH (PRR-013), and the SKILL/README/FLEET surfaces document the
+  correlation ids, the remote refusals, and the disclosed cap/timestamp
+  residuals (PRR-004/005/014/016).
+
 ## [0.147.0] - 2026-11-08
 
 ### Added

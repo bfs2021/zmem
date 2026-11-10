@@ -65,7 +65,9 @@ The passive `--for-injection --json` lane of `recall` and `recent` accepts
 `--session-id`, `--moment`, `--lane`, and repeatable `--ops-token` attribution
 flags. On the `pretool` passive lane, `recall` also accepts
 `--state-hint dirty|clean` (issue #397: refused with exit 2 unless the
-passive shape and `--moment pretool` are present) and the delegating
+passive shape and `--moment pretool` are present; remote mode refuses
+it outright - PR #453 review PRR-fix, the hub read tools carry no hint)
+and the delegating
 `--delegation-prompt <text>` (issue #253: parked store-side for the child's
 SubagentStart; redacted before it touches disk). Issue #428:
 `--delegation-agent-id <id>` tags that park and `--consume-agent-id <id>`

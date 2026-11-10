@@ -47,7 +47,15 @@ so every leg is hermetic:
     byte-identical (snapshotted before/after and asserted; a change FAILS
     the test). Without passwordless sudo AND unshare those legs skipTest
     visibly. The refusal legs never reach the unit write and need no
-    namespace.
+    namespace — but (PR #453 review PRR-011) "never reaches" is a property
+    of the code under test, which is exactly what a regression changes, so
+    the refusal/data-dir legs ALSO snapshot the real unit file and fail if
+    it changed (on a non-root host the write is denied by the OS anyway;
+    this guards a root dev box). The ps1 legs additionally require a
+    `python` on PATH (PRR-013: the tailscale.cmd stub delegates to it),
+    and the sh namespace probe verifies /etc/systemd/system exists and is
+    bindable (PRR-012) so a systemd-less host skips instead of hard-failing
+    with the mount's exit 99.
   * ps1:  cmdlets can only be shadowed by same-name PowerShell functions,
     so a generated wrapper defines shadow functions (each appends a line to
     the side-effect log) and dot-sources the real installer with its real
@@ -208,6 +216,13 @@ def _require_ps1(case: unittest.TestCase) -> None:
                       "windows-latest CI leg")
     if _PWSH is None:
         case.skipTest("no pwsh/powershell runtime available")
+    # PR #453 review PRR-013: the tailscale.cmd stub delegates to a
+    # PATH-resolved `python` (same requirement the real installer has at
+    # its own Get-Command python); a py-launcher-only box would fail with
+    # an unrelated stub error instead of a visible skip.
+    if shutil.which("python") is None:
+        case.skipTest("no `python` on PATH (the tailscale.cmd stub and "
+                      "the installer both require it)")
 
 
 SH_MUTATOR_FIRST_TOKENS = {"systemctl", "chown", "python3"}
@@ -395,6 +410,12 @@ def _sh_namespace_status() -> tuple[bool, str]:
     if probe.returncode != 0:
         return False, ("`sudo -n unshare --mount --propagation private true` "
                        f"failed (rc={probe.returncode})")
+    # PR #453 review PRR-012: the bind target must exist, or the legs
+    # would hard-fail with the mount's exit 99 on a systemd-less host
+    # (containers, minimal images) instead of skipping visibly.
+    if not Path("/etc/systemd/system").is_dir():
+        return False, ("/etc/systemd/system does not exist on this host "
+                       "(nothing to bind-mount over)")
     return True, ""
 
 
@@ -457,6 +478,36 @@ def _sh_unit_snapshot() -> tuple[bool, str | None]:
                 f"rc={sha_proc.returncode} err={sha_proc.stderr[-200:]!r}")
         sha = sha_proc.stdout.split()[0]
     return (exists, sha)
+
+
+def _sh_unit_guard(case: unittest.TestCase) -> None:
+    """PR #453 review PRR-011: the refusal/data-dir legs run the REAL
+    installer unnamespaced because they never reach the unit write — but
+    that is a property of the code under test, exactly what a regression
+    changes. Snapshot the real unit file and FAIL (never skip) if it
+    changed, so a preflight regression on a ROOT host is caught even
+    though the installer's own write succeeded. No-op where sudo is
+    unavailable (Windows dev boxes, non-root CI runners — there the OS
+    itself denies the write; ubuntu CI's runner user is non-root)."""
+    sudo = shutil.which("sudo")
+    if not sudo:
+        return
+    probe = subprocess.run([sudo, "-n", "true"], capture_output=True,
+                           text=True, timeout=30)
+    if probe.returncode != 0:
+        return
+    snapshot_before = _sh_unit_snapshot()
+
+    def assert_real_unit_unchanged() -> None:
+        snapshot_after = _sh_unit_snapshot()
+        if snapshot_after != snapshot_before:
+            case.fail(
+                f"the REAL {UNIT_PATH} changed during a leg that must "
+                f"never reach it (before={snapshot_before!r}, "
+                f"after={snapshot_after!r}) - the preflight regression "
+                f"happened for real")
+
+    case.addCleanup(assert_real_unit_unchanged)
 
 
 # --------------------------------------------------------------------------
@@ -731,6 +782,9 @@ class OccupancyRefusalTest(unittest.TestCase):
     def _run_sh_leg(self, status: str, extra_args: list[str],
                     anchor_port: int) -> tuple:
         root = _mk_sandbox("e2e-sh-refusal-", self)
+        # PRR-011: the real-unit guard rides every unnamespaced sh leg
+        # (no-op where sudo is unavailable; see the helper docstring).
+        _sh_unit_guard(self)
         stubs = root / "stubs"
         stubs.mkdir()
         _make_sh_stubs(stubs)

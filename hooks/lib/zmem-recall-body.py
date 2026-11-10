@@ -598,8 +598,11 @@ def _free_text_arg(option: str, value: str) -> list[str]:
 # Issue #428: mirror of the store-side task-text ledger's
 # normalize_correlation_id (the #158 boundary keeps the store library out of
 # this adapter; tests/test_tasktext_correlation_supp.py pins the two). Valid =
-# string, stripped, non-empty, at most 128 chars, no C0/DEL controls, not
-# option-shaped; anything else is ABSENT.
+# string, stripped, non-empty, at most 128 chars, no control characters (C0,
+# DEL and C1 U+0080-U+009F), no unpaired surrogates (U+D800-U+DFFF: a POSIX
+# argv encoder raises on them, so an admitted id would silently kill the
+# whole store call — PR #453 review PRR-002), not option-shaped; anything
+# else is ABSENT.
 _CORRELATION_ID_MAX = 128
 
 
@@ -610,9 +613,26 @@ def _correlation_id(value: object) -> str:
     if (not value or len(value) > _CORRELATION_ID_MAX
             or value.startswith("-")):
         return ""
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
-        return ""
+    for ch in value:
+        code = ord(ch)
+        if code < 32 or code == 127 or 0x80 <= code <= 0x9F:
+            return ""
+        if 0xD800 <= code <= 0xDFFF:
+            return ""
     return value
+
+
+def _argv_safe(value: str) -> bool:
+    """PR #453 review PRR-002 (defense in depth behind _correlation_id):
+    True when the string survives the POSIX argv encoder. A value that
+    fails here must never ride the store argv — the spawn would raise
+    inside _run_store's broad except and cost the PARENT its whole
+    recall."""
+    try:
+        value.encode("utf-8", "surrogateescape")
+        return True
+    except UnicodeEncodeError:
+        return False
 
 
 def _strict_json_object(pairs):
@@ -890,7 +910,10 @@ def main() -> int:
         # stash (every probed host today) is unaffected — the store's
         # reservation rule falls back to the untagged FIFO/aged-head path.
         _consume_id = _correlation_id(event.get("agent_id"))
-        if _consume_id:
+        # PRR-002 defense in depth: an id that cannot survive the POSIX
+        # argv encoder is dropped per-flag — the spawn must never fail on
+        # an id (a failed spawn costs the PARENT its whole recall).
+        if _consume_id and _argv_safe(_consume_id):
             args.extend(_free_text_arg("--consume-agent-id", _consume_id))
     if command == "recall":
         args[1:1] = _free_text_arg("--query", query)
@@ -927,8 +950,12 @@ def main() -> int:
         if _delegation:
             # A NUL cannot survive argv: CPython raises ValueError before
             # the spawn, which would cost the PARENT its whole recall rather
-            # than just this park. Drop it here (the only character argv
-            # forbids; other controls ride safely).
+            # than just this park. Drop it here. (PR #453 review PRR-002:
+            # NUL is not literally the only character argv forbids — an
+            # unpaired surrogate also raises on POSIX encoders, which is
+            # why the id flags above carry the _argv_safe per-flag guard;
+            # this prose path keeps its historical NUL-only strip and
+            # inherits the pre-existing exposure, unchanged by this PR.)
             _delegation = _delegation.replace("\x00", "")
             # Transport more than the store's TASK_TEXT_MAX so the store can
             # REDACT first and cap afterwards — truncating here would let a
@@ -941,7 +968,9 @@ def main() -> int:
             # only the SubagentStart carrying the same id consumes it.
             if isinstance(_tool_input, dict):
                 _park_id = _correlation_id(_tool_input.get("agent_id"))
-                if _park_id:
+                # PRR-002 defense in depth (same per-flag argv-safety rule
+                # as the consume id above).
+                if _park_id and _argv_safe(_park_id):
                     args.extend(_free_text_arg("--delegation-agent-id",
                                                _park_id))
     # Issue #98: forward the cross-project tier flag per its surface matrix.
