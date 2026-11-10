@@ -1253,6 +1253,12 @@ def _resolve_terminal_owner(candidates: dict, start: dict
             return None, True
         chain.append(owner_id)
         owner_id = candidates[owner_id]["owner_id"]
+    if owner_id is None and chain and chain[-1] in candidates:
+        # The chain ends at a NO-OWNER orphan: it is never deleted by this
+        # apply, so it stays alive and IS the terminal owner (the
+        # implementation-review finding: dry-run reported it as an owner, so
+        # apply must merge into it, not skip).
+        return chain[-1], False
     return owner_id, False
 
 

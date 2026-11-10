@@ -87,13 +87,6 @@ class _ReconcileStore(unittest.TestCase):
         conn = sqlite3.connect(self.store)
         try:
             now = "2026-01-01T00:00:00Z"
-            rows = conn.execute(
-                "SELECT id, kind, canonical_name FROM entity").fetchall()
-            by_name = {r[2]: r for r in rows}
-            if "host:acme-prod" in by_name:
-                # The CLI minted the new-form entity; rename nothing. Build the
-                # pre-widening row by hand instead.
-                pass
             conn.execute(
                 "INSERT INTO entity(id,kind,canonical_name,created_at,updated_at)"
                 " VALUES(?,?,?,?,?)",
@@ -335,6 +328,65 @@ class ReconcileApplyMergeTest(_ReconcileStore):
             self.assertEqual(
                 merged_owners, {"e-chain-terminal"},
                 "both chained merges must report the terminal live owner")
+        finally:
+            check.close()
+
+    def test_chain_ending_at_no_owner_orphan_merges_into_it(self):
+        """Implementation-review finding: A=other:host:service:foo whose
+        suffix owner B=other:service:foo has NO suffix owner. B stays alive
+        (never deleted), so B IS the terminal owner: dry-run counts A as
+        mergeable and apply must merge A into B — not skip it."""
+        self._seed_bare()
+        conn = sqlite3.connect(self.store)
+        try:
+            now = "2026-01-01T00:00:00Z"
+            conn.execute(
+                "INSERT INTO entity(id,kind,canonical_name,created_at,"
+                "updated_at) VALUES(?,?,?,?,?)",
+                ("e-noown-mid", "other", "service:foo", now, now))
+            conn.execute(
+                "INSERT INTO entity_alias(entity_id,alias_norm) VALUES(?,?)",
+                ("e-noown-mid", "service:foo"))
+            conn.execute(
+                "INSERT INTO entity(id,kind,canonical_name,created_at,"
+                "updated_at) VALUES(?,?,?,?,?)",
+                ("e-noown-top", "other", "host:service:foo", now, now))
+            conn.execute(
+                "INSERT INTO entity_alias(entity_id,alias_norm) VALUES(?,?)",
+                ("e-noown-top", "host:service:foo"))
+            conn.execute(
+                "INSERT INTO memory_entity(memory_id,entity_id,role)"
+                " VALUES(?,?,'mentions')", (self.mid, "e-noown-top"))
+            conn.commit()
+        finally:
+            conn.close()
+        dry = json.loads(self.run_store(
+            "reconcile-entity-aliases", "--dry-run", "--json").stdout)
+        mergeable_before = dry["mergeable"]
+        self.assertGreaterEqual(
+            mergeable_before, 1,
+            f"dry-run must count the chained orphan as mergeable: {dry}")
+        applied = json.loads(self.run_store(
+            "reconcile-entity-aliases", "--apply", "--json").stdout)
+        self.assertEqual(
+            applied["merged"], mergeable_before,
+            "apply must merge exactly what dry-run counted mergeable")
+        check = sqlite3.connect(self.store)
+        try:
+            live = {row[0] for row in check.execute("SELECT id FROM entity")}
+            self.assertNotIn("e-noown-top", live, "the top orphan merges away")
+            self.assertIn("e-noown-mid", live,
+                          "the no-owner terminal stays alive")
+            owner = check.execute(
+                "SELECT entity_id FROM entity_alias WHERE alias_norm=?",
+                ("host:service:foo",)).fetchone()
+            self.assertEqual(owner[0], "e-noown-mid",
+                             "the full-token alias must resolve to the "
+                             "no-owner terminal")
+            link = check.execute(
+                "SELECT entity_id FROM memory_entity WHERE memory_id=? AND "
+                "entity_id='e-noown-mid'", (self.mid,)).fetchone()
+            self.assertIsNotNone(link, "the link must move to the terminal")
         finally:
             check.close()
 

@@ -1226,7 +1226,7 @@ def _connect_existing_store() -> sqlite3.Connection:
     return conn
 
 
-def _require_supported_schema_stamp(op: str) -> None:
+def _require_supported_schema_stamp() -> None:
     """Refuse an unmigrated store before a write surface touches it (issue
     #367 apply-path D, the rescan-secrets parity helper).
 
@@ -4464,7 +4464,7 @@ def main():
                 # mid-batch with an opaque sqlite error. Refuse it up front
                 # (issue #367 apply-path D moved this probe into the shared
                 # helper so every early-dispatch write arm carries it).
-                _require_supported_schema_stamp("rescan-secrets")
+                _require_supported_schema_stamp()
             # Dry-run opens strictly read-only: its byte-identity contract
             # must hold on WAL stores too, where an rw connection's
             # last-close checkpoint can rewrite the main database file.
@@ -4524,7 +4524,7 @@ def main():
                 rc_lease = _acquire_writer_lease("reclassify-entities")
                 # Issue #367 apply-path D: refuse an unmigrated store up front
                 # (the UPDATE hits the old kind CHECK otherwise; rescan parity).
-                _require_supported_schema_stamp("reclassify-entities")
+                _require_supported_schema_stamp()
                 rc_conn = _connect_existing_store()
             else:
                 # Read-only handle: on a WAL store, an rw connection's
@@ -4565,7 +4565,7 @@ def main():
                 _schema_host.assert_local_fs(STORE_PATH.resolve().parent)
             if args.apply:
                 ra_lease = _acquire_writer_lease("reconcile-entity-aliases")
-                _require_supported_schema_stamp("reconcile-entity-aliases")
+                _require_supported_schema_stamp()
                 ra_conn = _connect_existing_store()
             else:
                 ra_ro = _connect_existing_store_readonly()

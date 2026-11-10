@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """Deterministic generator for the issue #176 entity fixtures.
 
-Writes, from the FIXED values in issue #176 Design step 7 (no randomness, no
-store access, no network):
+Writes, from the FIXED values in issue #176 Design step 7 (no randomness,
+no network; `--emit-store` additionally builds a real seeded store at the
+path it is given):
 
   tests/fixtures/entity/classify.json          30 classifier strings + kinds
   tests/fixtures/entity/reclassify.json        fixed other-rows seed store
@@ -49,9 +50,14 @@ def emit_store(path, *, extra_tool: bool = False, env=None) -> None:
 
     store_py = (FIXTURE_DIR.parent.parent.parent / "skills" / "memory"
                 / "scripts" / "store.py")
+    # Force the target into the child env: `--emit-store <dir>` is
+    # self-sufficient (implementation-review finding — the documented command
+    # must never resolve the DEFAULT operator store when ZMEM_STORE is unset).
+    child_env = dict(env if env is not None else os.environ)
+    child_env["ZMEM_STORE"] = str(path)
     init = subprocess.run(
         [sys.executable, str(store_py), "init"],
-        env=env if env is not None else os.environ.copy(),
+        env=child_env,
         capture_output=True, text=True, timeout=120,
     )
     if init.returncode != 0:
@@ -76,7 +82,7 @@ def emit_store(path, *, extra_tool: bool = False, env=None) -> None:
         conn.executemany(
             "INSERT INTO entity_alias(entity_id, alias_norm) VALUES (?,?)",
             [(a["entity_id"], a["alias_norm"]) for a in RECLASSIFY["aliases"]]
-            + ([("00000000-0000-4000-8000-000000000006", "rg")]
+            + ([("00000000-0000-4000-8000-000000000006", "ripgrep")]
                if extra_tool else []))
         conn.executemany(
             "INSERT INTO memory_entity(memory_id, entity_id, role) "
@@ -190,14 +196,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--emit-store", metavar="DIR_OR_PATH",
-        help="build the seeded fixture store at this path (ZMEM_STORE must "
-             "point at it in the environment) and exit without rewriting "
-             "the JSON fixtures")
+        help="build the seeded fixture store at this directory (or a direct "
+             "*.sqlite path); the target is forced into the child env, so no "
+             "ZMEM_STORE export is needed — exits without rewriting the "
+             "JSON fixtures")
     args = parser.parse_args()
     if args.emit_store:
-        import os
-        store_path = os.environ.get("ZMEM_STORE") or str(
-            Path(args.emit_store) / "store.sqlite")
+        raw = args.emit_store
+        store_path = raw if raw.endswith(".sqlite") else str(
+            Path(raw) / "store.sqlite")
         emit_store(store_path)
         print(f"seeded fixture store at {store_path}")
         return 0

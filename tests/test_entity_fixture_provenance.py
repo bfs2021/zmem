@@ -78,6 +78,43 @@ class OperatorSnapshotFixtureProvenanceTest(unittest.TestCase):
 class ExpectedRegenerationProvenanceTest(unittest.TestCase):
     """C16 (AC16): the oracle is regenerable from the generator alone."""
 
+    def test_emit_store_documented_invocation_is_self_sufficient(self):
+        """Implementation-review finding: SKILL.md documents
+        `make_reclassify_fixture.py --emit-store <dir>` WITHOUT an env prefix;
+        the generator must force the target store itself so the documented
+        command never resolves (or initializes) the DEFAULT operator store."""
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="zmem-emitstore-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        target = str(Path(tmp) / "nested" / "store.sqlite")
+        home = Path(tmp) / "home"
+        home.mkdir()
+        env = dict(os.environ)
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        env.pop("ZMEM_STORE", None)
+        env.pop("ZMEM_DATA", None)
+        gen = subprocess.run(
+            [sys.executable, str(GENERATOR), "--emit-store", target],
+            capture_output=True, text=True, env=env, timeout=120,
+        )
+        self.assertEqual(
+            gen.returncode, 0,
+            f"the documented invocation must succeed standalone: {gen.stderr!r}")
+        self.assertTrue(Path(target).is_file(),
+                        "the store must land at the argument path")
+        conn = sqlite3.connect(target)
+        try:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM entity").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(n, 5, "the seeded fixture entities must be present")
+        default_store = home / ".zmem" / "store.sqlite"
+        self.assertFalse(
+            default_store.exists(),
+            "the default store area must never be initialized by --emit-store")
+
     def test_emit_store_and_documented_dry_run_reproduce_oracle(self):
         tmp = tempfile.mkdtemp(prefix="zmem-provenance-")
         self.addCleanup(shutil.rmtree, tmp, True)

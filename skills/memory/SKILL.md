@@ -3652,8 +3652,9 @@ records the motivating measurement and the fixture apply's fixed outcome:
 
 The 24,826-of-26,511 `other` share (0.9364…, exactly 24826/26511) is why
 `other` defaults below
-1.0; the `fixture` block is test-pinned (tests/test_entity_fixture_provenance.
-py cross-checks it against `reclassify-expected.json`) — the committed proof
+1.0; the `fixture` block is test-pinned
+(`tests/test_entity_fixture_provenance.py` cross-checks it against
+`reclassify-expected.json`) — the committed proof
 the reclassification moves the fixture store's other-link share from 1.0 to
 0.0 in one apply. Regenerate the three fixed fixtures with
 `python tests/fixtures/entity/make_reclassify_fixture.py` (deterministic). The
