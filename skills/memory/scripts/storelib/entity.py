@@ -1390,6 +1390,25 @@ def reconcile_entity_aliases(
                     "supersede_reason=? WHERE id=? AND superseded_at IS NULL",
                     (ts_now, ts_now, "entity_reconcile_merge",
                      orphan_card["id"]))
+                # Full house-parity with supersede_memory (review r2): the
+                # card's vector row goes with the tombstone — memory_vec has
+                # no sync trigger, and every other tombstone path deletes it
+                # explicitly (downstream is liveness-filtered either way;
+                # the delete only prevents a residual overfetch slot). The
+                # vec0 table is optional (absent without the sqlite-vec
+                # extension), so the delete is guarded like write.py's.
+                try:
+                    conn.execute("DELETE FROM memory_vec WHERE memory_id=?",
+                                 (orphan_card["id"],))
+                except sqlite3.OperationalError:
+                    pass  # vec0 table not available
+                # v15 side-table law: a tombstoned row's side records go
+                # with it in the same transaction (cards carry neither
+                # expiry nor occurrence rows in practice; the clears are
+                # the same no-op guard every supersede path runs).
+                from storelib.write import _clear_expiry, _clear_occurrence
+                _clear_expiry(conn, orphan_card["id"])
+                _clear_occurrence(conn, orphan_card["id"])
             merged_rows.append(m)
         # Recount from the post-apply state for the report.
         remaining = _reconcile_candidates(conn)

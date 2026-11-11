@@ -33,10 +33,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   semantics apply — `ZMEM_ALLOW_NEWER_SCHEMA=1` is honored on these apply
   arms).
 - `reconcile-entity-aliases --apply` tombstones a merged orphan's live
-  entity_card in the same transaction (output-silent inline update with the
-  house tombstone semantics), so a merged identity can no longer strand a
-  live card whose recall suppression is gone; the terminal owner's card
-  rebuilds via the cadence sweep.
+  entity_card in the same transaction (output-silent inline update:
+  `superseded_at` = `valid_until` set, supersede reason recorded, and the
+  card's `memory_vec` row removed like every other tombstone path), so a
+  merged identity can no longer strand a live card whose recall suppression
+  is gone; the terminal owner's card rebuilds via the cadence sweep.
 - The invalid `ZMEM_ENTITY_KIND_WEIGHTS` warning truncates the echoed key
   (one bounded line; issue #367).
 - `ReclassifyTest._seed` delegates to the fixture generator's `emit_store`
