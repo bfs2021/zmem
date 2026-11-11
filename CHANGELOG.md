@@ -16,8 +16,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   raw value. Detection = exact secret-head tokens (password/passwd/secret/
   token/api-key/api_key/apikey/credential/auth as whitespace-trimmed
   `[:_=-]`-delimited segments or adjacent pairs — attribute-assignment
-  shapes like `DB_PASSWORD=12345` and `DB_PASSWORD = 12345` mask too, while
-  bare whitespace without punctuation does not) plus the shared redaction
+  shapes like `DB_PASSWORD=12345`, `DB_PASSWORD = 12345`, and dot-joined
+  keys like `db.password=12345` mask too, while bare whitespace without
+  punctuation and bare dotted hostnames do not) plus the shared redaction
   registry; legal `label:port`
   names (`localhost:8080`, `server:8080`) render unmasked, and
   prefix-shaped words (`tokenized-service`, `authentication-service`,

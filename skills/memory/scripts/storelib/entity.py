@@ -410,6 +410,13 @@ _DISPLAY_SECRET_HEADS = frozenset({
     "apikey", "credential", "auth",
 })
 _DISPLAY_SPLIT_RE = re.compile(r"\s*[:_=-]+\s*")
+# Assignment separator for the dot-key rule (round 3): a dot-joined
+# assignment KEY (`db.password=12345`, `spring.datasource.password:5432`) is
+# credential-shaped when any DOT-segment of the key equals a head. The dot
+# split runs ONLY on the key side of an assignment separator — a bare dotted
+# value without one is a hostname (`api.example.com`, `auth.example.com`,
+# `acme.corp:8080`'s key `acme.corp`) and never hits this rule.
+_DISPLAY_ASSIGN_SEP_RE = re.compile(r"\s*[:=]\s*")
 
 
 class _DisplayRedactionUnavailable(RuntimeError):
@@ -469,6 +476,19 @@ def _shared_registry_masks(value: str) -> bool:
 def _is_credential_shaped(value: str) -> bool:
     if _display_tokens(value) & _DISPLAY_SECRET_HEADS:
         return True
+    # Dot-joined assignment keys (implementation review round 3, executed
+    # probe: `db.password=12345` minted raw by the write path): decompose the
+    # KEY side of an assignment separator on dots only. Never global —
+    # `api.example.com` has no assignment separator, and a dotted host key
+    # without a secret dot-segment (`acme.corp:8080`) stays unmasked. A
+    # dotted key that DOES contain a head (`password.corp:8080`) masks —
+    # conservative by design, same posture as `auth-service`.
+    v = (value or "").strip().casefold()
+    m = _DISPLAY_ASSIGN_SEP_RE.search(v)
+    if m:
+        key = v[:m.start()]
+        if {s for s in key.split(".") if s} & _DISPLAY_SECRET_HEADS:
+            return True
     return _shared_registry_masks(value)
 
 

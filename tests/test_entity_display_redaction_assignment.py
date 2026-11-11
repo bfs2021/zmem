@@ -138,6 +138,19 @@ class AssignmentShapeHelperTest(unittest.TestCase):
                       "token x"):
             self.assertEqual(m(legal), legal, legal)
 
+    def test_dot_joined_assignment_keys_mask(self):
+        """Impl-review r3: a dot-joined assignment KEY containing a secret
+        head masks (`db.password=12345`), while dotted hosts and dotted
+        keys without a head stay unmasked. Never a global dot split."""
+        m = entity_mod._mask_entity_display
+        for shaped in ("db.password=12345", "DB.PASSWORD=67890",
+                       "spring.datasource.password=12345",
+                       "db.password: 12345"):
+            self.assertEqual(m(shaped), MASK, shaped)
+        for legal in ("api.example.com", "auth.example.com",
+                      "acme.corp:8080", "localhost:8080", "x.password.corp"):
+            self.assertEqual(m(legal), legal, legal)
+
 
 class WhitespaceShapeCliTest(unittest.TestCase):
     """Real write-path mint (backtick content) + legacy INSERT for the
@@ -192,8 +205,7 @@ class WhitespaceShapeCliTest(unittest.TestCase):
             p = self._run(args)
             self.assertEqual(p.returncode, 0, p.stderr)
             self.assertNotIn(ASSIGN_SPACED, p.stdout)
-            self.assertNotIn("12345", p.stdout.replace(
-                "[REDACTED_SECRET]", ""), args)
+            self.assertNotIn(ASSIGN_SPACED.casefold(), p.stdout.casefold())
             self.assertIn(MASK, p.stdout)
 
     def test_entity_list_keeps_legal_spaced_name(self):
@@ -207,6 +219,25 @@ class WhitespaceShapeCliTest(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertNotIn(ASSIGN_SPACED, p.stdout)
         self.assertIn(MASK, p.stdout)
+
+    def test_dot_key_shapes_mask_via_real_write_path(self):
+        """Impl-review r3 E2E: `db.password=12345` minted from backtick
+        content must not echo raw on entity-list or entity-merge."""
+        raw = "db.password=12345"
+        env = dict(self.env)
+        p = subprocess.run(
+            [sys.executable, "-X", "utf8", str(STORE_PY), "add", "--type",
+             "fact", "--content", f"config note: set `{raw}` here",
+             "--namespace", "user:probe455e"],
+            capture_output=True, text=True, encoding="utf-8", env=env,
+            cwd=str(REPO))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        for args in (["entity-list", "--json"], ["entity-list"]):
+            q = self._run(args)
+            self.assertEqual(q.returncode, 0, q.stderr)
+            self.assertNotIn(raw, q.stdout, args)
+        q = self._run(["entity-list", "--json"])
+        self.assertIn(MASK, q.stdout)
 
 
 if __name__ == "__main__":
