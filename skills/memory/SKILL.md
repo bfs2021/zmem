@@ -3627,6 +3627,54 @@ second apply run after the first commits harmlessly reports `changed=0`
 between its scan and its transaction fails closed with a ValueError and zero
 changes.
 
+### entity-kind classifier decision record (issue #366)
+
+Owner-confirmed 2026-11-11 (verbatim directive: "confirmed on 366",
+transcribed with provenance in the issue comment; proposed record
+adjudicated by an independent plan critic). The five precision rows observed
+in the #365 review are all **kept spec-literal** — each output matches its
+documented rule in `classify_entity_kind`'s docstring, and no guard is added
+ahead of host/service/command (guards would complicate the precedence chain
+issue #176 owns):
+
+1. Hyphenated one-dot basenames (`my-script.py`, `build-helper.sh`,
+   `claude-code.md`, `app-config.json`) stay `host` — the one-dot host rule
+   runs before file, and persisted kinds are sticky under
+   first-seen-kind-wins.
+2. The slash/doc-suffix asymmetry stands: `docs/readme.md` → `other` while
+   `README.md` → `file` (the doc-suffix rule is gated on `/` not in the
+   value).
+3. Bare runner-head words (`make`, `go`, `node`, `python`) stay `command`
+   (first whitespace token in RUNNER_HEADS).
+4. Service nouns matching filenames stay `service`: `server.log` and
+   `server.py` are `service` (whole-word rule); `access.log` remains `file`.
+5. CamelCase service identifiers (`UserService`, `DatabaseServer`) stay
+   `other` — the whole-word rule runs on the casefolded token; CamelCase
+   splitting is an issue #176 spec change and stays a non-goal.
+
+The IPv4 fixture sub-decision: classify.json keeps its frozen 30 rows — the
+ASCII-strict behavior (Arabic-Indic/fullwidth quads classify `other`) stays
+pinned by the direct test `test_ipv4_octets_are_ascii_strict`, and no
+fixture row is added. The hardening items that motivated #366 landed via
+PR #365 (squash `a3e75178`, review-round fix `d2eb2d3d`): the linear host
+one-dot rewrite and the ASCII-strict IPv4 octet class.
+
+Companion record from the PR #454 feedback ledger (F-30 / PRR-013): recall
+`--json`/`--explain` carry no LF-only byte contract (PRR-013: an
+LF-normalized golden exists only for the `--for-injection` arm and is
+unaffected) — recorded here so the decision line lives with the other dated
+records.
+
+**Display masking (issue #455).** All four entity report surfaces
+(`entity-list`, `entity-merge` dry-run, `reclassify-entities`,
+`reconcile-entity-aliases`) mask credential-shaped names, aliases, and
+reconcile suffixes with `[REDACTED_SECRET]` at render time — display only;
+stored rows, the classifier, and entity-card construction are untouched, and
+legal `label:port` names (`localhost:8080`) render unmasked. Masking is
+fail-closed: if the shared redaction registry cannot be imported, the
+reports refuse to print raw values (dry-run exits 2 with empty stdout; apply
+reports from the committed state).
+
 **Backup before `--apply`.** `--apply` re-kinds rows in one transaction but
 takes no snapshot of its own (unlike `rekey-namespace`). Take a verified
 backup first — `<interpreter> <store.py> backup` — and keep it until the new

@@ -387,6 +387,109 @@ def classify_entity_kind(name: str) -> str:
     return "other"
 
 
+# --- Issue #455: display-side masking of credential-shaped entity names ------
+#
+# The four entity REPORT surfaces (entity-list, entity-merge dry-run,
+# reclassify-entities, reconcile-entity-aliases) render stored identity
+# values — entity.canonical_name, entity_alias.alias_norm, and the reconcile
+# suffix — verbatim. A legacy pre-v16 store keeps credential-shaped rows
+# (issue #358's `<word>:<digits>` class) that predate write-time capture
+# redaction, so the DISPLAY path masks them itself. Stored rows, the
+# classifier, resolve/write paths, and entity-card construction are never
+# touched: masking is a rendering concern only, and this helper deliberately
+# does NOT live in redaction.py (the shared pattern registry's families are
+# global — widening them for bare `word:digits` names would false-positive
+# legal `label:port` entity names on every redaction consumer).
+
+_DISPLAY_MASK = "[REDACTED_SECRET]"
+# Exact-match head tokens (casefolded). A segment equal to one of these is a
+# credential head; `tokenized`/`authentication`/`author`/`secretariat` are NOT
+# (the boundary is equality, not prefix — plan-critic blocker 2).
+_DISPLAY_SECRET_HEADS = frozenset({
+    "password", "passwd", "secret", "token", "api-key", "api_key",
+    "apikey", "credential", "auth",
+})
+_DISPLAY_SPLIT_RE = re.compile(r"[:_-]+")
+
+
+class _DisplayRedactionUnavailable(RuntimeError):
+    """The shared redaction registry could not be imported for display
+    masking (issue #455). Rendering refuses rather than echoing raw values:
+    the report renderers catch this BEFORE any stdout write (dry-run legs
+    exit 2 with empty stdout; apply legs flow into the existing
+    _guard_committed_rendering boundary). A failed shared import must never
+    fall back to raw output."""
+
+
+def _display_tokens(value: str) -> set[str]:
+    """The [:_-]-delimited segments of the casefolded value PLUS each
+    adjacent segment pair in both hyphen/underscore joins (so `api-key:prod`
+    yields the pair token `api-key`, and `api_key:x` yields `api_key` —
+    plan-critic round 2 verified this construction is boundary-safe:
+    `api.example.com` stays one segment and never matches)."""
+    v = (value or "").strip().casefold()
+    parts = [s for s in _DISPLAY_SPLIT_RE.split(v) if s]
+    tokens = set(parts)
+    for a, b in zip(parts, parts[1:]):
+        tokens.add(a + "-" + b)
+        tokens.add(a + "_" + b)
+    return tokens
+
+
+def _shared_registry_masks(value: str) -> bool:
+    """True when the shared redaction registry would rewrite the value.
+
+    Lazy import per the storelib.write bootstrap precedent (write.py:293-309)
+    — storelib modules never import redaction at module load. On import
+    failure this RAISES _DisplayRedactionUnavailable (fail closed): the
+    head-rule shapes still mask, but a shared-registry-only secret must
+    never echo raw because the import broke."""
+    try:
+        from redaction import redact_secret_like_text
+    except Exception as exc:  # noqa: BLE001 - any import failure fails closed
+        raise _DisplayRedactionUnavailable(
+            "display masking could not import the shared redaction "
+            f"registry ({type(exc).__name__})") from exc
+    redacted, count = redact_secret_like_text(value)
+    return count > 0 or redacted != value
+
+
+def _is_credential_shaped(value: str) -> bool:
+    if _display_tokens(value) & _DISPLAY_SECRET_HEADS:
+        return True
+    return _shared_registry_masks(value)
+
+
+def _mask_entity_display(value):
+    """Mask one entity display value (canonical name, alias, suffix, or
+    owner_name). Returns _DISPLAY_MASK for credential-shaped values, the
+    value unchanged otherwise; None passes through (owner_name nulls).
+    Raises _DisplayRedactionUnavailable when the shared registry cannot be
+    imported — callers must catch it before any stdout write."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    if _is_credential_shaped(value):
+        return _DISPLAY_MASK
+    return value
+
+
+def _masked_display_rows(rows, *name_keys):
+    """Mask the given display keys across a list of report payload rows.
+
+    Raises _DisplayRedactionUnavailable out (fail closed) BEFORE any caller
+    writes a byte to stdout — construct all masked values first."""
+    out = []
+    for row in rows:
+        new = dict(row)
+        for key in name_keys:
+            if key in new:
+                new[key] = _mask_entity_display(new[key])
+        out.append(new)
+    return out
+
+
 def _default_entity_kind_weights() -> dict[str, float]:
     weights = {k: 1.0 for k in ENTITY_KINDS}
     weights["other"] = 0.6
@@ -975,6 +1078,18 @@ def cmd_entity_list(
             "id": r["id"], "kind": r["kind"], "name": r["name"],
             "aliases": aliases, "links": r["n_links"],
         })
+    # Issue #455: mask credential-shaped names/aliases for DISPLAY only,
+    # before any stdout write (fail closed if the shared registry is broken).
+    try:
+        items = [{
+            **it,
+            "name": _mask_entity_display(it["name"]),
+            "aliases": [_mask_entity_display(a) for a in it["aliases"]],
+        } for it in items]
+    except _DisplayRedactionUnavailable as exc:
+        print(f"[zmem] entity-list: {exc}; refusing to print raw entity "
+              "names", file=sys.stderr)
+        return 2
     if as_json:
         print(_json.dumps(items, indent=2))
         return 0
@@ -1050,12 +1165,22 @@ def cmd_entity_merge(
         # NOTE: runtime prints stay ASCII-only (unlike docstrings): stdout may
         # be a legacy codepage console (cp1252/cp932), and an unencodable
         # char here would crash the command after the work is done.
+        # Issue #455: mask credential-shaped names + collision aliases for
+        # DISPLAY only, before any stdout write (fail closed).
+        try:
+            from_name = _mask_entity_display(frm["canonical_name"])
+            to_name = _mask_entity_display(to["canonical_name"])
+            collisions = [_mask_entity_display(a) for a in alias_collisions]
+        except _DisplayRedactionUnavailable as exc:
+            print(f"[zmem] entity-merge: {exc}; refusing to print raw "
+                  "entity names", file=sys.stderr)
+            return 2
         print("[zmem] entity-merge DRY RUN (no writes - pass --confirm to apply)")
-        print(f"[zmem]   from: {from_id} kind={frm['kind']} name={frm['canonical_name']!r}")
-        print(f"[zmem]   to:   {to_id} kind={to['kind']} name={to['canonical_name']!r}")
+        print(f"[zmem]   from: {from_id} kind={frm['kind']} name={from_name!r}")
+        print(f"[zmem]   to:   {to_id} kind={to['kind']} name={to_name!r}")
         print(f"[zmem]   aliases to move: {len(from_aliases) - len(alias_collisions)} "
               f"({len(alias_collisions)} already on target"
-              + (f": {', '.join(alias_collisions)}" if alias_collisions else "") + ")")
+              + (f": {', '.join(collisions)}" if collisions else "") + ")")
         print(f"[zmem]   links to move: {len(from_links) - len(link_collisions)} "
               f"({len(link_collisions)} memories already linked to target)")
         print(f"[zmem]   result: from-entity deleted; target keeps kind "
@@ -1133,20 +1258,33 @@ def cmd_reclassify_entities(
     envelope = {k: v for k, v in result.items() if k != "dry_run"}
 
     def _render() -> None:
+        # Issue #455: mask credential-shaped names in the DISPLAY payload
+        # before any stdout write. Constructed FIRST inside this render so
+        # apply-mode flows through _guard_committed_rendering when the
+        # shared registry is broken (no raw echo, committed-state exit 0).
+        display = dict(envelope)
+        display["changes"] = _masked_display_rows(
+            envelope.get("changes") or [], "name")
+        envelope_out = display
         if as_json:
-            payload = json.dumps(envelope, indent=2, sort_keys=True) + "\n"
+            payload = json.dumps(envelope_out, indent=2, sort_keys=True) + "\n"
             sys.stdout.buffer.write(payload.encode("utf-8"))
             sys.stdout.buffer.flush()
             return
-        for c in envelope["changes"]:
+        for c in envelope_out["changes"]:
             print(f"[zmem] reclassify: {c['id']} {c['name']!r} "
                   f"other -> {c['new_kind']}")
-        print(f"scanned={envelope['scanned']} changed={envelope['changed']}")
+        print(f"scanned={envelope_out['scanned']} changed={envelope_out['changed']}")
         sys.stdout.flush()
 
     if apply_mode:
         return _guard_committed_rendering("reclassify-entities", _render)
-    _render()
+    try:
+        _render()
+    except _DisplayRedactionUnavailable as exc:
+        print(f"[zmem] reclassify-entities: {exc}; refusing to print raw "
+              "entity names", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -1445,27 +1583,41 @@ def cmd_reconcile_entity_aliases(
     envelope = {k: v for k, v in result.items() if k != "dry_run"}
 
     def _render() -> None:
+        # Issue #455: mask credential-shaped names/suffixes/owner names in
+        # the DISPLAY payload before any stdout write (same construction
+        # placement rule as reclassify: inside the guarded render).
+        display = dict(envelope)
+        display["orphans"] = _masked_display_rows(
+            envelope.get("orphans") or [], "name", "suffix", "owner_name")
+        display["merged_rows"] = _masked_display_rows(
+            envelope.get("merged_rows") or [], "name")
+        envelope_out = display
         if as_json:
-            payload = json.dumps(envelope, indent=2, sort_keys=True) + "\n"
+            payload = json.dumps(envelope_out, indent=2, sort_keys=True) + "\n"
             sys.stdout.buffer.write(payload.encode("utf-8"))
             sys.stdout.buffer.flush()
             return
-        for row in envelope["orphans"]:
+        for row in envelope_out["orphans"]:
             owner = row.get("owner_id") or "-"
             print(f"[zmem] reconcile: {row['id']} {row['name']!r} "
                   f"({row['prefix']}) owner={owner}")
         if apply_mode:
-            print(f"scanned={envelope['scanned']} merged={envelope['merged']} "
-                  f"skipped_no_owner={envelope['skipped_no_owner']} "
-                  f"skipped_cycle={envelope['skipped_cycle']}")
+            print(f"scanned={envelope_out['scanned']} merged={envelope_out['merged']} "
+                  f"skipped_no_owner={envelope_out['skipped_no_owner']} "
+                  f"skipped_cycle={envelope_out['skipped_cycle']}")
         else:
-            print(f"scanned={envelope['scanned']} "
-                  f"mergeable={envelope['mergeable']}")
+            print(f"scanned={envelope_out['scanned']} "
+                  f"mergeable={envelope_out['mergeable']}")
         sys.stdout.flush()
 
     if apply_mode:
         return _guard_committed_rendering("reconcile-entity-aliases", _render)
-    _render()
+    try:
+        _render()
+    except _DisplayRedactionUnavailable as exc:
+        print(f"[zmem] reconcile-entity-aliases: {exc}; refusing to print "
+              "raw entity names", file=sys.stderr)
+        return 2
     return 0
 
 
