@@ -1,6 +1,6 @@
 {
   "algorithm": "sha256-crlf-norm",
-  "digest": "ff9912c362054e492eae94ee68eeb816aefd48d568c19810191788852ed74178",
+  "digest": "70e7c13a2304cf262353b59761684382c19f443316a98b63152cf2d7bf1b9ae5",
   "files": {
     ".agents/plugins/marketplace.json": "49729394bc576e118b2432fb240be55ca5056b61c54a800317ad4bcfad6b52db",
     ".claude-plugin/marketplace.json": "1d2fab88f52a595067d837884cb218738206f7606511431234f18359b4486f03",
@@ -83,7 +83,7 @@
     "scripts/release_gate.py": "0cfa3efc35fb665373776aa146d010582bfabda5170a84b25848e86676485f31",
     "skills/closeout-remote/SKILL.md": "72ef37990a67c16fb1e9b12bd1f5bd0d39d0499036e15a3fd7c77cc40456fdf9",
     "skills/closeout/SKILL.md": "6c4a72fecc39f2b37da7b09365a3c7a5b8cfbe6e20514f905dcaa0a43c48496f",
-    "skills/memory/SKILL.md": "94e339939f802d0d746e54ef513e66501b42231fa9e0fee1dd0583ec0d214f45",
+    "skills/memory/SKILL.md": "4672117395e43c641523835d306bff9da2546fd9d560e5e6f7cc9dc5d220d8e7",
     "skills/memory/scripts/capture_quality.py": "144952fd06464e4164c6e0ea80cc32a90eb77a3d632934528a5b04842cefe19c",
     "skills/memory/scripts/correction_queue.py": "cfeed1f228488fa926eefc7ad4b9c48ac8370f5ceb29340ed02921ef94c9dbfb",
     "skills/memory/scripts/corrections.py": "cf6ac131d092bb319cf9cfcf762b8384105588c8adb968349c804efb50bbaf7a",
@@ -117,7 +117,7 @@
     "skills/memory/scripts/storelib/dataset.py": "ba6e70a3e3adbd75bbfd6af761c22e27c43d75562231a4003ef303b23f9c0128",
     "skills/memory/scripts/storelib/decision_report.py": "453107144d11e8a41f68e0cdb2db9bd9cf78a231fb001ded42d62d562af9c2e1",
     "skills/memory/scripts/storelib/delivery_ledger.py": "3c87501aaf729cc35df64e030b0ea879af0368e6ae1d4d1a774644db59e84e78",
-    "skills/memory/scripts/storelib/entity.py": "659d515800f325af9c781374cdbd72d64dfc372ad0ea2dfe53fb9484c2f3f4d2",
+    "skills/memory/scripts/storelib/entity.py": "afbac3dba6ff6c5598493289943027667f0d1ecb0ba0f274edf41a74e90ab2a3",
     "skills/memory/scripts/storelib/episodes.py": "e22bfff4ce4c6176af6c744d3c4d00195b0d99ff3579c8643676e354152d94cb",
     "skills/memory/scripts/storelib/eval_gold.py": "5cd8f5d91731bd3814720118b18e8480a4b13045c07de399a777a85b65528963",
     "skills/memory/scripts/storelib/evidence.py": "d7d95119597222d48583d24bcd2c2bb58114e609b08f767999e6daa89d950164",
