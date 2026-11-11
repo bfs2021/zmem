@@ -36,8 +36,7 @@ command/error_class/other, in that precedence).
     CamelCase identifier (2+ humps) in content classify_entity_kind(name)
 
 ``person`` entities are NEVER auto-DETECTED: they can only be created via an
-explicit ``entity:person:Name`` tag (or the legacy unqualified ``Name``
-extractor path, which classifies through ``classify_entity_kind``), and no
+explicit ``entity:person:Name`` tag, and no
 code path auto-merges entities as a side effect of writing (review
 PRR-014, PR #454: the EXPLICIT merge surfaces are ``entity-merge`` — manual,
 ``--confirm``-gated, kind-mismatch-refusing — and ``reconcile-entity-aliases
@@ -1320,6 +1319,7 @@ def reconcile_entity_aliases(
     try:
         if started:
             conn.execute("BEGIN IMMEDIATE")
+        ts_now = now_iso()
         candidates_list = _reconcile_candidates(conn)
         candidates = {c["id"]: c for c in candidates_list}
         mergeable: list[dict] = []
@@ -1376,15 +1376,20 @@ def reconcile_entity_aliases(
             # orphan's live entity_card — a live card whose source_ref names
             # a dead entity keeps rendering (its recall suppression relied on
             # the (card, entity) link this apply just deleted). Tombstone it
-            # with the house supersede_memory convention (queryable history,
-            # valid_until set) in the SAME transaction; the terminal owner's
-            # card is rebuilt from the owner's now-larger link set by the
-            # existing cadence sweep.
-            from storelib.write import supersede_memory
+            # with the house tombstone semantics (superseded_at = valid_until
+            # = ts, queryable history) in the SAME transaction, INLINE and
+            # output-silent — supersede_memory() prints a `[zmem] superseded`
+            # line to stdout, which would corrupt this command's LF-only
+            # JSON envelope (reviewer-reproduced JSONDecodeError). The
+            # terminal owner's card is rebuilt from the owner's now-larger
+            # link set by the existing cadence sweep.
             orphan_card = live_card_row(conn, orphan_id)
             if orphan_card is not None:
-                supersede_memory(conn, orphan_card["id"],
-                                 "entity_reconcile_merge", at=now_iso())
+                conn.execute(
+                    "UPDATE memory SET superseded_at=?, valid_until=?, "
+                    "supersede_reason=? WHERE id=? AND superseded_at IS NULL",
+                    (ts_now, ts_now, "entity_reconcile_merge",
+                     orphan_card["id"]))
             merged_rows.append(m)
         # Recount from the post-apply state for the report.
         remaining = _reconcile_candidates(conn)

@@ -1526,8 +1526,9 @@ merges — those orphans back onto the entity that owns their suffix alias:
 ```
 
 Dry-run's `orphans` array lists every pre-widening `<kind>:<name>` other-entity
-with its prefix, suffix, and owner (null when nothing owns the suffix yet);
-`--apply` merges each ownerless-suffix chain into its terminal live owner in
+with its prefix, suffix, and owner (null when nothing owns the suffix yet —
+an orphan that owns its own suffix stays untouched); `--apply` merges each
+ownerless-suffix chain into its terminal live owner in
 one transaction (cyclic chains are refused and reported as
 `skipped_cycle`/`cycle_ids`). Run it after upgrading past a widening and
 BEFORE the next `purge`. See SKILL.md's `reconcile-entity-aliases` section

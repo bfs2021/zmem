@@ -191,8 +191,14 @@ class ReconcileDryRunReportTest(_ReconcileStore):
                     "INSERT OR IGNORE INTO entity_alias(entity_id,alias_norm)"
                     " VALUES(?,?)", (eid, name))
             conn.commit()
+            # Review nit (PR #454 r1): the exact-set assertion is only honest
+            # if the negative rows actually landed — count them.
+            n = conn.execute(
+                "SELECT COUNT(*) FROM entity WHERE id IN "
+                "('e-neg-plain','e-neg-pfx','e-neg-owner')").fetchone()[0]
         finally:
             conn.close()
+        self.assertEqual(n, 3, "all three negative fixtures must be seeded")
         r = self.run_store("reconcile-entity-aliases", "--dry-run", "--json")
         doc = json.loads(r.stdout)
         names = {row["name"] for row in doc["orphans"]}
@@ -229,6 +235,10 @@ class ReconcileApplyMergeTest(_ReconcileStore):
             conn.close()
         r = self.run_store("reconcile-entity-aliases", "--apply", "--json")
         self.assertEqual(r.returncode, 0, r.stderr)
+        # Reviewer-required pin (PR #454 r2): the tombstone must be
+        # output-silent — the --json envelope must still parse as ONE JSON
+        # document (the supersede print used to corrupt it).
+        json.loads(r.stdout)
         conn = sqlite3.connect(self.store)
         try:
             live = conn.execute(

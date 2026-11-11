@@ -3692,9 +3692,11 @@ with the orphan).
 
 `--dry-run` is strictly read-only (zero database bytes, no writer lease) and
 reports every orphaned `<kind>:<name>` other-entity with its prefix, suffix,
-and owner (null when no entity owns the suffix yet — EXCEPT the chain-end
-case: a no-owner orphan that another orphan's chain terminates ON stays alive
-and IS that chain's merge target; it is both reported and used). The
+and owner (null when no entity owns the suffix yet — EXCEPT two cases:
+a no-owner orphan that another orphan's chain terminates ON stays alive
+and IS that chain's merge target; and an orphan that OWNS ITS OWN SUFFIX
+is reported with owner null and left untouched — self-merge is not a
+reconciliation). The
 `orphans` array means pre-apply candidates in dry-run and the remaining
 unmerged rows after apply. `--apply` takes the writer lease, refuses an
 unmigrated store up front, and performs every merge in ONE transaction:

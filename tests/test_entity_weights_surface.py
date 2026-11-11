@@ -221,15 +221,18 @@ class InvalidWeightsWarningBoundedTest(_WeightsStore):
                  if "entity-kind weights" in ln]
         self.assertEqual(len(lines), 1,
                          "exactly one warning line per process/raw value")
-        # The production cap is _echo_key's 60 characters (review F-13,
-        # PR #454: a regression from 60 to ~200 must fail, so assert against
-        # the real cap budget — bounded key repr + suffix — not a loose 300).
+        # The production cap is _echo_key's exactly-60 characters (review
+        # F-13, PR #454: assert the REAL cap, not a loose length budget — a
+        # cap regression to anything above 60 must fail, so the echoed key
+        # must contain exactly sixty K characters and never a 61st).
         key = "K" * 5000
         self.assertNotIn(key, r.stderr, "raw key must never be echoed")
-        self.assertLess(
-            max(len(ln) for ln in lines), 200,
-            "the echoed key must be truncated at the production cap (60 "
-            "chars + the fixed prefix/suffix) — base echoes 5000+ chars")
+        warned = "\n".join(lines)
+        self.assertIn("K" * 60, warned,
+                      "the bounded key must carry the 60-char prefix")
+        self.assertNotIn("K" * 61, warned,
+                         "the echoed key must be capped at exactly 60 chars "
+                         "(a cap regression above 60 fails here)")
 
 
 if __name__ == "__main__":

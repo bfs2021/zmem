@@ -28,7 +28,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (issue #367).
 - `reclassify-entities --apply` and `reconcile-entity-aliases --apply` refuse
   an unmigrated store up front with the rescan-secrets-style message (issue
-  #367; shared `_require_supported_schema_stamp` helper).
+  #367; shared `_require_supported_schema_stamp` helper). A NEWER store
+  routes through the forward-compat gate instead (its NOTICE/override
+  semantics apply — `ZMEM_ALLOW_NEWER_SCHEMA=1` is honored on these apply
+  arms).
+- `reconcile-entity-aliases --apply` tombstones a merged orphan's live
+  entity_card in the same transaction (output-silent inline update with the
+  house tombstone semantics), so a merged identity can no longer strand a
+  live card whose recall suppression is gone; the terminal owner's card
+  rebuilds via the cadence sweep.
 - The invalid `ZMEM_ENTITY_KIND_WEIGHTS` warning truncates the echoed key
   (one bounded line; issue #367).
 - `ReclassifyTest._seed` delegates to the fixture generator's `emit_store`
