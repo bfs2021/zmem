@@ -1,32 +1,115 @@
 #!/usr/bin/env python
 """Deterministic generator for the issue #176 entity fixtures.
 
-Writes, from the FIXED values in issue #176 Design step 7 (no randomness, no
-store access, no network):
+Writes, from the FIXED values in issue #176 Design step 7 (no randomness,
+no network; `--emit-store` additionally builds a real seeded store at the
+path it is given):
 
   tests/fixtures/entity/classify.json          30 classifier strings + kinds
   tests/fixtures/entity/reclassify.json        fixed other-rows seed store
   tests/fixtures/entity/operator-snapshot.json fixed operator-metrics block
 
-It NEVER writes tests/fixtures/entity/reclassify-expected.json — that file is
-generated once by the reviewed command:
+It never writes tests/fixtures/entity/reclassify-expected.json — that file
+regenerates in two steps, with no test involved (issue #368):
 
-  python skills/memory/scripts/store.py reclassify-entities --dry-run --json \
+  python tests/fixtures/entity/make_reclassify_fixture.py --emit-store <dir>
+  ZMEM_STORE=<dir>/store.sqlite python skills/memory/scripts/store.py \
+      reclassify-entities --dry-run --json \
       > tests/fixtures/entity/reclassify-expected.json
 
-against the isolated fixture store. Running this generator twice produces
-byte-identical outputs (sorted keys, 2-space indent, LF newlines, UTF-8).
+Running this generator twice produces byte-identical outputs: insertion order
+is preserved (json.dumps runs with sort_keys=False), 2-space indent, LF
+newlines, UTF-8; deterministic because the dict literals below are fixed.
 
-Usage: python tests/fixtures/entity/make_reclassify_fixture.py
+Usage: python tests/fixtures/entity/make_reclassify_fixture.py [--emit-store DIR]
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
 FIXTURE_DIR = Path(__file__).resolve().parent
+
+
+def emit_store(path, *, extra_tool: bool = False, env=None) -> None:
+    """Build the seeded fixture store at `path` — the EXACT seeding
+    ReclassifyTest drives (issue #368: one source of truth for the oracle).
+
+    Creates the store through the real `store.py init` (the target path is
+    FORCED into the child env — no caller env pinning required), then
+    inserts the FIXED memory/entity/alias/link rows from RECLASSIFY
+    verbatim.
+    `extra_tool=True` additionally inserts the non-`other` tool row the
+    non-other-rows-untouched pin depends on (never in the oracle fixture).
+    """
+    import os
+    import subprocess
+
+    # Refuse an existing target outright (review F-11, PR #454: a second
+    # emit against a seeded store died with `UNIQUE constraint failed:
+    # memory.id` after init silently reused the old file). Callers delete
+    # or move the old target first — regeneration is never an upsert.
+    if Path(path).exists():
+        raise FileExistsError(
+            f"emit_store: target {path} already exists; delete it first "
+            "(re-emitting is not an upsert — the INSERTs assume an empty "
+            "store)")
+    store_py = (FIXTURE_DIR.parent.parent.parent / "skills" / "memory"
+                / "scripts" / "store.py")
+    # Force the target into the child env: `--emit-store <dir>` is
+    # self-sufficient (implementation-review finding — the documented command
+    # must never resolve the DEFAULT operator store when ZMEM_STORE is unset).
+    # The child also inherits NO ambient ZMEM_* variable except the pinned
+    # store path (review F-11: ambient ZMEM_DATA/models pins leak into the
+    # fixture build and make it environment-dependent).
+    child_env = {k: v for k, v in
+                 (env if env is not None else os.environ).items()
+                 if not k.startswith("ZMEM_")}
+    child_env["ZMEM_STORE"] = str(path)
+    init = subprocess.run(
+        [sys.executable, str(store_py), "init"],
+        env=child_env,
+        capture_output=True, text=True, timeout=120,
+    )
+    if init.returncode != 0:
+        raise RuntimeError(
+            f"store.py init failed for {path}: {init.stderr.strip()}")
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    try:
+        mem_ids = sorted({m["memory_id"] for m in RECLASSIFY["memory_entity"]})
+        conn.executemany(
+            "INSERT INTO memory(id, namespace, type, content, tags, "
+            "ingestion_ts) VALUES (?,?,?,?,?,?)",
+            [(mid, "fixture:entity-176", "fact", f"fixture row {i + 1}", "",
+              _TS) for i, mid in enumerate(mem_ids)])
+        conn.executemany(
+            "INSERT INTO entity(id, kind, canonical_name, created_at, "
+            "updated_at) VALUES (?,?,?,?,?)",
+            [(e["id"], e["kind"], e["canonical_name"], e["created_at"],
+              e["updated_at"]) for e in RECLASSIFY["entities"]]
+            + ([("00000000-0000-4000-8000-000000000006", "tool", "ripgrep",
+                 _TS, _TS)] if extra_tool else []))
+        conn.executemany(
+            "INSERT INTO entity_alias(entity_id, alias_norm) VALUES (?,?)",
+            [(a["entity_id"], a["alias_norm"]) for a in RECLASSIFY["aliases"]]
+            + ([("00000000-0000-4000-8000-000000000006", "ripgrep")]
+               if extra_tool else []))
+        conn.executemany(
+            "INSERT INTO memory_entity(memory_id, entity_id, role) "
+            "VALUES (?,?,?)",
+            [(m["memory_id"], m["entity_id"], m["role"])
+             for m in RECLASSIFY["memory_entity"]]
+            + ([("40000000-0000-4000-8000-000000000004",
+                 "00000000-0000-4000-8000-000000000006", "mentions")]
+               if extra_tool else []))
+        conn.commit()
+    finally:
+        conn.close()
 
 # Issue #176 Design step 7 — the exact 30 strings, in this exact order.
 CLASSIFY_ROWS = [
@@ -125,6 +208,21 @@ def _write_bytes(path: Path, obj: object) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--emit-store", metavar="DIR_OR_PATH",
+        help="build the seeded fixture store at this directory (or a direct "
+             "*.sqlite path); the target is forced into the child env, so no "
+             "ZMEM_STORE export is needed — exits without rewriting the "
+             "JSON fixtures")
+    args = parser.parse_args()
+    if args.emit_store:
+        raw = args.emit_store
+        store_path = raw if raw.endswith(".sqlite") else str(
+            Path(raw) / "store.sqlite")
+        emit_store(store_path)
+        print(f"seeded fixture store at {store_path}")
+        return 0
     _write_bytes(FIXTURE_DIR / "classify.json", CLASSIFY_ROWS)
     _write_bytes(FIXTURE_DIR / "reclassify.json", RECLASSIFY)
     _write_bytes(FIXTURE_DIR / "operator-snapshot.json", OPERATOR_SNAPSHOT)

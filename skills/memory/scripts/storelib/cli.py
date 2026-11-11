@@ -31,6 +31,7 @@ from storelib.entity import (
     cmd_entity_list,
     cmd_entity_merge,
     cmd_reclassify_entities,
+    cmd_reconcile_entity_aliases,
 )
 from storelib.evidence import (
     EVIDENCE_ASSOCIATION_PAGE_MAX,
@@ -1223,6 +1224,44 @@ def _connect_existing_store() -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
+
+
+def _require_supported_schema_stamp() -> None:
+    """Refuse an unmigrated store before a write surface touches it (issue
+    #367 apply-path D, the rescan-secrets parity helper).
+
+    ``assert_store_schema_compatible`` only refuses NEWER stores; an older,
+    unmigrated store would otherwise fail mid-apply with an opaque sqlite
+    error (the reclassify UPDATE hits the old kind CHECK). Shared by every
+    early-dispatch write arm: rescan-secrets, reclassify-entities, and
+    reconcile-entity-aliases.
+
+    A NEWER stamp is NOT refused here (review F-07, PR #454 feedback): the
+    dispatch's ``assert_store_schema_compatible`` call owns the forward-compat
+    contract — honoring ``ZMEM_ALLOW_NEWER_SCHEMA=1`` and the additive-only
+    compat window with its proper NOTICE/WARNING — so this helper returns for
+    any parseable stamp above the supported version and leaves that gate to
+    speak for newer stores.
+    """
+    probe = _connect_existing_store_readonly()
+    try:
+        stamp = probe.conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'"
+        ).fetchone()
+    finally:
+        probe.close()
+    if stamp is not None:
+        try:
+            if int(str(stamp[0])) > SUPPORTED_SCHEMA_VERSION:
+                return  # newer store: assert_store_schema_compatible owns it
+        except ValueError:
+            pass  # non-integer stamp: the migrate refusal below speaks
+    if stamp is None or str(stamp[0]) != str(SUPPORTED_SCHEMA_VERSION):
+        raise RuntimeError(
+            "store schema version "
+            f"{stamp[0] if stamp is not None else 'missing'} is "
+            f"not the supported {SUPPORTED_SCHEMA_VERSION}; run "
+            "any zmem command once to migrate, then retry")
 
 
 def _connect_existing_store_readonly(
@@ -4082,6 +4121,23 @@ def main():
                               action="store_true", default=False,
                               help="emit the sorted proposal as JSON")
 
+    # Issue #358: reconcile pre-widening orphan identities. The early dispatch
+    # (below) keeps dry-run read-only and apply under the writer lease with the
+    # migration-stamp refusal.
+    p_reconcile = _add_parser(
+        "reconcile-entity-aliases",
+        help="report or merge pre-widening <kind>:<name> orphan entities onto "
+             "the entity that now owns their suffix alias (issue #358)")
+    p_reconcile.add_argument("--dry-run", dest="dry_run",
+                             action="store_true", default=False,
+                             help="report orphaned aliases without writing")
+    p_reconcile.add_argument("--apply", dest="apply",
+                             action="store_true", default=False,
+                             help="merge each orphan with an owner into it")
+    p_reconcile.add_argument("--json", dest="json",
+                             action="store_true", default=False,
+                             help="emit the report as JSON")
+
     # v11 (issue #61, 6.5): associative-link inspection + curation. List mode
     # mirrors the `get` not-found contract; --add is the CLI insertion path
     # for the typed relations (updates/extends/derives) and curated supports.
@@ -4418,20 +4474,10 @@ def main():
                 # The append-only lineage INSERT names columns added by the
                 # v8-v14 migrations, and assert_store_schema_compatible only
                 # refuses NEWER stores — an unmigrated older store would fail
-                # mid-batch with an opaque sqlite error. Refuse it up front.
-                _probe_ro = _connect_existing_store_readonly()
-                try:
-                    stamp = _probe_ro.conn.execute(
-                        "SELECT value FROM meta WHERE key='schema_version'"
-                    ).fetchone()
-                finally:
-                    _probe_ro.close()
-                if stamp is None or str(stamp[0]) != str(SUPPORTED_SCHEMA_VERSION):
-                    raise RuntimeError(
-                        "store schema version "
-                        f"{stamp[0] if stamp is not None else 'missing'} is "
-                        f"not the supported {SUPPORTED_SCHEMA_VERSION}; run "
-                        "any zmem command once to migrate, then retry")
+                # mid-batch with an opaque sqlite error. Refuse it up front
+                # (issue #367 apply-path D moved this probe into the shared
+                # helper so every early-dispatch write arm carries it).
+                _require_supported_schema_stamp()
             # Dry-run opens strictly read-only: its byte-identity contract
             # must hold on WAL stores too, where an rw connection's
             # last-close checkpoint can rewrite the main database file.
@@ -4489,6 +4535,9 @@ def main():
                 _schema_host.assert_local_fs(STORE_PATH.resolve().parent)
             if args.apply:
                 rc_lease = _acquire_writer_lease("reclassify-entities")
+                # Issue #367 apply-path D: refuse an unmigrated store up front
+                # (the UPDATE hits the old kind CHECK otherwise; rescan parity).
+                _require_supported_schema_stamp()
                 rc_conn = _connect_existing_store()
             else:
                 # Read-only handle: on a WAL store, an rw connection's
@@ -4510,6 +4559,44 @@ def main():
             if rc_ro is not None:
                 rc_ro.close()
             _release_writer_lease(rc_lease)
+
+    # Issue #358: reconcile-entity-aliases dispatches EARLY on both arms, the
+    # reclassify shape (readonly dry-run with a zero-database-bytes contract;
+    # apply under the writer lease + migration-stamp refusal + one rw
+    # connection whose single transaction performs every merge).
+    if args.cmd == "reconcile-entity-aliases":
+        if args.dry_run == args.apply:  # both flags or neither
+            ap.error("exactly one of --dry-run or --apply is required")
+        ra_lease = None
+        ra_conn = None
+        ra_ro = None
+        try:
+            _wait_for_maintenance_clear("reconcile-entity-aliases")
+            if _schema_host is not None:
+                # House UNC/network/OneDrive gate (rekey/rescan precedent):
+                # --apply is a write surface like any other.
+                _schema_host.assert_local_fs(STORE_PATH.resolve().parent)
+            if args.apply:
+                ra_lease = _acquire_writer_lease("reconcile-entity-aliases")
+                _require_supported_schema_stamp()
+                ra_conn = _connect_existing_store()
+            else:
+                ra_ro = _connect_existing_store_readonly()
+                ra_conn = ra_ro.conn
+            assert_store_schema_compatible(ra_conn, STORE_PATH)
+            sys.exit(cmd_reconcile_entity_aliases(
+                ra_conn, apply_mode=args.apply, as_json=args.json))
+        except SystemExit:
+            raise
+        except Exception as exc:
+            print(f"[zmem] reconcile-entity-aliases: {exc}", file=sys.stderr)
+            sys.exit(2)
+        finally:
+            if ra_conn is not None:
+                ra_conn.close()
+            if ra_ro is not None:
+                ra_ro.close()
+            _release_writer_lease(ra_lease)
 
     if args.cmd == "reembed" and args.check:
         check_conn = None

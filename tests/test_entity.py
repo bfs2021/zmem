@@ -975,41 +975,24 @@ class ReclassifyTest(_Store):
     """Issue #176: dry-run/apply against the fixed reclassify.json seed."""
 
     NS = "fixture:entity-176"
-    FIXTURE = REPO_ROOT / "tests" / "fixtures" / "entity" / "reclassify.json"
+    # (Review PRR-009, PR #454: the former unused FIXTURE attr is removed;
+    # committed-fixture drift from the generator is pinned by
+    # tests/test_entity_fixture_provenance.py's
+    # FixtureContentMatchesGeneratorTest.)
     EXPECTED = (REPO_ROOT / "tests" / "fixtures" / "entity"
                 / "reclassify-expected.json")
 
     def _seed(self, extra_tool=False):
-        self.run_store("init")
-        data = json.loads(self.FIXTURE.read_text(encoding="utf-8"))
-        conn = self.db()
-        mem_ids = sorted({m["memory_id"] for m in data["memory_entity"]})
-        conn.executemany(
-            "INSERT INTO memory(id, namespace, type, content, tags, "
-            "ingestion_ts) VALUES (?,?,?,?,?,?)",
-            [(mid, self.NS, "fact", f"fixture row {i + 1}", "", FIXED_TS)
-             for i, mid in enumerate(mem_ids)])
-        conn.executemany(
-            "INSERT INTO entity(id, kind, canonical_name, created_at, "
-            "updated_at) VALUES (?,?,?,?,?)",
-            [(e["id"], e["kind"], e["canonical_name"], e["created_at"],
-              e["updated_at"]) for e in data["entities"]]
-            + ([("00000000-0000-4000-8000-000000000006", "tool", "ripgrep",
-                 FIXED_TS, FIXED_TS)] if extra_tool else []))
-        conn.executemany(
-            "INSERT INTO entity_alias(entity_id, alias_norm) VALUES (?,?)",
-            [(a["entity_id"], a["alias_norm"]) for a in data["aliases"]]
-            + ([("00000000-0000-4000-8000-000000000006", "ripgrep")]
-               if extra_tool else []))
-        conn.executemany(
-            "INSERT INTO memory_entity(memory_id, entity_id, role) "
-            "VALUES (?,?,?)",
-            [(m["memory_id"], m["entity_id"], m["role"])
-             for m in data["memory_entity"]]
-            + ([("40000000-0000-4000-8000-000000000004",
-                 "00000000-0000-4000-8000-000000000006", "mentions")]
-               if extra_tool else []))
-        conn.commit()
+        # Issue #368: the seeding lives in the generator (emit_store) so the
+        # committed oracle is regenerable outside the test — one source.
+        import importlib.util as _ilu
+        spec = _ilu.spec_from_file_location(
+            "make_reclassify_fixture",
+            REPO_ROOT / "tests" / "fixtures" / "entity"
+            / "make_reclassify_fixture.py")
+        gen = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        gen.emit_store(self.store, extra_tool=extra_tool, env=self.env)
 
     def _snapshot(self, conn):
         return {

@@ -413,11 +413,15 @@ TAINT_RANK = {"trusted_internal": 0, "untrusted_tool": 1, "untrusted_web": 2}
 # small and deterministic — no LLM in the extraction path. The v2 vocabulary
 # keeps the five original kinds in place and order, then adds the seven kinds
 # the taxonomy RFC measured (host, service, model, repo, file, command,
-# error_class) before the `other` fallback. `person` is NEVER auto-detected —
-# it can only be created via an explicit `entity:person:Name` tag, and no code
-# path auto-merges person entities (entity-merge is manual, --confirm-gated,
-# and refuses kind mismatches). Deterministic classification rules for the new
-# kinds belong to issue #176; this tuple is only the shared vocabulary.
+# error_class) before the `other` fallback. `person` is NEVER auto-DETECTED —
+# it can only be created via an explicit `entity:person:Name` tag, and no
+# write path auto-merges entities as a side effect (review PRR-014, PR #454:
+# the EXPLICIT merge surfaces are entity-merge — manual, --confirm-gated,
+# kind-mismatch-refusing — and reconcile-entity-aliases --apply, whose
+# dry-run previews every merge; a legacy `other:person:Name` row can merge
+# into a person entity through that explicit reconcile). Deterministic
+# classification rules for the new kinds belong to issue #176; this tuple is
+# only the shared vocabulary.
 ENTITY_KINDS = (
     "person", "project", "tool", "preference",
     "host", "service", "model", "repo", "file",

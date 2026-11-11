@@ -3548,8 +3548,15 @@ over live, undeclared, or outcome-selected inputs are not baselines.
 Lists the entities the deterministic extractor minted: id, kind, canonical
 name, all normalized aliases, and how many memories link to each. `--kind`
 filters to one kind; `--json` emits `[{id, kind, name, aliases, links}]`.
-This is the inspection surface for humans and doctor — use it to see what
-the entity lane actually matches.
+Entity identities are GLOBAL: this listing (and every other entity surface)
+spans ALL namespaces — the entity tables carry no namespace column, and
+`entity_alias.alias_norm` is globally unique — so an alias resolves to
+exactly one entity no matter which project mentioned it (review PRR-011,
+PR #454: uniqueness is per ALIAS; canonical names are not unique-keyed —
+`resolve_entity` refuses with exit 2 when a name matches several entities).
+This is the inspection
+surface for humans and doctor — use it to see what the entity lane actually
+matches.
 
 ### entity-merge — reconcile duplicate entities (v10, issue #60)
 ```
@@ -3564,9 +3571,12 @@ transaction; a target that already has an alias or link keeps its own
 
 Refusals (exit 2, nothing written): unknown id on either side, `--from` ==
 `--to`, or a kind mismatch — merging a `person` into a `tool` would silently
-re-classify history. Nothing in zmem AUTO-merges entities, ever (the issue's
-"ZMem will not auto-merge people" rule); person→person merges are allowed
-but only as this explicit manual command.
+re-classify history. No write path auto-merges entities as a side effect
+(the issue's "ZMem will not auto-merge people" rule): merges happen only
+through the two EXPLICIT operator commands — this one (person→person merges
+are allowed here, manual and `--confirm`-gated) and
+`reconcile-entity-aliases --apply` (whose dry-run previews every merge; a
+legacy `other:person:Name` row can merge into a person entity through it).
 
 Typical flow: `entity:Name` tags or backticked mentions created two
 entities for the same thing (e.g. `rg` and `ripgrep`); find both ids with
@@ -3598,11 +3608,30 @@ entity row currently kinded `other` and proposes or applies new kinds.
 Exactly one of `--dry-run`/`--apply` is required (both or neither exits 2).
 Non-`other` rows are never touched; entity ids, aliases, and memory links
 are preserved; `--apply` writes in ONE transaction under the writer lease
-and rolls back completely on error. `--dry-run` runs before the lease on a
-read-only connection, changes zero database bytes, and prints the same
-canonical JSON as apply: `{"scanned", "changed", "before_other_link_share",
-"after_other_link_share", "changes":[{id,name,old_kind,new_kind}]}` with
-changes ordered by entity id.
+and rolls back completely on error. Like every entity surface, the scan
+spans ALL namespaces (there is no namespace filter — entity identities are
+global). `--apply` also refuses an unmigrated store up front (a schema
+stamp below the supported version exits 2 with the migration hint instead
+of a mid-apply sqlite error). `--dry-run` runs before the lease on a
+read-only connection, changes zero database bytes (no `-wal`/`-shm`
+sidecars), and prints the same canonical JSON as apply: `{"scanned",
+"changed", "before_other_link_share", "after_other_link_share",
+"changes":[{id,name,old_kind,new_kind}]}` with changes ordered by entity id;
+for `--apply` the scanned/before numbers describe the locked pre-update
+snapshot inside the write transaction.
+
+**Writer lease and concurrent applies.** The writer lease is advisory — it
+marks a live writer so `restore` observes it; it is NOT mutual exclusion. A
+second apply run after the first commits harmlessly reports `changed=0`
+(idempotent re-run); an apply whose targets were re-kinded by a writer
+between its scan and its transaction fails closed with a ValueError and zero
+changes.
+
+**Backup before `--apply`.** `--apply` re-kinds rows in one transaction but
+takes no snapshot of its own (unlike `rekey-namespace`). Take a verified
+backup first — `<interpreter> <store.py> backup` — and keep it until the new
+kinds are confirmed; undo is `restore` from that snapshot (rows re-kinded by
+mistake come back with their old kinds; there is no per-row undo).
 
 At write time the same classifier assigns kinds to unqualified extracted
 values (plain tag tokens, untyped `entity:Name`, CamelCase identifiers);
@@ -3629,12 +3658,59 @@ records the motivating measurement and the fixture apply's fixed outcome:
 
 The 24,826-of-26,511 `other` share (0.9364…, exactly 24826/26511) is why
 `other` defaults below
-1.0; the `fixture` block is the committed proof the reclassification moves
-the fixture store's other-link share from 1.0 to 0.0 in one apply. Regenerate
-the three fixed fixtures with
-`python tests/fixtures/entity/make_reclassify_fixture.py` (deterministic;
-it never writes the reviewed `reclassify-expected.json` — that file comes
-from the exact dry-run command against the seeded fixture store).
+1.0; the `fixture` block is test-pinned
+(`tests/test_entity_fixture_provenance.py` cross-checks it against
+`reclassify-expected.json`) — the committed proof
+the reclassification moves the fixture store's other-link share from 1.0 to
+0.0 in one apply. Regenerate the three fixed fixtures with
+`python tests/fixtures/entity/make_reclassify_fixture.py` (deterministic). The
+reviewed `reclassify-expected.json` regenerates OUTSIDE any test in two steps:
+build the seeded fixture store with
+`python tests/fixtures/entity/make_reclassify_fixture.py --emit-store <dir>`,
+then run the exact dry-run against it —
+`ZMEM_STORE=<dir>/store.sqlite <interpreter> <store.py> reclassify-entities
+--dry-run --json > tests/fixtures/entity/reclassify-expected.json` — the same
+seeding `ReclassifyTest` uses (one source, `emit_store`).
+
+### reconcile-entity-aliases — merge pre-widening orphan identities (issue #358)
+```
+<interpreter> <store.py> reconcile-entity-aliases --dry-run|--apply [--json]
+```
+A vocabulary widening silently re-keys stored aliases on the next relink: a store
+written before v16 stored a tag like `host:acme-prod` as one `other`-kind
+entity whose alias is the WHOLE token; after the widening, re-deriving that
+memory mints `{host, "acme-prod"}` and leaves the old `other` entity with
+zero links (the 0.101.0 CHANGELOG discloses the behavior — only the entity
+lane's grouping changes; content and FTS recall are unaffected). This
+command reports — and, behind `--apply`, merges — those orphans back onto
+the entity that now owns the suffix alias, so BOTH alias forms resolve to
+one identity. (Dry-run's `mergeable` counts every orphan that HAS an owner;
+apply additionally refuses cyclic chains, so `merged` can be smaller than
+`mergeable` by exactly the `skipped_cycle` count.) Run it AFTER upgrading past a widening and BEFORE the next
+`purge` (a purge reaps linkless entities and would delete the old alias form
+with the orphan).
+
+`--dry-run` is strictly read-only (zero database bytes, no writer lease) and
+reports every orphaned `<kind>:<name>` other-entity with its prefix, suffix,
+and owner (null when no entity owns the suffix yet — EXCEPT two cases:
+a no-owner orphan that another orphan's chain terminates ON stays alive
+and IS that chain's merge target; and an orphan that OWNS ITS OWN SUFFIX
+is reported with owner null and left untouched — self-merge is not a
+reconciliation). The
+`orphans` array means pre-apply candidates in dry-run and the remaining
+unmerged rows after apply. `--apply` takes the writer lease, refuses an
+unmigrated store up front, and performs every merge in ONE transaction:
+terminal-owner resolution first (a chain like `host:service:foo` →
+`service:foo` → `foo` merges into the final live owner; any chain that
+reaches a cycle is refused WHOLE — the cycle's members and any tail feeding
+into it — reported as `skipped_cycle`/`cycle_ids`), then per orphan: aliases
+move first-delete-then-reinsert onto the owner, links move with
+`UNIQUE(memory_id, entity_id)` dedup, and the orphan row is deleted. A merged
+orphan's live entity_card is tombstoned in the same transaction (a live card
+naming a deleted entity would render without its recall suppression; the
+owner's card rebuilds from the owner's links via the cadence sweep). The old
+full-token alias survives on the owner. Non-`other` rows are never touched,
+and the same ALL-namespaces scope as every entity surface applies.
 
 ### links — inspect (or curate) a memory's associative links (v11, issue #61)
 ```

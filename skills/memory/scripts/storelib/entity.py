@@ -35,10 +35,14 @@ command/error_class/other, in that precedence).
     backtick-quoted span in content           tool
     CamelCase identifier (2+ humps) in content classify_entity_kind(name)
 
-``person`` entities are NEVER auto-detected: they can only be created via an
-explicit ``entity:person:Name`` tag, and nothing auto-merges entities of any
-kind (``entity-merge`` is manual, ``--confirm``-gated, refuses kind
-mismatches — the issue's "ZMem will not auto-merge people" rule).
+``person`` entities are NEVER auto-DETECTED: they can only be created via an
+explicit ``entity:person:Name`` tag, and no
+code path auto-merges entities as a side effect of writing (review
+PRR-014, PR #454: the EXPLICIT merge surfaces are ``entity-merge`` — manual,
+``--confirm``-gated, kind-mismatch-refusing — and ``reconcile-entity-aliases
+--apply``, an operator command whose dry-run previews every merge; note a
+legacy ``other:person:Name`` row produced by a pre-v16 tag CAN merge into a
+``person`` entity through that explicit reconcile).
 
 Alias normalization reuses ``storelib.schema._normalize_content`` — the SAME
 function that produces ``content_norm``, as the issue mandates. (Python 3's
@@ -395,6 +399,16 @@ def _default_entity_kind_weights() -> dict[str, float]:
 _WEIGHTS_WARNED: set[str] = set()
 
 
+def _echo_key(value: str, cap: int = 60) -> str:
+    """Render one raw env key for a diagnostic line, length-capped (issue #367:
+    the raw value is operator-supplied and unbounded — a 5,000-char key must
+    never become a 5,000-char stderr line)."""
+    text = str(value)
+    if len(text) <= cap:
+        return repr(text)
+    return repr(text[:cap]) + f"...({len(text)} chars)"
+
+
 def parse_entity_kind_weights() -> dict[str, float]:
     """Parse ZMEM_ENTITY_KIND_WEIGHTS into a per-kind weight map.
 
@@ -439,14 +453,14 @@ def parse_entity_kind_weights() -> dict[str, float]:
             return _fallback("ZMEM_ENTITY_KIND_WEIGHTS is not a JSON object")
         for key, value in obj.items():
             if key not in ENTITY_KINDS:
-                return _fallback(f"unknown entity kind {key!r}")
+                return _fallback(f"unknown entity kind {_echo_key(key)}")
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                return _fallback(f"weight for {key!r} is not a number")
+                return _fallback(f"weight for {_echo_key(key)} is not a number")
             number = float(value)  # OverflowError on a huge int literal
             if not math.isfinite(number):
-                return _fallback(f"weight for {key!r} is not finite")
+                return _fallback(f"weight for {_echo_key(key)} is not finite")
             if number <= 0:
-                return _fallback(f"weight for {key!r} must be positive")
+                return _fallback(f"weight for {_echo_key(key)} must be positive")
         weights = _default_entity_kind_weights()
         for key, value in obj.items():
             weights[key] = float(value)
@@ -507,6 +521,9 @@ def reclassify_entities(
             if started and conn.in_transaction:
                 conn.rollback()
     # apply path: one write transaction, committed once, rolled back whole.
+    # Caller-owned transaction guard: `started = not conn.in_transaction` —
+    # when the caller already holds a transaction we join it and never commit
+    # or roll back on its behalf (the house pattern; #367 docstring note).
     proposal = _reclassify_scan(conn, apply_changes=False)
     changes = proposal["changes"]
     started = not conn.in_transaction
@@ -525,12 +542,25 @@ def reclassify_entities(
                     f"reclassify-entities: entity {c['id']} is no longer "
                     "kind 'other' (changed since the proposal)"
                 )
+        # One locked snapshot (issue #367 apply-path A): scanned and the
+        # before-share are measured UNDER the write lock pre-UPDATE, so the
+        # envelope describes the transaction's own world rather than replaying
+        # the pre-lock proposal (a foreign write between scan and BEGIN made
+        # the replayed numbers stale).
+        locked_scanned = conn.execute(
+            "SELECT COUNT(*) FROM entity WHERE kind='other'"
+        ).fetchone()[0]
+        locked_kinds = dict(
+            conn.execute("SELECT id, kind FROM entity").fetchall())
+        locked_before = _other_link_share(conn, locked_kinds)
         conn.executemany(
             "UPDATE entity SET kind=? WHERE id=?",
             [(c["new_kind"], c["id"]) for c in changes],
         )
         result = _reclassify_scan(conn, apply_changes=True,
                                   proposed=proposal)
+        result["scanned"] = locked_scanned
+        result["before_other_link_share"] = locked_before
         if started:
             conn.commit()
         return result
@@ -1092,18 +1122,350 @@ def cmd_reclassify_entities(
     bytes on every platform (a Windows text-mode print would emit CRLF and
     break the committed-fixture byte contract). Human output prints one line
     per proposed change followed by ``scanned=N changed=N``.
+
+    Apply rendering is guarded by ``_guard_committed_rendering`` (issue #367
+    apply-path B): once the apply has committed, ANY rendering failure — a
+    closed stdout, a broken pipe, a legacy-codepage encode error — reports
+    success from the committed state (exit 0 + a stderr note) instead of
+    masquerading as a failed apply.
     """
     result = reclassify_entities(conn, dry_run=not apply_mode)
     envelope = {k: v for k, v in result.items() if k != "dry_run"}
-    if as_json:
-        payload = json.dumps(envelope, indent=2, sort_keys=True) + "\n"
-        sys.stdout.buffer.write(payload.encode("utf-8"))
-        sys.stdout.buffer.flush()
+
+    def _render() -> None:
+        if as_json:
+            payload = json.dumps(envelope, indent=2, sort_keys=True) + "\n"
+            sys.stdout.buffer.write(payload.encode("utf-8"))
+            sys.stdout.buffer.flush()
+            return
+        for c in envelope["changes"]:
+            print(f"[zmem] reclassify: {c['id']} {c['name']!r} "
+                  f"other -> {c['new_kind']}")
+        print(f"scanned={envelope['scanned']} changed={envelope['changed']}")
+        sys.stdout.flush()
+
+    if apply_mode:
+        return _guard_committed_rendering("reclassify-entities", _render)
+    _render()
+    return 0
+
+
+def _guard_committed_rendering(op: str, render) -> int:
+    """Run a POST-COMMIT envelope emission with a rendering-only exception
+    boundary (issue #367 apply-path B).
+
+    The apply has already committed when this runs, so ANY rendering failure is
+    a reporting failure, not an operation failure: emit the committed-state
+    note to stderr, NEUTRALIZE stdout (dup os.devnull onto fd 1) so the
+    interpreter's shutdown flush cannot retry the broken stream and flip the
+    exit code (a bare catch-and-return still exited 120 on Windows when fd 1
+    was closed at startup), and return 0. The flush inside the boundary is
+    load-bearing for the human arm: buffered ``print`` calls defer the failure
+    to interpreter shutdown — outside the boundary — without it.
+    """
+    try:
+        render()
         return 0
-    for c in envelope["changes"]:
-        print(f"[zmem] reclassify: {c['id']} {c['name']!r} "
-              f"other -> {c['new_kind']}")
-    print(f"scanned={envelope['scanned']} changed={envelope['changed']}")
+    except Exception as exc:  # noqa: BLE001 - reporting-only boundary
+        try:
+            print(f"[zmem] {op}: apply committed; envelope could not be "
+                  f"printed ({type(exc).__name__})", file=sys.stderr)
+            sys.stderr.flush()
+        except Exception:
+            pass
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, 1)
+            os.close(devnull)
+        except OSError:
+            pass
+        return 0
+
+
+# --- Issue #358: reconcile-entity-aliases ------------------------------------
+#
+# A vocabulary widening re-keys stored aliases on the next relink: a
+# pre-widening tag like `host:acme-prod` minted {other, alias = the WHOLE
+# token}; post-widening the same tag mints {host, alias "acme-prod"}, and the
+# next relink leaves the old `other` entity with zero memory_entity rows.
+# `entity-merge` cannot repair it (it refuses the kind mismatch) and
+# `reclassify-entities` never matches the prefixed form (the classifier maps it
+# to `other`). Reconciliation reports — and, behind --apply, merges — those
+# orphaned identities back onto the entity that now owns the suffix alias.
+
+# The alternation is DERIVED from the shared vocabulary, never a hardcoded
+# kind list (the #175 review's hardcoded-alternation lesson). ``\Z`` (not
+# ``$``) so a trailing newline cannot sneak into the captured suffix
+# (review F-09, PR #454).
+_RECONCILE_PREFIX_RE = re.compile(
+    r"^(" + "|".join(k for k in ENTITY_KINDS if k != "other") + r"):(.+)\Z",
+    re.IGNORECASE,
+)
+
+
+def _reconcile_candidates(conn: sqlite3.Connection) -> list[dict]:
+    """Every orphaned `<kind>:<name>` other-entity with its direct owner.
+
+    An orphan candidate is an entity row still kinded `other` whose
+    canonical_name is `<known-kind>:<suffix>` (case-insensitive prefix — the
+    write path lowercases prefixes, so `Host:Acme-Prod` is a valid shape).
+    The owner is the entity holding the normalized suffix alias; an entity
+    that owns its own suffix is reported with owner null (self-merge is not a
+    reconciliation).
+    """
+    rows = conn.execute(
+        "SELECT id, canonical_name FROM entity WHERE kind='other' ORDER BY id"
+    ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        m = _RECONCILE_PREFIX_RE.match(r["canonical_name"])
+        if m is None:
+            continue
+        prefix = m.group(1).lower()
+        suffix = m.group(2)
+        norm = _normalize_content(suffix)
+        if not norm:
+            continue
+        owner = conn.execute(
+            "SELECT ea.entity_id, e.canonical_name FROM entity_alias ea "
+            "JOIN entity e ON e.id = ea.entity_id WHERE ea.alias_norm=?",
+            (norm,),
+        ).fetchone()
+        owner_id = owner[0] if owner is not None else None
+        if owner_id == r["id"]:
+            owner_id = None
+        out.append({
+            "id": r["id"], "kind": "other", "name": r["canonical_name"],
+            "prefix": prefix, "suffix": suffix,
+            "owner_id": owner_id,
+            "owner_name": owner[1] if owner is not None and owner_id else None,
+        })
+    return out
+
+
+def _resolve_terminal_owner(candidates: dict, start: dict
+                            ) -> tuple[str | None, bool]:
+    """Follow an orphan's owner chain to its TERMINAL live owner.
+
+    Returns (terminal_owner_id, cycle). The chain follows owners that are
+    themselves mergeable orphans (they will be deleted); an owner that is a
+    no-owner orphan stays alive and is terminal. A chain that revisits an id
+    is a cycle, and the WHOLE chain is refused — the cycle's members and any
+    non-cycle tail feeding into it alike (review F-06, PR #454: the refusal
+    predicate is chain-reaching-a-cycle, not cycle membership).
+    """
+    chain: list[str] = [start["id"]]
+    owner_id = start["owner_id"]
+    while owner_id is not None and owner_id in candidates:
+        if owner_id in chain:
+            return None, True
+        chain.append(owner_id)
+        owner_id = candidates[owner_id]["owner_id"]
+    if owner_id is None and chain and chain[-1] in candidates:
+        # The chain ends at a NO-OWNER orphan: it is never deleted by this
+        # apply, so it stays alive and IS the terminal owner (the
+        # implementation-review finding: dry-run reported it as an owner, so
+        # apply must merge into it, not skip).
+        return chain[-1], False
+    return owner_id, False
+
+
+def reconcile_entity_aliases(
+        conn: sqlite3.Connection, *, dry_run: bool = True) -> dict:
+    """Report (dry_run=True) or merge (dry_run=False) pre-widening orphans.
+
+    Dry-run is strictly read-only and NEVER commits; apply runs ONE write
+    transaction (caller-owned guard, the reclassify pattern) under the CLI's
+    writer lease, with all reads and mutations inside it:
+
+    - terminal-owner resolution happens BEFORE any mutation (an orphan whose
+      direct owner is itself a deleted-in-this-apply orphan must land on the
+      chain's terminal live owner);
+    - any owner chain that reaches a cycle is refused WHOLE — the cycle's
+      members AND any non-cycle tail feeding into it (reported in
+      ``cycle_ids``/``skipped_cycle``, rows untouched);
+    - each merge deletes the orphan's alias rows FIRST and re-inserts them
+      for the terminal owner (the global UNIQUE(alias_norm) makes
+      insert-before-delete a silent no-op), moves memory_entity links with
+      INSERT OR IGNORE (UNIQUE(memory_id, entity_id) dedupes), then deletes
+      the orphan row. The terminal owner is re-validated live immediately
+      before every deletion. A merged orphan's live entity_card is
+      tombstoned in the same transaction (review PRR-004, PR #454: a live
+      card naming a deleted entity renders without its recall suppression;
+      the terminal owner's card rebuilds from the owner's links via the
+      cadence sweep).
+
+    Non-`other` rows are never considered (kinds are authoritative once
+    assigned). Orphans with no owner are reported and left untouched — run
+    reconcile BEFORE a purge reaps a linkless orphan, or the old
+    ``<kind>:<name>`` alias form is lost with it.
+    """
+    if dry_run:
+        started = not conn.in_transaction
+        if started:
+            conn.execute("BEGIN")
+        try:
+            candidates = _reconcile_candidates(conn)
+            return {
+                "dry_run": True, "scanned": len(candidates),
+                "mergeable": sum(1 for c in candidates if c["owner_id"]),
+                "orphans": [dict(c) for c in candidates],
+            }
+        finally:
+            if started and conn.in_transaction:
+                conn.rollback()
+
+    started = not conn.in_transaction
+    try:
+        if started:
+            conn.execute("BEGIN IMMEDIATE")
+        ts_now = now_iso()
+        candidates_list = _reconcile_candidates(conn)
+        candidates = {c["id"]: c for c in candidates_list}
+        mergeable: list[dict] = []
+        skipped_no_owner = 0
+        cycle_ids: set[str] = set()
+        for cand in candidates_list:
+            if not cand["owner_id"]:
+                skipped_no_owner += 1
+                continue
+            terminal, cycle = _resolve_terminal_owner(candidates, cand)
+            if cycle:
+                cycle_ids.add(cand["id"])
+                continue
+            if terminal is None:
+                skipped_no_owner += 1
+                continue
+            mergeable.append({
+                "id": cand["id"], "name": cand["name"],
+                "owner_id": terminal,
+            })
+        # Refuse cycle members even if they also resolved cleanly through
+        # another path: any membership in a cyclic chain poisons the row.
+        mergeable = [m for m in mergeable if m["id"] not in cycle_ids]
+        merged_rows: list[dict] = []
+        for m in mergeable:
+            orphan_id, terminal = m["id"], m["owner_id"]
+            live = conn.execute(
+                "SELECT id FROM entity WHERE id=?", (terminal,)).fetchone()
+            if live is None:
+                raise RuntimeError(
+                    f"reconcile-entity-aliases: terminal owner {terminal} "
+                    "vanished mid-apply; refusing to continue")
+            aliases = [row[0] for row in conn.execute(
+                "SELECT alias_norm FROM entity_alias WHERE entity_id=?",
+                (orphan_id,)).fetchall()]
+            links = conn.execute(
+                "SELECT memory_id, role FROM memory_entity WHERE entity_id=?",
+                (orphan_id,)).fetchall()
+            conn.execute("DELETE FROM entity_alias WHERE entity_id=?",
+                         (orphan_id,))
+            for alias in aliases:
+                conn.execute(
+                    "INSERT OR IGNORE INTO entity_alias(entity_id,alias_norm)"
+                    " VALUES(?,?)", (terminal, alias))
+            for link in links:
+                conn.execute(
+                    "INSERT OR IGNORE INTO memory_entity"
+                    "(memory_id,entity_id,role) VALUES(?,?,?)",
+                    (link["memory_id"], terminal, link["role"]))
+            conn.execute("DELETE FROM memory_entity WHERE entity_id=?",
+                         (orphan_id,))
+            conn.execute("DELETE FROM entity WHERE id=?", (orphan_id,))
+            # Review PRR-004 (PR #454): the merge must not strand the
+            # orphan's live entity_card — a live card whose source_ref names
+            # a dead entity keeps rendering (its recall suppression relied on
+            # the (card, entity) link this apply just deleted). Tombstone it
+            # with the house tombstone semantics (superseded_at = valid_until
+            # = ts, queryable history) in the SAME transaction, INLINE and
+            # output-silent — supersede_memory() prints a `[zmem] superseded`
+            # line to stdout, which would corrupt this command's LF-only
+            # JSON envelope (reviewer-reproduced JSONDecodeError). The
+            # terminal owner's card is rebuilt from the owner's now-larger
+            # link set by the existing cadence sweep.
+            orphan_card = live_card_row(conn, orphan_id)
+            if orphan_card is not None:
+                conn.execute(
+                    "UPDATE memory SET superseded_at=?, valid_until=?, "
+                    "supersede_reason=? WHERE id=? AND superseded_at IS NULL",
+                    (ts_now, ts_now, "entity_reconcile_merge",
+                     orphan_card["id"]))
+                # Full house-parity with supersede_memory (review r2): the
+                # card's vector row goes with the tombstone — memory_vec has
+                # no sync trigger, and every other tombstone path deletes it
+                # explicitly (downstream is liveness-filtered either way;
+                # the delete only prevents a residual overfetch slot). The
+                # vec0 table is optional (absent without the sqlite-vec
+                # extension), so the delete is guarded like write.py's.
+                try:
+                    conn.execute("DELETE FROM memory_vec WHERE memory_id=?",
+                                 (orphan_card["id"],))
+                except sqlite3.OperationalError:
+                    pass  # vec0 table not available
+                # v15 side-table law: a tombstoned row's side records go
+                # with it in the same transaction (cards carry neither
+                # expiry nor occurrence rows in practice; the clears are
+                # the same no-op guard every supersede path runs).
+                from storelib.write import _clear_expiry, _clear_occurrence
+                _clear_expiry(conn, orphan_card["id"])
+                _clear_occurrence(conn, orphan_card["id"])
+            merged_rows.append(m)
+        # Recount from the post-apply state for the report.
+        remaining = _reconcile_candidates(conn)
+        result = {
+            "dry_run": False,
+            "scanned": len(candidates_list),
+            "merged": len(merged_rows),
+            "merged_rows": merged_rows,
+            "skipped_no_owner": skipped_no_owner,
+            "skipped_cycle": len(cycle_ids),
+            "cycle_ids": sorted(cycle_ids),
+            "orphans": remaining,
+        }
+        if started:
+            conn.commit()
+        return result
+    except Exception:
+        if started and conn.in_transaction:
+            conn.rollback()
+        raise
+
+
+def cmd_reconcile_entity_aliases(
+        conn: sqlite3.Connection, *, apply_mode: bool, as_json: bool = False
+) -> int:
+    """`store.py reconcile-entity-aliases --dry-run|--apply [--json]` (#358).
+
+    The CLI dispatch owns the connection policy (dry-run strict read-only,
+    apply rw under the writer lease with the migration-stamp refusal). JSON is
+    LF-only bytes through ``sys.stdout.buffer``; apply rendering is guarded by
+    ``_guard_committed_rendering`` exactly like reclassify.
+    """
+    result = reconcile_entity_aliases(conn, dry_run=not apply_mode)
+    envelope = {k: v for k, v in result.items() if k != "dry_run"}
+
+    def _render() -> None:
+        if as_json:
+            payload = json.dumps(envelope, indent=2, sort_keys=True) + "\n"
+            sys.stdout.buffer.write(payload.encode("utf-8"))
+            sys.stdout.buffer.flush()
+            return
+        for row in envelope["orphans"]:
+            owner = row.get("owner_id") or "-"
+            print(f"[zmem] reconcile: {row['id']} {row['name']!r} "
+                  f"({row['prefix']}) owner={owner}")
+        if apply_mode:
+            print(f"scanned={envelope['scanned']} merged={envelope['merged']} "
+                  f"skipped_no_owner={envelope['skipped_no_owner']} "
+                  f"skipped_cycle={envelope['skipped_cycle']}")
+        else:
+            print(f"scanned={envelope['scanned']} "
+                  f"mergeable={envelope['mergeable']}")
+        sys.stdout.flush()
+
+    if apply_mode:
+        return _guard_committed_rendering("reconcile-entity-aliases", _render)
+    _render()
     return 0
 
 

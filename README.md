@@ -1515,6 +1515,25 @@ connection and changes zero database bytes; its JSON is byte-identical to
 apply's (the canonical envelope `{"scanned","changed",
 "before_other_link_share","after_other_link_share","changes"}`).
 
+A vocabulary widening can also leave whole pre-widening identities behind (a
+tag like `host:acme-prod` stored as one `other` entity whose alias is the
+whole token). `reconcile-entity-aliases` reports — and, behind `--apply`,
+merges — those orphans back onto the entity that owns their suffix alias:
+
+```bash
+<interpreter> <store.py> reconcile-entity-aliases --dry-run --json  # report (read-only)
+<interpreter> <store.py> reconcile-entity-aliases --apply --json    # merge under the writer lease
+```
+
+Dry-run's `orphans` array lists every pre-widening `<kind>:<name>` other-entity
+with its prefix, suffix, and owner (null when nothing owns the suffix yet —
+an orphan that owns its own suffix stays untouched); `--apply` merges each
+ownerless-suffix chain into its terminal live owner in
+one transaction (cyclic chains are refused and reported as
+`skipped_cycle`/`cycle_ids`). Run it after upgrading past a widening and
+BEFORE the next `purge`. See SKILL.md's `reconcile-entity-aliases` section
+for the full contract.
+
 Recall's entity lane is weighted per kind through `ZMEM_ENTITY_KIND_WEIGHTS`
 (one JSON object, e.g. `{"other":0.6,"host":1.0}`; defaults are `1.0` for
 every kind except `other=0.6`). The weight scales ONLY the entity lane's RRF

@@ -5,6 +5,52 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.149.0] - 2026-11-10
+### Added
+- `store.py reconcile-entity-aliases --dry-run|--apply [--json]` (issue #358):
+  report — and behind `--apply`, merge — pre-widening orphan identities
+  (`<kind>:<name>` `other` entities) onto the entity that now owns their
+  suffix alias, with terminal-owner chain resolution, cyclic-chain refusal
+  (`skipped_cycle`/`cycle_ids`), first-delete-then-reinsert alias moves, and
+  UNIQUE-respecting link moves. Run it after a vocabulary-widening upgrade
+  and BEFORE the next purge (a purge reaps linkless orphans and their old
+  alias form).
+### Changed
+- `reclassify-entities --apply` envelope fields are now measured under the
+  write lock (issue #367): `scanned` and `before_other_link_share` are read
+  inside the write transaction pre-UPDATE instead of replaying the pre-lock
+  proposal, while `changes`/`changed` still enumerate the pre-lock proposal
+  (rows re-verified under the lock; a foreign write between scan and lock
+  fails the apply closed).
+- `reclassify-entities --apply` reports success from the committed state when
+  its envelope cannot be printed (closed stdout / broken pipe / encode
+  failure): exit 0 plus a stderr note, never exit 2 for a committed apply
+  (issue #367).
+- `reclassify-entities --apply` and `reconcile-entity-aliases --apply` refuse
+  an unmigrated store up front with the rescan-secrets-style message (issue
+  #367; shared `_require_supported_schema_stamp` helper). A NEWER store
+  routes through the forward-compat gate instead (its NOTICE/override
+  semantics apply — `ZMEM_ALLOW_NEWER_SCHEMA=1` is honored on these apply
+  arms).
+- `reconcile-entity-aliases --apply` tombstones a merged orphan's live
+  entity_card in the same transaction (output-silent inline update:
+  `superseded_at` = `valid_until` set, supersede reason recorded, and the
+  card's `memory_vec` row removed like every other tombstone path), so a
+  merged identity can no longer strand a live card whose recall suppression
+  is gone; the terminal owner's card rebuilds via the cadence sweep.
+- The invalid `ZMEM_ENTITY_KIND_WEIGHTS` warning truncates the echoed key
+  (one bounded line; issue #367).
+- `ReclassifyTest._seed` delegates to the fixture generator's `emit_store`
+  (issue #368): `make_reclassify_fixture.py --emit-store` + the documented
+  dry-run regenerate `reclassify-expected.json` outside any test; the
+  generator docstring now states the insertion-order truth; SKILL.md
+  documents the writer-lease advisory semantics + concurrent-apply outcomes,
+  the pre-apply backup/undo path, and the ALL-namespaces scope of
+  `entity-list`/`reclassify-entities`; `operator-snapshot.json`'s fixture
+  block is now test-pinned; the hermes `_PROVIDER_RUNNER_HEADS` copy is
+  pinned equal to `ops_tokens.RUNNER_HEADS`.
+
+
 ## [0.148.0] - 2026-11-09
 
 ### Fixed (issues #428 + #433, collated)

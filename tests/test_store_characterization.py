@@ -215,6 +215,7 @@ KNOWN_SUBCMDS = [
     # Issue #176 (Workstream K PR 5): deterministic other-row reclassification
     # (early-dispatched; --dry-run/--apply/--json are real flags).
     "reclassify-entities",
+    "reconcile-entity-aliases",
     # v11 (issue #61): the associative-link inspection/curation surface.
     "links", "contradict",
     # issue #62 (schema v11): the sleep-time organization job (keep the flag
@@ -612,7 +613,9 @@ class CharacterizationTests(unittest.TestCase):
         # 57 -> 58: the entity-card build/refresh command joined (issue #179,
         # PR #385 review F-7/PRR-009, 2026-10-18 — the PR shipped it off the
         # frozen ledger; re-pinned with the dated history line).
-        self.assertEqual(len(KNOWN_SUBCMDS), 58)
+        # 58 -> 59: the reconcile-entity-aliases command joined (issue #358,
+        # 2026-11-10).
+        self.assertEqual(len(KNOWN_SUBCMDS), 59)
         for banned in ("explain", "why-not", "unfold"):
             self.assertNotIn(banned, KNOWN_SUBCMDS)
 
@@ -631,7 +634,8 @@ class CharacterizationTests(unittest.TestCase):
         # 55 -> 56: the state classifier dry-run command joined (issue #174).
         # 56 -> 57: the entity reclassification command joined (issue #176).
         # 57 -> 58: the entity-card build/refresh command joined (issue #179).
-        self.assertEqual(len(KNOWN_SUBCMDS), 58)
+        # 58 -> 59: the reconcile-entity-aliases command joined (issue #358).
+        self.assertEqual(len(KNOWN_SUBCMDS), 59)
 
     def test_embedding_health_help_surface(self):
         """Issue #131: `embedding-health` joined the CLI surface with a
