@@ -1219,10 +1219,15 @@ def _guard_committed_rendering(op: str, render) -> int:
 # dry-run, reclassify-entities, reconcile-entity-aliases); engines and
 # stored rows are never rewritten. ids, kinds, counts, prefixes are never
 # passed through this helper. The shared redaction module is a RENDER
-# PRECONDITION: if it cannot be imported at all, the report commands REFUSE
-# (read-only arms exit 2 with a stderr note and zero stdout; apply arms
-# refuse before the engine runs) — a failed shared import never falls back
-# to raw output (issue #455 scope line, implemented literally).
+# PRECONDITION at two layers. Layer 1 (the physical-absence case): if
+# redaction.py itself is missing, the storelib import chain (write.py,
+# source.py) fails BEFORE command dispatch, so the whole CLI exits 1 with
+# zero stdout — fail-closed with no raw values ever rendered. Layer 2 (the
+# per-command preflight below): if the redactor becomes unavailable at
+# command entry in-process (monkeypatched seam, partial layouts), the
+# report commands refuse (exit 2, a stderr note, zero stdout; apply arms
+# refuse before the engine runs). Either way a failed shared import never
+# falls back to raw output (issue #455 scope line, implemented literally).
 
 _REDACTED_SECRET_DISPLAY = "[REDACTED_SECRET]"
 

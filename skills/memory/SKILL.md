@@ -3550,11 +3550,14 @@ name, all normalized aliases, and how many memories link to each. `--kind`
 filters to one kind; `--json` emits `[{id, kind, name, aliases, links}]`.
 Issue #455 display masking: credential-shaped canonical names and aliases
 (the legacy pre-v16 `secret-word:<short-digits>` shape, plus anything the
-shared secret-redaction patterns catch) render masked — the head is kept
-and the payload becomes `[REDACTED_SECRET]`; stored rows are untouched and
-legal `label:port`/service-noun names render raw. If the shared redaction
-module cannot be imported at all, every entity REPORT command refuses
-(exit 2, a stderr note, zero stdout) rather than render raw values.
+shared secret-redaction patterns catch) render masked — value-span shapes
+keep the head and replace the payload with `[REDACTED_SECRET]` (whole-token
+shapes render as the bare marker); stored rows are untouched and legal
+`label:port`/service-noun names render raw. The shared redaction module is
+a precondition: if it is missing on disk the whole CLI fails closed at
+import (exit 1, zero stdout, no raw values); if it becomes unavailable at
+command entry in-process, the report command refuses (exit 2, a stderr
+note, zero stdout) rather than render raw values.
 Entity identities are GLOBAL: this listing (and every other entity surface)
 spans ALL namespaces — the entity tables carry no namespace column, and
 `entity_alias.alias_norm` is globally unique — so an alias resolves to
@@ -3566,6 +3569,10 @@ surface for humans and doctor — use it to see what the entity lane actually
 matches.
 
 ### entity-merge — reconcile duplicate entities (v10, issue #60)
+
+Issue #455 display masking: the dry-run plan's from/to canonical names and
+alias-collision values render masked when credential-shaped (stored rows
+untouched); the same shared-redaction precondition as entity-list applies.
 ```
 <interpreter> <store.py> entity-merge --from <entity-id> --to <entity-id> [--confirm]
 ```

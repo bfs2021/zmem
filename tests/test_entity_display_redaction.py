@@ -633,7 +633,15 @@ class DisplayMaskHelperTest(unittest.TestCase):
         for legal in ("localhost:8080", "server:8080", "postgres:5432",
                       "api-service", "server.log", "my-script.py",
                       "build-box", "host:build-box", "mytoken:123",
-                      "token-service", ""):
+                      "token-service",
+                      # Implementation-review round 1: 'pwd'/'private_key'
+                      # are shared-redaction heads (their >=8-char values
+                      # mask via the shared leg above) but are NOT in issue
+                      # #455's verbatim local head list, so their
+                      # short-digit forms are the intentional local
+                      # boundary — pinned legal here so the gap is a
+                      # documented decision, not an oversight.
+                      "pwd:123", "private_key:9", ""):
             self.ck(mask(legal) == legal,
                     f"legal value wrongly masked (case {legal!r} withheld)")
         # Idempotent on its own output.
@@ -763,10 +771,11 @@ class DisplayMaskHelperTest(unittest.TestCase):
                 sys.modules.pop("redaction", None)
 
     def test_apply_guard_treats_mask_failure_as_render_failure(self):
-        """Plan-critic F9 (fixture fixed per round 3): inside the apply arm,
-        a masking exception stays inside _guard_committed_rendering —
+        """Plan-critic F9 + implementation-review round 1: inside BOTH apply
+        arms, a masking exception stays inside _guard_committed_rendering —
         committed work reports success from committed state (exit 0, stderr
-        note), never failure after commit.
+        note), never failure after commit. The reconcile arm is driven too
+        (review mutant: removing only its guard left the suite green).
 
         The guard dup2's devnull onto PROCESS fd 1; redirect_stdout cannot
         restore that, so fd 1 is saved and restored unconditionally.
@@ -794,22 +803,47 @@ class DisplayMaskHelperTest(unittest.TestCase):
         self.addCleanup(setattr, entity, "_mask_credential_shaped_name",
                         orig_mask)
         saved_fd = os.dup(1)
-        out, err = io.StringIO(), io.StringIO()
         try:
+            # Arm 1: reclassify apply — the kind change must commit.
+            out, err = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(out), \
                     contextlib.redirect_stderr(err):
                 rc = entity.cmd_reclassify_entities(conn, apply_mode=True)
+            self.assertEqual(rc, 0, "committed reclassify apply must report "
+                             "success from committed state on a render-only "
+                             "failure")
+            self.assertIn("could not be printed", err.getvalue())
+            kind = conn.execute("SELECT kind FROM entity WHERE id=?",
+                                (ID_CRED,)).fetchone()[0]
+            self.assertEqual(kind, "service")
+            # Arm 2: reconcile apply — a fresh orphan row must merge (commit)
+            # and still report success when the render explodes.
+            conn.execute(
+                "INSERT INTO entity VALUES (?,?,?,?,?)",
+                (ID_ORPHAN, "other", LEGAL_ORPHAN, FIXED_TS, FIXED_TS))
+            conn.execute(
+                "INSERT INTO entity VALUES (?,?,?,?,?)",
+                (ID_OWNER, "service", RAW_SUFFIX, FIXED_TS, FIXED_TS))
+            conn.execute(
+                "INSERT INTO entity_alias VALUES (?,?)",
+                (ID_OWNER, RAW_SUFFIX))
+            conn.commit()
+            out2, err2 = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out2), \
+                    contextlib.redirect_stderr(err2):
+                rc2 = entity.cmd_reconcile_entity_aliases(
+                    conn, apply_mode=True)
+            self.assertEqual(rc2, 0, "committed reconcile apply must report "
+                             "success from committed state on a render-only "
+                             "failure")
+            self.assertIn("could not be printed", err2.getvalue())
+            still = conn.execute("SELECT COUNT(*) FROM entity WHERE id=?",
+                                 (ID_ORPHAN,)).fetchone()[0]
+            self.assertEqual(still, 0, "the orphan row was merged away — "
+                             "the apply really committed")
         finally:
             os.dup2(saved_fd, 1)
             os.close(saved_fd)
-        self.assertEqual(rc, 0, "committed apply must report success from "
-                         "committed state on a render-only failure")
-        self.assertIn("could not be printed", err.getvalue())
-        # The kind change really committed (fresh read through the same
-        # committed connection; no pending transaction is left open).
-        kind = conn.execute("SELECT kind FROM entity WHERE id=?",
-                            (ID_CRED,)).fetchone()[0]
-        self.assertEqual(kind, "service")
         conn.close()
 
 

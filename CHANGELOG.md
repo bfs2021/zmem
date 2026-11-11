@@ -14,11 +14,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `reclassify-entities`, and `reconcile-entity-aliases` mask
   credential-shaped display values — the legacy pre-v16
   `secret-word:<short-digits>` shape plus anything the shared
-  secret-redaction patterns catch — keeping the head and replacing the
-  payload with `[REDACTED_SECRET]`; stored rows, ids, kinds, and counts
+  secret-redaction patterns catch — value-span shapes keep the head and
+  replace the payload with `[REDACTED_SECRET]` (whole-token shapes render
+  as the bare marker); stored rows, ids, kinds, and counts
   are untouched, and legal `label:port`/service-noun names render raw.
-  If the shared redaction module cannot be imported, the four report
-  commands refuse (exit 2, zero stdout) instead of rendering raw values.
+  A missing shared redaction module fails the CLI closed (import-time
+  exit 1, zero stdout); an in-process unavailability makes the report
+  command refuse (exit 2, zero stdout) — raw values are never rendered.
 - **memory**: issue #366 maintainer decisions recorded — the six
   classifier boundary cases keep spec-literal behavior (hyphenated
   one-dot basenames → host, slash doc paths → other, bare runner heads →
