@@ -489,8 +489,21 @@ def _is_credential_shaped(value: str) -> bool:
     # stays unmasked, like `tokenized-service`.
     v = (value or "").strip().casefold()
     for m in _DISPLAY_ASSIGN_SEP_RE.finditer(v):
-        key = v[:m.start()]
-        if {s for s in key.split(".") if s} & _DISPLAY_SECRET_HEADS:
+        # Key prefix tokenization (rounds 3-5): split the prefix on soft
+        # separators (whitespace and ':' — a colon can nest inside a later
+        # assignment's key, `redis:api.key=…`), then dot-split each piece
+        # with whitespace-trimmed segments and adjacent-pair joins in both
+        # hyphen/underscore forms (`api.key` yields `api-key`). '-' and '_'
+        # stay HARD joins inside a piece: `db.password-prod` never yields a
+        # bare `password` segment, preserving the exact-token boundary.
+        segs: set[str] = set()
+        for piece in re.split(r"[\s:]+", v[:m.start()]):
+            parts = [s for s in re.split(r"\s*\.\s*", piece) if s]
+            segs.update(parts)
+            for a, b in zip(parts, parts[1:]):
+                segs.add(a + "-" + b)
+                segs.add(a + "_" + b)
+        if segs & _DISPLAY_SECRET_HEADS:
             return True
     return _shared_registry_masks(value)
 

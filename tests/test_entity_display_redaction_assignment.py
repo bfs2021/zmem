@@ -143,13 +143,19 @@ class AssignmentShapeHelperTest(unittest.TestCase):
         head masks (`db.password=12345`), while dotted hosts and dotted
         keys without a head stay unmasked. Never a global dot split.
         Impl-review r4: an EARLIER separator must not hide the key
-        (`redis:db.password=12345`, `--config=db.password=12345`)."""
+        (`redis:db.password=12345`, `--config=db.password=12345`).
+        Impl-review r5: the dot-joined SPELLING of a documented head masks
+        (`api.key=12345` — pairs join across dots) and whitespace around a
+        dot trims (`db. password=12345`); `-`/`_` stay hard joins
+        (`db.password-prod=1` unmasked)."""
         m = entity_mod._mask_entity_display
         for shaped in ("db.password=12345", "DB.PASSWORD=67890",
                        "spring.datasource.password=12345",
                        "db.password: 12345", "redis:db.password=12345",
                        "--config=db.password=12345",
-                       "host:db.password=12345"):
+                       "host:db.password=12345", "api.key=12345",
+                       "API.KEY=12345", "redis:api.key=12345",
+                       "api.key: 12345", "db. password=12345"):
             self.assertEqual(m(shaped), MASK, shaped)
         for legal in ("api.example.com", "auth.example.com",
                       "acme.corp:8080", "localhost:8080", "x.password.corp",

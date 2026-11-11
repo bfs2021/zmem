@@ -3676,11 +3676,12 @@ exact secret-head tokens over whitespace-trimmed `[:_=-]`-delimited segments
 `DB_PASSWORD=12345` and `DB_PASSWORD = 12345` mask; bare whitespace without
 punctuation does not separate) and, for EVERY assignment-separator
 occurrence, over the DOT-segments of its key prefix (`db.password=12345`,
-`spring.datasource.password:5432`, and earlier-separator forms
-`redis:db.password=12345` / `--config=db.password=12345`; never a global
-dot split — `api.example.com` and `acme.corp:8080` stay unmasked; exact
-equality governs, so `db.password-prod=1` stays unmasked like
-`tokenized-service`) plus the shared
+`spring.datasource.password:5432`, earlier-separator forms
+`redis:db.password=12345` / `--config=db.password=12345`, the dot-joined
+head spelling `api.key=12345`, and whitespace-trimmed `db. password=…`;
+never a global dot split — `api.example.com` and `acme.corp:8080` stay
+unmasked; `-`/`_` are hard joins, so `db.password-prod=1` stays unmasked
+like `tokenized-service`) plus the shared
 redaction registry; prefix-shaped words (`tokenized-service`, `author`)
 stay unmasked. Masking is fail-closed: the
 reports never fall back to raw output — a registry that becomes unavailable

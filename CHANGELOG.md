@@ -18,10 +18,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `[:_=-]`-delimited segments or adjacent pairs — attribute-assignment
   shapes like `DB_PASSWORD=12345`, `DB_PASSWORD = 12345`, and dot-joined
   keys like `db.password=12345` — including behind an earlier separator
-  (`redis:db.password=12345`, `--config=db.password=12345`) — mask too,
-  while bare whitespace without punctuation, bare dotted hostnames, and
-  non-head env suffixes (`db.password-prod=1`) do not) plus the shared
-  redaction
+  (`redis:db.password=12345`, `--config=db.password=12345`) and the
+  dot-joined head spelling `api.key=12345` — mask too, while bare
+  whitespace without punctuation, bare dotted hostnames, and non-head env
+  suffixes (`db.password-prod=1`) do not) plus the shared redaction
   registry; legal `label:port`
   names (`localhost:8080`, `server:8080`) render unmasked, and
   prefix-shaped words (`tokenized-service`, `authentication-service`,
