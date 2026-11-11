@@ -273,6 +273,47 @@ class UnmigratedStoreRefusalTest(_HardeningStore):
             conn.close()
         self.assertEqual(kind, "other", "refused apply must change nothing")
 
+    def test_newer_stamp_routes_through_forward_compat_not_migrate_message(self):
+        """Review F-07 (PR #454): a NEWER stamp must reach the compatibility
+        gate (proper refuse message, ZMEM_ALLOW_NEWER_SCHEMA honored), not
+        the migrate-then-retry refusal the older-stamp arm produces."""
+        self._seed(("e-file", "README.md"))
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        try:
+            from schema_meta import SUPPORTED_SCHEMA_VERSION
+        finally:
+            sys.path.remove(str(SCRIPTS_DIR))
+        conn = sqlite3.connect(self.store)
+        try:
+            conn.execute(
+                "UPDATE meta SET value=? WHERE key='schema_version'",
+                (str(SUPPORTED_SCHEMA_VERSION + 1),))
+            conn.commit()
+        finally:
+            conn.close()
+        # Without the override: the compat gate refuses (its message names
+        # the forward-compat ceiling and the override variable).
+        r = self.run_store("reclassify-entities", "--apply", check=False)
+        self.assertEqual(r.returncode, 2,
+                         f"stderr={r.stderr!r}")
+        self.assertNotIn("run any zmem command once to migrate", r.stderr,
+                         "newer store must NOT get the migrate refusal")
+        self.assertIn("ZMEM_ALLOW_NEWER_SCHEMA", r.stderr)
+        # With the override: the apply proceeds like any compat-mode command.
+        env = dict(self.env)
+        env["ZMEM_ALLOW_NEWER_SCHEMA"] = "1"
+        r2 = self.run_store("reclassify-entities", "--apply", "--json",
+                            env=env, check=False)
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertIn("WARNING: ZMEM_ALLOW_NEWER_SCHEMA=1", r2.stderr)
+        conn = sqlite3.connect(self.store)
+        try:
+            kind = conn.execute(
+                "SELECT kind FROM entity WHERE id='e-file'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(kind, "file", "override apply must commit")
+
 
 class ApplyRollbackAndConcurrentMutationTest(_HardeningStore):
     """C7 (AC7): rollback + fail-closed mutation guard, both pinned."""

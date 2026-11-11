@@ -215,7 +215,7 @@ KNOWN_SUBCMDS = [
     # Issue #176 (Workstream K PR 5): deterministic other-row reclassification
     # (early-dispatched; --dry-run/--apply/--json are real flags).
     "reclassify-entities",
-        "reconcile-entity-aliases",
+    "reconcile-entity-aliases",
     # v11 (issue #61): the associative-link inspection/curation surface.
     "links", "contradict",
     # issue #62 (schema v11): the sleep-time organization job (keep the flag

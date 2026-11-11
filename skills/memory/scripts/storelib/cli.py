@@ -1235,6 +1235,13 @@ def _require_supported_schema_stamp() -> None:
     error (the reclassify UPDATE hits the old kind CHECK). Shared by every
     early-dispatch write arm: rescan-secrets, reclassify-entities, and
     reconcile-entity-aliases.
+
+    A NEWER stamp is NOT refused here (review F-07, PR #454 feedback): the
+    dispatch's ``assert_store_schema_compatible`` call owns the forward-compat
+    contract — honoring ``ZMEM_ALLOW_NEWER_SCHEMA=1`` and the additive-only
+    compat window with its proper NOTICE/WARNING — so this helper returns for
+    any parseable stamp above the supported version and leaves that gate to
+    speak for newer stores.
     """
     probe = _connect_existing_store_readonly()
     try:
@@ -1243,6 +1250,12 @@ def _require_supported_schema_stamp() -> None:
         ).fetchone()
     finally:
         probe.close()
+    if stamp is not None:
+        try:
+            if int(str(stamp[0])) > SUPPORTED_SCHEMA_VERSION:
+                return  # newer store: assert_store_schema_compatible owns it
+        except ValueError:
+            pass  # non-integer stamp: the migrate refusal below speaks
     if stamp is None or str(stamp[0]) != str(SUPPORTED_SCHEMA_VERSION):
         raise RuntimeError(
             "store schema version "

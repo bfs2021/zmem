@@ -48,6 +48,23 @@ class _WeightsStore(unittest.TestCase):
         self.store = str(Path(self.tmp) / "store.sqlite")
         self.env = _base_env(self.store)
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        # Review PRR-008 (PR #454): tests in this file write process env and
+        # purge sys.modules['storelib*'] for in-process recall seams —
+        # snapshot and restore so a pytest-aggregation run cannot leak state
+        # into sibling files (repo CI is per-file; the restore is defense for
+        # any aggregated runner).
+        self._env_snapshot = dict(os.environ)
+        self._modules_snapshot = {k: v for k, v in sys.modules.items()
+                                  if k == "storelib"
+                                  or k.startswith("storelib.")}
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env_snapshot)
+        for mod in [m for m in list(sys.modules)
+                    if m == "storelib" or m.startswith("storelib.")]:
+            del sys.modules[mod]
+        sys.modules.update(self._modules_snapshot)
 
     def run_store(self, *args, env=None, check=True, timeout=120):
         r = subprocess.run(
@@ -204,9 +221,15 @@ class InvalidWeightsWarningBoundedTest(_WeightsStore):
                  if "entity-kind weights" in ln]
         self.assertEqual(len(lines), 1,
                          "exactly one warning line per process/raw value")
+        # The production cap is _echo_key's 60 characters (review F-13,
+        # PR #454: a regression from 60 to ~200 must fail, so assert against
+        # the real cap budget — bounded key repr + suffix — not a loose 300).
+        key = "K" * 5000
+        self.assertNotIn(key, r.stderr, "raw key must never be echoed")
         self.assertLess(
-            max(len(ln) for ln in r.stderr.splitlines()), 300,
-            "the echoed key must be truncated (base echoes 5000+ chars)")
+            max(len(ln) for ln in lines), 200,
+            "the echoed key must be truncated at the production cap (60 "
+            "chars + the fixed prefix/suffix) — base echoes 5000+ chars")
 
 
 if __name__ == "__main__":

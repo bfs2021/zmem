@@ -35,10 +35,15 @@ command/error_class/other, in that precedence).
     backtick-quoted span in content           tool
     CamelCase identifier (2+ humps) in content classify_entity_kind(name)
 
-``person`` entities are NEVER auto-detected: they can only be created via an
-explicit ``entity:person:Name`` tag, and nothing auto-merges entities of any
-kind (``entity-merge`` is manual, ``--confirm``-gated, refuses kind
-mismatches — the issue's "ZMem will not auto-merge people" rule).
+``person`` entities are NEVER auto-DETECTED: they can only be created via an
+explicit ``entity:person:Name`` tag (or the legacy unqualified ``Name``
+extractor path, which classifies through ``classify_entity_kind``), and no
+code path auto-merges entities as a side effect of writing (review
+PRR-014, PR #454: the EXPLICIT merge surfaces are ``entity-merge`` — manual,
+``--confirm``-gated, kind-mismatch-refusing — and ``reconcile-entity-aliases
+--apply``, an operator command whose dry-run previews every merge; note a
+legacy ``other:person:Name`` row produced by a pre-v16 tag CAN merge into a
+``person`` entity through that explicit reconcile).
 
 Alias normalization reuses ``storelib.schema._normalize_content`` — the SAME
 function that produces ``content_norm``, as the issue mandates. (Python 3's
@@ -1190,9 +1195,11 @@ def _guard_committed_rendering(op: str, render) -> int:
 # orphaned identities back onto the entity that now owns the suffix alias.
 
 # The alternation is DERIVED from the shared vocabulary, never a hardcoded
-# kind list (the #175 review's hardcoded-alternation lesson).
+# kind list (the #175 review's hardcoded-alternation lesson). ``\Z`` (not
+# ``$``) so a trailing newline cannot sneak into the captured suffix
+# (review F-09, PR #454).
 _RECONCILE_PREFIX_RE = re.compile(
-    r"^(" + "|".join(k for k in ENTITY_KINDS if k != "other") + r"):(.+)$",
+    r"^(" + "|".join(k for k in ENTITY_KINDS if k != "other") + r"):(.+)\Z",
     re.IGNORECASE,
 )
 
@@ -1244,7 +1251,9 @@ def _resolve_terminal_owner(candidates: dict, start: dict
     Returns (terminal_owner_id, cycle). The chain follows owners that are
     themselves mergeable orphans (they will be deleted); an owner that is a
     no-owner orphan stays alive and is terminal. A chain that revisits an id
-    is a cycle — the caller must refuse every member.
+    is a cycle, and the WHOLE chain is refused — the cycle's members and any
+    non-cycle tail feeding into it alike (review F-06, PR #454: the refusal
+    predicate is chain-reaching-a-cycle, not cycle membership).
     """
     chain: list[str] = [start["id"]]
     owner_id = start["owner_id"]
@@ -1273,14 +1282,19 @@ def reconcile_entity_aliases(
     - terminal-owner resolution happens BEFORE any mutation (an orphan whose
       direct owner is itself a deleted-in-this-apply orphan must land on the
       chain's terminal live owner);
-    - a cycle in the owner chain refuses EVERY member (reported in
+    - any owner chain that reaches a cycle is refused WHOLE — the cycle's
+      members AND any non-cycle tail feeding into it (reported in
       ``cycle_ids``/``skipped_cycle``, rows untouched);
     - each merge deletes the orphan's alias rows FIRST and re-inserts them
       for the terminal owner (the global UNIQUE(alias_norm) makes
       insert-before-delete a silent no-op), moves memory_entity links with
       INSERT OR IGNORE (UNIQUE(memory_id, entity_id) dedupes), then deletes
       the orphan row. The terminal owner is re-validated live immediately
-      before every deletion.
+      before every deletion. A merged orphan's live entity_card is
+      tombstoned in the same transaction (review PRR-004, PR #454: a live
+      card naming a deleted entity renders without its recall suppression;
+      the terminal owner's card rebuilds from the owner's links via the
+      cadence sweep).
 
     Non-`other` rows are never considered (kinds are authoritative once
     assigned). Orphans with no owner are reported and left untouched — run
@@ -1358,6 +1372,19 @@ def reconcile_entity_aliases(
             conn.execute("DELETE FROM memory_entity WHERE entity_id=?",
                          (orphan_id,))
             conn.execute("DELETE FROM entity WHERE id=?", (orphan_id,))
+            # Review PRR-004 (PR #454): the merge must not strand the
+            # orphan's live entity_card — a live card whose source_ref names
+            # a dead entity keeps rendering (its recall suppression relied on
+            # the (card, entity) link this apply just deleted). Tombstone it
+            # with the house supersede_memory convention (queryable history,
+            # valid_until set) in the SAME transaction; the terminal owner's
+            # card is rebuilt from the owner's now-larger link set by the
+            # existing cadence sweep.
+            from storelib.write import supersede_memory
+            orphan_card = live_card_row(conn, orphan_id)
+            if orphan_card is not None:
+                supersede_memory(conn, orphan_card["id"],
+                                 "entity_reconcile_merge", at=now_iso())
             merged_rows.append(m)
         # Recount from the post-apply state for the report.
         remaining = _reconcile_candidates(conn)

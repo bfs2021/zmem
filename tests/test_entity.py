@@ -975,7 +975,10 @@ class ReclassifyTest(_Store):
     """Issue #176: dry-run/apply against the fixed reclassify.json seed."""
 
     NS = "fixture:entity-176"
-    FIXTURE = REPO_ROOT / "tests" / "fixtures" / "entity" / "reclassify.json"
+    # (Review PRR-009, PR #454: the former unused FIXTURE attr is removed;
+    # committed-fixture drift from the generator is pinned by
+    # tests/test_entity_fixture_provenance.py's
+    # FixtureContentMatchesGeneratorTest.)
     EXPECTED = (REPO_ROOT / "tests" / "fixtures" / "entity"
                 / "reclassify-expected.json")
 

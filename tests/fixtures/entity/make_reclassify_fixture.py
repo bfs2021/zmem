@@ -49,12 +49,26 @@ def emit_store(path, *, extra_tool: bool = False, env=None) -> None:
     import os
     import subprocess
 
+    # Refuse an existing target outright (review F-11, PR #454: a second
+    # emit against a seeded store died with `UNIQUE constraint failed:
+    # memory.id` after init silently reused the old file). Callers delete
+    # or move the old target first — regeneration is never an upsert.
+    if Path(path).exists():
+        raise FileExistsError(
+            f"emit_store: target {path} already exists; delete it first "
+            "(re-emitting is not an upsert — the INSERTs assume an empty "
+            "store)")
     store_py = (FIXTURE_DIR.parent.parent.parent / "skills" / "memory"
                 / "scripts" / "store.py")
     # Force the target into the child env: `--emit-store <dir>` is
     # self-sufficient (implementation-review finding — the documented command
     # must never resolve the DEFAULT operator store when ZMEM_STORE is unset).
-    child_env = dict(env if env is not None else os.environ)
+    # The child also inherits NO ambient ZMEM_* variable except the pinned
+    # store path (review F-11: ambient ZMEM_DATA/models pins leak into the
+    # fixture build and make it environment-dependent).
+    child_env = {k: v for k, v in
+                 (env if env is not None else os.environ).items()
+                 if not k.startswith("ZMEM_")}
     child_env["ZMEM_STORE"] = str(path)
     init = subprocess.run(
         [sys.executable, str(store_py), "init"],

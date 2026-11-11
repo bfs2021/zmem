@@ -47,6 +47,31 @@ def _base_env(store_path: str) -> dict:
     return env
 
 
+class FixtureContentMatchesGeneratorTest(unittest.TestCase):
+    """Review F-12 (PR #454): the committed JSON fixtures must equal the
+    generator's constants — a hand-edit or generator change that drifts the
+    committed bytes fails here instead of silently changing every store the
+    seeding builds."""
+
+    def test_committed_fixtures_equal_generator_constants(self):
+        spec = importlib.util.spec_from_file_location(
+            "make_reclassify_fixture_provenance", GENERATOR)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        for name, constant in (
+            ("classify.json", gen.CLASSIFY_ROWS),
+            ("reclassify.json", gen.RECLASSIFY),
+            ("operator-snapshot.json", gen.OPERATOR_SNAPSHOT),
+        ):
+            committed = (FIXTURES / name).read_bytes()
+            payload = json.dumps(constant, indent=2, sort_keys=False,
+                                 ensure_ascii=False) + "\n"
+            self.assertEqual(
+                committed, payload.encode("utf-8"),
+                f"committed {name} has drifted from the generator constant "
+                f"(re-run the generator, never hand-edit the fixture)")
+
+
 class OperatorSnapshotFixtureProvenanceTest(unittest.TestCase):
     """C15 (AC15): the snapshot and the oracle describe one fixture run."""
 
@@ -131,12 +156,16 @@ class ExpectedRegenerationProvenanceTest(unittest.TestCase):
         r = subprocess.run(
             [PYTHON, str(STORE_PY), "reclassify-entities", "--dry-run",
              "--json"],
-            capture_output=True, text=True, env=env, timeout=120,
+            capture_output=True, env=env, timeout=120,
         )
-        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.returncode, 0,
+                         r.stderr.decode("utf-8", "replace"))
         committed = (FIXTURES / "reclassify-expected.json").read_bytes()
+        # Raw bytes, not text mode (review F-10, PR #454): universal-newline
+        # decoding would silently translate a CRLF regression back to LF and
+        # the byte oracle could never fail on Windows.
         self.assertEqual(
-            r.stdout.encode("utf-8"), committed,
+            r.stdout, committed,
             "the documented regeneration command must byte-equal the oracle")
 
 

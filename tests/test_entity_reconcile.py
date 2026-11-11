@@ -173,17 +173,82 @@ class ReconcileDryRunReportTest(_ReconcileStore):
 
     def test_non_orphan_rows_are_never_reported(self):
         self._seed()
+        # Review F-12 (PR #454): the negative names must EXIST in the store
+        # for their absence from the report to mean anything — seed them.
+        conn = sqlite3.connect(self.store)
+        try:
+            now = "2026-01-01T00:00:00Z"
+            for eid, name in (
+                ("e-neg-plain", "zznoextract"),      # plain other, no prefix
+                ("e-neg-pfx", "reconcile"),          # non-kind prefix-shaped
+                ("e-neg-owner", "acme-prod"),        # the live owner name
+            ):
+                conn.execute(
+                    "INSERT OR IGNORE INTO entity(id,kind,canonical_name,"
+                    "created_at,updated_at) VALUES(?,?,?,?,?)",
+                    (eid, "other", name, now, now))
+                conn.execute(
+                    "INSERT OR IGNORE INTO entity_alias(entity_id,alias_norm)"
+                    " VALUES(?,?)", (eid, name))
+            conn.commit()
+        finally:
+            conn.close()
         r = self.run_store("reconcile-entity-aliases", "--dry-run", "--json")
         doc = json.loads(r.stdout)
         names = {row["name"] for row in doc["orphans"]}
-        # Plain other rows, typed rows, and non-kind prefixes are not orphans.
-        self.assertNotIn("zznoextract", names)
-        self.assertNotIn("acme-prod", names)
-        self.assertNotIn("reconcile", names)
+        # Plain other rows, typed rows, and non-kind prefixes are not orphans;
+        # the report is EXACTLY the two seeded pre-widening rows (review F-12:
+        # assert the exact set, not only absence of never-seeded names).
+        self.assertEqual(
+            names, {"host:acme-prod", "service:billing-api"},
+            "orphan set must be exactly the two pre-widening rows")
 
 
 class ReconcileApplyMergeTest(_ReconcileStore):
     """C2 (AC2): --apply merges orphans into their owners, safely."""
+
+    def test_apply_tombstones_the_orphans_live_entity_card(self):
+        """Review PRR-004 (PR #454): a merged orphan holding a live
+        entity_card must not strand it — the card is tombstoned in the same
+        transaction (a live card whose source_ref names a deleted entity
+        renders without its recall suppression)."""
+        self._seed()
+        now = "2026-01-01T00:00:00Z"
+        conn = sqlite3.connect(self.store)
+        try:
+            conn.execute(
+                "INSERT INTO memory(id, namespace, type, content, tags, "
+                "source_ref, confidence, signal, ingestion_ts) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                ("card-0000-0000-0000-000000000001", "user:global",
+                 "entity_card", "Entity: host:acme-prod\nMentions:\n- x",
+                 "entity_card_sha256=" + "a" * 64, "card:e-old-host",
+                 0.9, "none", now))
+            conn.commit()
+        finally:
+            conn.close()
+        r = self.run_store("reconcile-entity-aliases", "--apply", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        conn = sqlite3.connect(self.store)
+        try:
+            live = conn.execute(
+                "SELECT COUNT(*) FROM memory WHERE id="
+                "'card-0000-0000-0000-000000000001' AND superseded_at IS "
+                "NULL").fetchone()[0]
+            tomb = conn.execute(
+                "SELECT superseded_at, valid_until, supersede_reason FROM "
+                "memory WHERE id='card-0000-0000-0000-000000000001'"
+            ).fetchone()
+            orphan_alive = conn.execute(
+                "SELECT COUNT(*) FROM entity WHERE id='e-old-host'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(orphan_alive, 0, "orphan must be merged away")
+        self.assertEqual(live, 0, "the orphan card must not stay live")
+        self.assertIsNotNone(tomb[0], "card must be superseded")
+        self.assertIsNotNone(tomb[1], "card valid_until must be set")
+        self.assertEqual(tomb[2], "entity_reconcile_merge")
 
     def test_apply_moves_aliases_and_links_and_deletes_orphan(self):
         self._seed()

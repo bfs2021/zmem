@@ -3550,8 +3550,11 @@ name, all normalized aliases, and how many memories link to each. `--kind`
 filters to one kind; `--json` emits `[{id, kind, name, aliases, links}]`.
 Entity identities are GLOBAL: this listing (and every other entity surface)
 spans ALL namespaces — the entity tables carry no namespace column, and
-`entity_alias.alias_norm` is globally unique — so a name resolves to exactly
-one entity no matter which project mentioned it. This is the inspection
+`entity_alias.alias_norm` is globally unique — so an alias resolves to
+exactly one entity no matter which project mentioned it (review PRR-011,
+PR #454: uniqueness is per ALIAS; canonical names are not unique-keyed —
+`resolve_entity` refuses with exit 2 when a name matches several entities).
+This is the inspection
 surface for humans and doctor — use it to see what the entity lane actually
 matches.
 
@@ -3568,9 +3571,12 @@ transaction; a target that already has an alias or link keeps its own
 
 Refusals (exit 2, nothing written): unknown id on either side, `--from` ==
 `--to`, or a kind mismatch — merging a `person` into a `tool` would silently
-re-classify history. Nothing in zmem AUTO-merges entities, ever (the issue's
-"ZMem will not auto-merge people" rule); person→person merges are allowed
-but only as this explicit manual command.
+re-classify history. No write path auto-merges entities as a side effect
+(the issue's "ZMem will not auto-merge people" rule): merges happen only
+through the two EXPLICIT operator commands — this one (person→person merges
+are allowed here, manual and `--confirm`-gated) and
+`reconcile-entity-aliases --apply` (whose dry-run previews every merge; a
+legacy `other:person:Name` row can merge into a person entity through it).
 
 Typical flow: `entity:Name` tags or backticked mentions created two
 entities for the same thing (e.g. `rg` and `ripgrep`); find both ids with
@@ -3686,14 +3692,21 @@ with the orphan).
 
 `--dry-run` is strictly read-only (zero database bytes, no writer lease) and
 reports every orphaned `<kind>:<name>` other-entity with its prefix, suffix,
-and owner (null when no entity owns the suffix yet — those rows are reported
-and left untouched). `--apply` takes the writer lease, refuses an unmigrated
-store up front, and performs every merge in ONE transaction: terminal-owner
-resolution first (a chain like `host:service:foo` → `service:foo` → `foo`
-merges into the final live owner; a cyclic chain refuses every member,
-reported as `skipped_cycle`/`cycle_ids`), then per orphan: aliases move
-first-delete-then-reinsert onto the owner, links move with
-`UNIQUE(memory_id, entity_id)` dedup, and the orphan row is deleted. The old
+and owner (null when no entity owns the suffix yet — EXCEPT the chain-end
+case: a no-owner orphan that another orphan's chain terminates ON stays alive
+and IS that chain's merge target; it is both reported and used). The
+`orphans` array means pre-apply candidates in dry-run and the remaining
+unmerged rows after apply. `--apply` takes the writer lease, refuses an
+unmigrated store up front, and performs every merge in ONE transaction:
+terminal-owner resolution first (a chain like `host:service:foo` →
+`service:foo` → `foo` merges into the final live owner; any chain that
+reaches a cycle is refused WHOLE — the cycle's members and any tail feeding
+into it — reported as `skipped_cycle`/`cycle_ids`), then per orphan: aliases
+move first-delete-then-reinsert onto the owner, links move with
+`UNIQUE(memory_id, entity_id)` dedup, and the orphan row is deleted. A merged
+orphan's live entity_card is tombstoned in the same transaction (a live card
+naming a deleted entity would render without its recall suppression; the
+owner's card rebuilds from the owner's links via the cadence sweep). The old
 full-token alias survives on the owner. Non-`other` rows are never touched,
 and the same ALL-namespaces scope as every entity surface applies.
 

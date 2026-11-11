@@ -16,9 +16,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   and BEFORE the next purge (a purge reaps linkless orphans and their old
   alias form).
 ### Changed
-- `reclassify-entities --apply` now describes ONE locked snapshot (issue
-  #367): `scanned` and `before_other_link_share` are measured inside the
-  write transaction pre-UPDATE instead of replaying the pre-lock proposal.
+- `reclassify-entities --apply` envelope fields are now measured under the
+  write lock (issue #367): `scanned` and `before_other_link_share` are read
+  inside the write transaction pre-UPDATE instead of replaying the pre-lock
+  proposal, while `changes`/`changed` still enumerate the pre-lock proposal
+  (rows re-verified under the lock; a foreign write between scan and lock
+  fails the apply closed).
 - `reclassify-entities --apply` reports success from the committed state when
   its envelope cannot be printed (closed stdout / broken pipe / encode
   failure): exit 0 plus a stderr note, never exit 2 for a committed apply
