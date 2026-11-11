@@ -353,8 +353,12 @@ Disclosed divergences from the local path (all deliberate):
   relevance. The T-04 parity fixture asserts envelope equality holds for
   the recorded prompts.
 - **Hub knobs do not travel.** Per-call limits, the recall-vs-recent
-  choice, `--delegation-prompt`, and per-call cross-project flags have no
-  hub-tool arguments; in remote mode the hub selector's own limits and
+  choice, `--delegation-prompt`, the #428 correlation ids
+  (`--delegation-agent-id`/`--consume-agent-id`: the fleet lane never
+  parks, so a remote id has nothing to match), `--state-hint`, and
+  per-call cross-project flags have no
+  hub-tool arguments and are refused by name in remote mode; the hub
+  selector's own limits and
   policy govern (the #159 selector contract: the store-side selector owns
   the relevance gate, the 1,500-token budget, and the delivery ledger).
 - **Tier 0 is hub-owned.** In remote mode the broker fetches the hub's

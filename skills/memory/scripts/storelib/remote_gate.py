@@ -63,7 +63,10 @@ _HERMES_CONTEXT_ALLOWED_ACTIONS = frozenset({"commit-cursor"})
 # explicitly supplied and is refused.  Keep in sync with the argparse
 # definitions in cli.py when flags are added — a future flag missing here
 # reverts to silent-drop, which the honesty contract forbids (the
-# supp test suite pins one flag per command).
+# supp test suite pins one flag per command; since #428
+# tests/test_tasktext_correlation_supp.py enumerates EVERY recall/recent
+# dest from the live parser and fails on any that is neither refused here
+# nor forwarded).
 _READ_DEFAULTS: dict[str, dict[str, Any]] = {
     "recall": {
         "hybrid": False, "no_hybrid": False, "no_mmr": False,
@@ -76,6 +79,13 @@ _READ_DEFAULTS: dict[str, dict[str, Any]] = {
         "authorized_namespace": [], "include_cross_project": False,
         "legacy_unscoped": False, "delegation_prompt": "",
         "consume_tasktext": False,
+        # Issue #428: correlation ids for the task-text park/consume — the
+        # hub read tools carry neither (and the fleet lane never parks).
+        "delegation_agent_id": "", "consume_agent_id": "",
+        # Issue #428 Phase 4.2 sweep (same silent-drop class, found by the
+        # dest-completeness guardrail): the #397 pretool state hint has no
+        # hub recall parameter; refuse it by name instead of dropping it.
+        "state_hint": None,
     },
     "search": {
         "exact": False, "include_global": False, "global_limit": 3,
@@ -89,6 +99,7 @@ _READ_DEFAULTS: dict[str, dict[str, Any]] = {
         "harness": None, "authorized_namespace": [],
         "include_cross_project": False, "legacy_unscoped": False,
         "consume_tasktext": False,
+        "delegation_agent_id": "", "consume_agent_id": "",
     },
     "list": {},
     "get": {},
@@ -409,7 +420,15 @@ def _route_prefetch(args: Any) -> None:
                         ("--for-injection",
                          bool(getattr(args, "for_injection", False))),
                         ("--authorized-namespace",
-                         getattr(args, "authorized_namespace", None) or None)):
+                         getattr(args, "authorized_namespace", None) or None),
+                        # Issue #428: the fleet lane never parks (the
+                        # broker's PreToolUse delegation prompt is the
+                        # prefetch QUERY, never a hub park), so a remote
+                        # consume id has nothing to match — named refusal
+                        # instead of silently dropping it while the consume
+                        # grant rides the hub call.
+                        ("--consume-agent-id",
+                         getattr(args, "consume_agent_id", "") or None)):
         if value:
             _refuse(
                 f"{flag} is not supported in remote mode (ZMEM_REMOTE_URL "

@@ -1028,6 +1028,7 @@ def select_and_budget_for_injection(
     no_telemetry: bool = False,
     state_hint: str | None = None,
     consume_tasktext: bool = False,
+    consume_agent_id: str = "",
 ) -> dict:
     """Select, render, account, and record one passive injection event.
 
@@ -1115,11 +1116,15 @@ def select_and_budget_for_injection(
     # query (plain prefetch, the MCP surface, the offline snapshot serve) is
     # byte-identical to a no-stash session and can no longer DRAIN the
     # parked delegation. Every caller that arrives with a query is
-    # byte-identical regardless of the grant.
+    # byte-identical regardless of the grant. Issue #428: the granted
+    # consume carries the child's SubagentStart agent id (when the host
+    # supplied one) so a TAGGED park is delivered to its own child; absent
+    # or unmatched ids fall to the untagged FIFO/aged-head rule.
     bridged_query = False
     if consume_tasktext and moment == "subagent" and not effective_query.strip():
         try:
-            bridged = ledger.consume_task_text(resolved_data, session_id)
+            bridged = ledger.consume_task_text(
+                resolved_data, session_id, agent_id=consume_agent_id or "")
             if isinstance(bridged, str) and bridged.strip():
                 effective_query = bridged[:500]
                 bridged_query = True

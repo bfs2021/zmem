@@ -1044,7 +1044,11 @@ def _park_delegation_prompt(args: argparse.Namespace) -> None:
         return
     try:
         from storelib import delivery_ledger as _dl
-        _dl.park_task_text(_injection_data_dir(None), args.session_id, text)
+        # Issue #428: the optional correlation id tags the park (normalized
+        # by the ledger; an invalid id parks untagged).
+        _dl.park_task_text(_injection_data_dir(None), args.session_id, text,
+                           agent_id=getattr(args, "delegation_agent_id",
+                                            "") or "")
     except Exception:
         pass
 
@@ -2612,6 +2616,19 @@ def main():
                                "hook lane (any caller may pass it); ungranted "
                                "--moment subagent empty-query callers are "
                                "byte-identical to a no-stash session.")
+    p_recall.add_argument(
+        "--delegation-agent-id", dest="delegation_agent_id", type=str,
+        default="",
+        help="Issue #428: correlation id for the --delegation-prompt park "
+             "(a host that names the child's id in the delegating call). "
+             "The parked entry is reserved for the SubagentStart carrying "
+             "the same id (--consume-agent-id). Invalid ids are ignored.")
+    p_recall.add_argument(
+        "--consume-agent-id", dest="consume_agent_id", type=str, default="",
+        help="Issue #428: the child's SubagentStart agent id for the "
+             "--consume-tasktext consume. An exact match takes that child's "
+             "own parked prompt regardless of age or newer siblings; "
+             "otherwise the untagged FIFO/aged-head rule applies.")
     p_recall.add_argument("--ops-token", dest="ops_token", action="append",
                           type=str, default=[],
                           help="Operation token from the pretool ring "
@@ -2702,6 +2719,15 @@ def main():
                                "hook lane (any caller may pass it); ungranted "
                                "--moment subagent empty-query callers are "
                                "byte-identical to a no-stash session.")
+    p_recent.add_argument(
+        "--delegation-agent-id", dest="delegation_agent_id", type=str,
+        default="",
+        help="Issue #428: correlation id for the --delegation-prompt park "
+             "(see recall --delegation-agent-id).")
+    p_recent.add_argument(
+        "--consume-agent-id", dest="consume_agent_id", type=str, default="",
+        help="Issue #428: the child's SubagentStart agent id for the "
+             "--consume-tasktext consume (see recall --consume-agent-id).")
     p_recent.add_argument("--ops-token", dest="ops_token", action="append",
                           type=str, default=[],
                           help="Operation token from the pretool ring "
@@ -2760,6 +2786,12 @@ def main():
                                  "broker SubagentStart lane (MCP prefetch tool "
                                  "consume_tasktext param -> hub argv); default-off "
                                  "and caller-asserted — any caller may pass it.")
+    p_prefetch.add_argument(
+        "--consume-agent-id", dest="consume_agent_id", type=str, default="",
+        help="Issue #428: the child's SubagentStart agent id for the "
+             "--consume-tasktext consume (see recall --consume-agent-id). "
+             "Local stores only: remote mode refuses it (the fleet lane "
+             "never parks, so a remote id would have nothing to match).")
     p_prefetch.add_argument("--ops-token", dest="ops_tokens", type=str,
                             action="append", default=[],
                             help="Operation token from the pretool ring "
@@ -6100,6 +6132,8 @@ def main():
                         harness=getattr(args, "harness", None),
                         consume_tasktext=bool(
                             getattr(args, "consume_tasktext", False)),
+                        consume_agent_id=getattr(
+                            args, "consume_agent_id", "") or "",
                     )
                 except ValueError as exc:
                     print(f"[zmem] {exc}", file=sys.stderr)
@@ -6215,6 +6249,8 @@ def main():
                         harness=getattr(args, "harness", None),
                         consume_tasktext=bool(
                             getattr(args, "consume_tasktext", False)),
+                        consume_agent_id=getattr(
+                            args, "consume_agent_id", "") or "",
                     )
                 except ValueError as exc:
                     print(f"[zmem] {exc}", file=sys.stderr)
@@ -6301,6 +6337,8 @@ def main():
                     harness=args.harness,
                     consume_tasktext=bool(
                         getattr(args, "consume_tasktext", False)),
+                    consume_agent_id=getattr(
+                        args, "consume_agent_id", "") or "",
                 )
             except ValueError as exc:
                 print(f"[zmem] {exc}", file=sys.stderr)

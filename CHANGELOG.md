@@ -5,6 +5,89 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.148.0] - 2026-11-09
+
+### Fixed (issues #428 + #433, collated)
+
+- **Task-text correlation key retires the 0.138.0 aged-head residuals (issue
+  #428).** The delegation identity now reaches the store-side seam on the
+  local lane: a host that names the child's id in the delegating call
+  (`tool_input.agent_id`) has the hook body forward it as
+  `--delegation-agent-id`, which TAGS the parked prompt; the child's
+  SubagentStart `agent_id` is forwarded as `--consume-agent-id` (new on
+  `recall`, `recent` and `prefetch`, beside `--consume-tasktext`), and
+  `consume_task_text` hands that child exactly its own tagged prompt
+  regardless of age or newer siblings. New RESERVATION RULE: a consume
+  without a matching id never takes, ages out, or counts a tagged entry —
+  the FIFO + aged-head rule (unchanged 300 s band) runs over UNTAGGED entries
+  only. Ids are normalized identically in the hook body and the ledger
+  (string, stripped, 1-128 chars, no control characters, no leading `-`;
+  anything else is treated as absent; a parity test pins both).
+  **Upgrade impact: none on probed hosts.** Claude Code, Codex and ZCode do
+  not supply an id at park time, so every production stash stays untagged
+  and behavior is byte-identical to 0.138.0 (the frozen #427 guard set is
+  unchanged and green); the SubagentStart id simply finds no tag and falls
+  through.
+- **Remote mode refuses the new id flags by name instead of dropping them.**
+  `--delegation-agent-id` / `--consume-agent-id` on remote `recall`/`recent`
+  and `--consume-agent-id` on remote `prefetch` exit 2 naming the flag (the
+  fleet lane never parks, so a remote id has nothing to match). Found by the
+  new dest-completeness guardrail in the same silent-drop class: remote
+  `recall --state-hint` (issue #397) was forwarded to the hub WITHOUT the
+  hint; it is now refused by name like `--moment`.
+
+### Added
+
+- **Executing end-to-end harness for the hub installers (issue #433).**
+  `tests/test_installer_e2e.py` runs the REAL `scripts/fleet/install-hub.sh`
+  and `install-hub.ps1` with stubbed host commands (tailscale, systemctl,
+  scheduled-task cmdlets) and a side-effect log: the occupancy refusal must
+  precede every host mutation (default and explicit HTTPS port), the
+  task/service health check must precede the serve re-point with the
+  parameterized ports in its argv, and a re-run converges (the shipped
+  installers re-execute the serve re-point with byte-identical argv; exactly
+  one target-port handler remains). Standing reorder mutants (host mutation
+  hoisted above the preflight; serve hoisted above the health check) are
+  generated at runtime and must be caught. The Linux happy path runs only
+  inside a private mount namespace (`sudo -n unshare`) with a temp dir
+  bound over `/etc/systemd/system` and the real unit file asserted
+  unchanged; it skips visibly where passwordless sudo/unshare are absent.
+  PowerShell legs are Windows-only. No installer behavior change.
+- `tests/test_tasktext_correlation_supp.py`: hook/ledger id-normalizer parity
+  and a remote read-flag completeness guardrail (every `recall`/`recent` dest
+  must be refused-by-name or forwarded; the `prefetch` dest set is pinned).
+
+### Review round (swarm-pr-review on this PR, all findings resolved)
+
+- **The park cap is TAG-AWARE (review PRR-001):** untagged entries are
+  evicted first; a tagged entry is evicted only when the stash holds no
+  untagged entry to drop (an all-tagged over-cap stash still drops its
+  oldest — disclosed in SKILL.md and the docstrings). A 17-park session can
+  no longer evict a tagged park before its child arrives.
+- **Id validators reject unpaired surrogates (U+D800-U+DFFF) and the C1
+  control range (review PRR-002):** such an id previously passed validation
+  and raised inside the POSIX argv encoder, silently dropping the parent's
+  whole recall; it now degrades to the untagged path, the id flags carry a
+  per-flag argv-safety guard as defense in depth, and the parity corpus
+  pins the new shapes.
+- **Retargeted onto main post-PR #452 (review PRR-003):** CHANGELOG union
+  newest-first, release surfaces re-emitted, and the tagged-cap behavior
+  re-verified against the merged text.
+- **The remote read-flag guardrail is behavior-level (review PRR-007):**
+  every refused `recall`/`recent` dest and every inline prefetch refusal
+  now has an end-to-end pin (exit 2 naming the flag), and the forwarded
+  query/namespace/limit are captured against the hub call — deleting a
+  live refusal or forward fails the suite.
+- Parked ids clear the same secret-redactor as the text (a secret-shaped
+  id parks untagged with an audit line), a stash of only tag-reserved
+  entries emits a bounded stderr diagnostic, the SubagentStart consume
+  branch has invalid-id legs, the installer harness's unnamespaced legs
+  snapshot the real unit file (PRR-011), the namespace probe verifies
+  `/etc/systemd/system` exists (PRR-012), the ps1 legs require `python`
+  on PATH (PRR-013), and the SKILL/README/FLEET surfaces document the
+  correlation ids, the remote refusals, and the disclosed cap/timestamp
+  residuals (PRR-004/005/014/016).
+
 ## [0.147.0] - 2026-11-08
 
 ### Added
