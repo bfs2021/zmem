@@ -155,7 +155,11 @@ class AssignmentShapeHelperTest(unittest.TestCase):
                        "--config=db.password=12345",
                        "host:db.password=12345", "api.key=12345",
                        "API.KEY=12345", "redis:api.key=12345",
-                       "api.key: 12345", "db. password=12345"):
+                       "api.key: 12345", "db. password=12345",
+                       "--config=api.key=12345",
+                       "--config=password.db=12345", "--api.key=12345",
+                       "--password.db=12345", "--set=secret.val=12345",
+                       "flag=token.id=12345"):
             self.assertEqual(m(shaped), MASK, shaped)
         for legal in ("api.example.com", "auth.example.com",
                       "acme.corp:8080", "localhost:8080", "x.password.corp",

@@ -489,16 +489,18 @@ def _is_credential_shaped(value: str) -> bool:
     # stays unmasked, like `tokenized-service`.
     v = (value or "").strip().casefold()
     for m in _DISPLAY_ASSIGN_SEP_RE.finditer(v):
-        # Key prefix tokenization (rounds 3-5): split the prefix on soft
-        # separators (whitespace and ':' — a colon can nest inside a later
-        # assignment's key, `redis:api.key=…`), then dot-split each piece
+        # Key prefix tokenization (rounds 3-5 + final critic): split the
+        # prefix on soft separators (whitespace, ':', and '=' — earlier
+        # assignments and CLI flags glue onto later keys,
+        # `--config=api.key=…` / `redis:api.key=…`), strip LEADING/TRAILING
+        # '-_' from each piece (flag prefixes `--api.key`), then dot-split
         # with whitespace-trimmed segments and adjacent-pair joins in both
         # hyphen/underscore forms (`api.key` yields `api-key`). '-' and '_'
-        # stay HARD joins inside a piece: `db.password-prod` never yields a
-        # bare `password` segment, preserving the exact-token boundary.
+        # stay HARD joins INSIDE a segment: `db.password-prod` never yields
+        # a bare `password` segment, preserving the exact-token boundary.
         segs: set[str] = set()
-        for piece in re.split(r"[\s:]+", v[:m.start()]):
-            parts = [s for s in re.split(r"\s*\.\s*", piece) if s]
+        for piece in re.split(r"[\s:=]+", v[:m.start()]):
+            parts = [s for s in re.split(r"\s*\.\s*", piece.strip("-_")) if s]
             segs.update(parts)
             for a, b in zip(parts, parts[1:]):
                 segs.add(a + "-" + b)
