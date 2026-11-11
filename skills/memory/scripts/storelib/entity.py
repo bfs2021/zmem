@@ -409,7 +409,7 @@ _DISPLAY_SECRET_HEADS = frozenset({
     "password", "passwd", "secret", "token", "api-key", "api_key",
     "apikey", "credential", "auth",
 })
-_DISPLAY_SPLIT_RE = re.compile(r"[:_-]+")
+_DISPLAY_SPLIT_RE = re.compile(r"[:_=-]+")
 
 
 class _DisplayRedactionUnavailable(RuntimeError):
@@ -422,11 +422,16 @@ class _DisplayRedactionUnavailable(RuntimeError):
 
 
 def _display_tokens(value: str) -> set[str]:
-    """The [:_-]-delimited segments of the casefolded value PLUS each
+    """The [:_=-]-delimited segments of the casefolded value PLUS each
     adjacent segment pair in both hyphen/underscore joins (so `api-key:prod`
-    yields the pair token `api-key`, and `api_key:x` yields `api_key` —
-    plan-critic round 2 verified this construction is boundary-safe:
-    `api.example.com` stays one segment and never matches)."""
+    yields the pair token `api-key`, and `api_key:x` yields `api_key`).
+    `=` is a segment separator for the same reason `:` is: the write path
+    mints attribute-assignment tags (`DB_PASSWORD=12345` — implementation
+    review round 1, executed probe) and the shared registry only catches
+    values of 8+ chars, so short `=`-shaped values need the local head rule.
+    Boundary-safe (plan-critic r2 + implementation review): dotted hosts
+    stay one segment; `tokenized`/`authentication`/`author`/`secretariat`
+    never equal a head token."""
     v = (value or "").strip().casefold()
     parts = [s for s in _DISPLAY_SPLIT_RE.split(v) if s]
     tokens = set(parts)
@@ -1589,8 +1594,12 @@ def cmd_reconcile_entity_aliases(
         display = dict(envelope)
         display["orphans"] = _masked_display_rows(
             envelope.get("orphans") or [], "name", "suffix", "owner_name")
-        display["merged_rows"] = _masked_display_rows(
-            envelope.get("merged_rows") or [], "name")
+        if "merged_rows" in envelope:
+            # apply-mode only: never ADD the key to the dry-run envelope
+            # (implementation-review nit: base dry-run shape has no
+            # merged_rows key)
+            display["merged_rows"] = _masked_display_rows(
+                envelope.get("merged_rows") or [], "name")
         envelope_out = display
         if as_json:
             payload = json.dumps(envelope_out, indent=2, sort_keys=True) + "\n"

@@ -14,15 +14,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `reconcile-entity-aliases` dry-run/apply envelopes (orphan names, suffixes,
   `merged_rows` names, owner names) render `[REDACTED_SECRET]` instead of the
   raw value. Detection = exact secret-head tokens (password/passwd/secret/
-  token/api-key/api_key/apikey/credential/auth as `[:_-]`-delimited segments
-  or adjacent pairs) plus the shared redaction registry; legal `label:port`
+  token/api-key/api_key/apikey/credential/auth as `[:_=-]`-delimited segments
+  or adjacent pairs — attribute-assignment shapes like `DB_PASSWORD=12345`
+  mask too) plus the shared redaction registry; legal `label:port`
   names (`localhost:8080`, `server:8080`) render unmasked, and
   prefix-shaped words (`tokenized-service`, `authentication-service`,
   `author`) are not masked. Masking is display-only — stored entity/alias
   rows, the classifier, resolve/write paths, and entity-card construction
-  are untouched — and fail-closed: if the shared redaction registry cannot
-  be imported, the reports refuse to print raw values (dry-run exits 2 with
-  empty stdout; apply reports from the committed state).
+  are untouched — and fail-closed: the reports never fall back to raw
+  output (a registry that becomes unavailable after startup makes the
+  renderer refuse — dry-run exits 2 with empty stdout, apply reports from
+  the committed state; a registry missing at process start fails the CLI at
+  import before any report runs).
 ### Documentation
 - `skills/memory/SKILL.md` carries the dated, owner-confirmed #366
   entity-kind classifier decision record (five precision rows keep

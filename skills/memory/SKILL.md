@@ -3670,10 +3670,15 @@ records.
 `reconcile-entity-aliases`) mask credential-shaped names, aliases, and
 reconcile suffixes with `[REDACTED_SECRET]` at render time — display only;
 stored rows, the classifier, and entity-card construction are untouched, and
-legal `label:port` names (`localhost:8080`) render unmasked. Masking is
-fail-closed: if the shared redaction registry cannot be imported, the
-reports refuse to print raw values (dry-run exits 2 with empty stdout; apply
-reports from the committed state).
+legal `label:port` names (`localhost:8080`) render unmasked. Detection uses
+exact secret-head tokens over `[:_=-]`-delimited segments (colon, underscore,
+hyphen, equals — so attribute-assignment shapes like `DB_PASSWORD=12345`
+mask) plus the shared redaction registry; prefix-shaped words
+(`tokenized-service`, `author`) stay unmasked. Masking is fail-closed: the
+reports never fall back to raw output — a registry that becomes unavailable
+after startup makes the renderer refuse (dry-run exits 2 with empty stdout;
+apply reports from the committed state), and a registry missing at process
+start fails the CLI at import before any report runs.
 
 **Backup before `--apply`.** `--apply` re-kinds rows in one transaction but
 takes no snapshot of its own (unlike `rekey-namespace`). Take a verified
