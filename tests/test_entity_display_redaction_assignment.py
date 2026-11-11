@@ -141,14 +141,19 @@ class AssignmentShapeHelperTest(unittest.TestCase):
     def test_dot_joined_assignment_keys_mask(self):
         """Impl-review r3: a dot-joined assignment KEY containing a secret
         head masks (`db.password=12345`), while dotted hosts and dotted
-        keys without a head stay unmasked. Never a global dot split."""
+        keys without a head stay unmasked. Never a global dot split.
+        Impl-review r4: an EARLIER separator must not hide the key
+        (`redis:db.password=12345`, `--config=db.password=12345`)."""
         m = entity_mod._mask_entity_display
         for shaped in ("db.password=12345", "DB.PASSWORD=67890",
                        "spring.datasource.password=12345",
-                       "db.password: 12345"):
+                       "db.password: 12345", "redis:db.password=12345",
+                       "--config=db.password=12345",
+                       "host:db.password=12345"):
             self.assertEqual(m(shaped), MASK, shaped)
         for legal in ("api.example.com", "auth.example.com",
-                      "acme.corp:8080", "localhost:8080", "x.password.corp"):
+                      "acme.corp:8080", "localhost:8080", "x.password.corp",
+                      "db.password-prod=1", "db.password_prod=1"):
             self.assertEqual(m(legal), legal, legal)
 
 
@@ -221,13 +226,16 @@ class WhitespaceShapeCliTest(unittest.TestCase):
         self.assertIn(MASK, p.stdout)
 
     def test_dot_key_shapes_mask_via_real_write_path(self):
-        """Impl-review r3 E2E: `db.password=12345` minted from backtick
-        content must not echo raw on entity-list or entity-merge."""
-        raw = "db.password=12345"
+        """Impl-review r3+r4 E2E: `db.password=12345` and the
+        earlier-separator forms minted from backtick content must not echo
+        raw on entity-list or entity-merge."""
+        raws = ("db.password=12345", "redis:db.password=12345",
+                "--config=db.password=12345")
         env = dict(self.env)
         p = subprocess.run(
             [sys.executable, "-X", "utf8", str(STORE_PY), "add", "--type",
-             "fact", "--content", f"config note: set `{raw}` here",
+             "fact", "--content",
+             "config note: set `" + "` and `".join(raws) + "` here",
              "--namespace", "user:probe455e"],
             capture_output=True, text=True, encoding="utf-8", env=env,
             cwd=str(REPO))
@@ -235,9 +243,36 @@ class WhitespaceShapeCliTest(unittest.TestCase):
         for args in (["entity-list", "--json"], ["entity-list"]):
             q = self._run(args)
             self.assertEqual(q.returncode, 0, q.stderr)
-            self.assertNotIn(raw, q.stdout, args)
+            for raw in raws:
+                self.assertNotIn(raw, q.stdout, (args, raw))
         q = self._run(["entity-list", "--json"])
         self.assertIn(MASK, q.stdout)
+
+    def test_legacy_reconcile_dot_key_masks(self):
+        """Impl-review r4: a legacy `host:db.password=12345` other-row
+        (pre-widening shape) must not echo raw on reconcile dry-run."""
+        orphan = "host:db.password=12345"
+        conn = sqlite3.connect(self.env["ZMEM_STORE"])
+        eid = "e-orp-" + uuid.uuid4().hex[:8]
+        now = "2026-11-11T00:00:00Z"
+        conn.execute(
+            "INSERT INTO entity(id, kind, canonical_name, created_at, "
+            "updated_at) VALUES (?,?,?,?,?)", (eid, "other", orphan, now,
+                                               now))
+        conn.commit()
+        conn.close()
+        try:
+            for args in (["reconcile-entity-aliases", "--dry-run", "--json"],
+                         ["reconcile-entity-aliases", "--dry-run"]):
+                q = self._run(args)
+                self.assertEqual(q.returncode, 0, q.stderr)
+                self.assertNotIn(orphan, q.stdout, args)
+                self.assertNotIn("db.password=12345", q.stdout, args)
+        finally:
+            conn = sqlite3.connect(self.env["ZMEM_STORE"])
+            conn.execute("DELETE FROM entity WHERE id=?", (eid,))
+            conn.commit()
+            conn.close()
 
 
 if __name__ == "__main__":

@@ -477,15 +477,18 @@ def _is_credential_shaped(value: str) -> bool:
     if _display_tokens(value) & _DISPLAY_SECRET_HEADS:
         return True
     # Dot-joined assignment keys (implementation review round 3, executed
-    # probe: `db.password=12345` minted raw by the write path): decompose the
-    # KEY side of an assignment separator on dots only. Never global —
-    # `api.example.com` has no assignment separator, and a dotted host key
+    # probe: `db.password=12345` minted raw by the write path; round 4: an
+    # EARLIER separator must not hide the key — `redis:db.password=12345`,
+    # `--config=db.password=12345`): decompose the KEY PREFIX of EVERY
+    # assignment-separator occurrence on dots. Never a global dot split —
+    # `api.example.com` has no assignment separator, and a dotted key
     # without a secret dot-segment (`acme.corp:8080`) stays unmasked. A
     # dotted key that DOES contain a head (`password.corp:8080`) masks —
-    # conservative by design, same posture as `auth-service`.
+    # conservative by design, same posture as `auth-service`. Exact-token
+    # equality still governs: `db.password-prod=1` (segment `password-prod`)
+    # stays unmasked, like `tokenized-service`.
     v = (value or "").strip().casefold()
-    m = _DISPLAY_ASSIGN_SEP_RE.search(v)
-    if m:
+    for m in _DISPLAY_ASSIGN_SEP_RE.finditer(v):
         key = v[:m.start()]
         if {s for s in key.split(".") if s} & _DISPLAY_SECRET_HEADS:
             return True

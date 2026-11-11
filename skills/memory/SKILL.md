@@ -3674,10 +3674,13 @@ legal `label:port` names (`localhost:8080`) render unmasked. Detection uses
 exact secret-head tokens over whitespace-trimmed `[:_=-]`-delimited segments
 (colon, underscore, hyphen, equals — so attribute-assignment shapes like
 `DB_PASSWORD=12345` and `DB_PASSWORD = 12345` mask; bare whitespace without
-punctuation does not separate) and, when an assignment separator is present,
-over the DOT-segments of the key side (`db.password=12345`,
-`spring.datasource.password:5432`; never a global dot split —
-`api.example.com` and `acme.corp:8080` stay unmasked) plus the shared
+punctuation does not separate) and, for EVERY assignment-separator
+occurrence, over the DOT-segments of its key prefix (`db.password=12345`,
+`spring.datasource.password:5432`, and earlier-separator forms
+`redis:db.password=12345` / `--config=db.password=12345`; never a global
+dot split — `api.example.com` and `acme.corp:8080` stay unmasked; exact
+equality governs, so `db.password-prod=1` stays unmasked like
+`tokenized-service`) plus the shared
 redaction registry; prefix-shaped words (`tokenized-service`, `author`)
 stay unmasked. Masking is fail-closed: the
 reports never fall back to raw output — a registry that becomes unavailable
