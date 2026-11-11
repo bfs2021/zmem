@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import _store_guard  # noqa: F401  (issue #244 isolation guard)
 import uuid
 from pathlib import Path
 
