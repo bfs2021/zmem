@@ -24,8 +24,13 @@ sys.path.insert(0, str(SCRIPTS / "storelib"))
 from storelib import entity as entity_mod  # noqa: E402
 
 MASK = "[REDACTED_SECRET]"
-ASSIGN_RAW = "DB_PASSWORD=12345"   # minted by the REAL write path
+# `=`-shaped values reach the store via CONTENT backticks (the entity: tag
+# grammar cuts the name at '='), and via legacy rows; both paths are driven
+# below. Short values (<8 chars) keep the shared registry's floor out of
+# the way so only the local head rule can mask them.
+ASSIGN_RAW = "DB_PASSWORD=12345"   # backtick-content / legacy-INSERT shape
 ASSIGN_RAW2 = "password=1234"      # short value, head rule only
+ASSIGN_SPACED = "DB_PASSWORD = 12345"  # impl-review r2: whitespace around =
 LEGAL = "localhost:8080"
 
 
@@ -120,6 +125,88 @@ class AssignmentShapeHelperTest(unittest.TestCase):
                       "author", "secretariat", "api.example.com",
                       "localhost:8080", "server:8080", "x=y"):
             self.assertEqual(m(legal), legal, legal)
+
+    def test_whitespace_around_separator_masks(self):
+        """Impl-review r2: whitespace adjacent to an existing separator is
+        absorbed (`DB_PASSWORD = 12345`), while BARE whitespace without a
+        separator stays unmasked (narrow fix)."""
+        m = entity_mod._mask_entity_display
+        for shaped in (ASSIGN_SPACED, "password = 1234", "api_key = x",
+                       "password : 12345", "secret = ab"):
+            self.assertEqual(m(shaped), MASK, shaped)
+        for legal in ("server :8080", "localhost : 8080", "password 12345",
+                      "token x"):
+            self.assertEqual(m(legal), legal, legal)
+
+
+class WhitespaceShapeCliTest(unittest.TestCase):
+    """Real write-path mint (backtick content) + legacy INSERT for the
+    whitespace-adjacent shape; entity-list and entity-merge render masked."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.td = tempfile.mkdtemp(prefix="zmem455ws_")
+        env = dict(os.environ)
+        for k in ("ZMEM_HOME", "ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODELS_DIR",
+                  "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_ALLOW_REAL_STORE"):
+            env.pop(k, None)
+        env["ZMEM_STORE"] = str(Path(cls.td) / "store.sqlite")
+        env["ZMEM_DATA"] = cls.td
+        env["ZMEM_MODELS_DIR"] = str(Path(cls.td) / "models-absent")
+        env["ZMEM_MODEL_AUTODOWNLOAD"] = "0"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        cls.env = env
+        p = subprocess.run(
+            [sys.executable, "-X", "utf8", str(STORE_PY), "add", "--type",
+             "fact", "--content",
+             f"env probe mentions `{ASSIGN_SPACED}` and {LEGAL}",
+             "--tags", "entity:host:localhost:8080", "--namespace",
+             "user:probe455d"],
+            capture_output=True, text=True, encoding="utf-8", env=env,
+            cwd=str(REPO))
+        assert p.returncode == 0, p.stderr
+        # legacy direct-INSERT copy of the same shape on a second entity
+        cls.ws = "e-ws-" + uuid.uuid4().hex[:8]
+        cls.legal = "e-legal-" + uuid.uuid4().hex[:8]
+        conn = sqlite3.connect(env["ZMEM_STORE"])
+        now = "2026-11-11T00:00:00Z"
+        conn.execute(
+            "INSERT INTO entity(id, kind, canonical_name, created_at, "
+            "updated_at) VALUES (?,?,?,?,?)",
+            (cls.ws, "host", ASSIGN_SPACED, now, now))
+        conn.execute(
+            "INSERT INTO entity(id, kind, canonical_name, created_at, "
+            "updated_at) VALUES (?,?,?,?,?)",
+            (cls.legal, "host", "server :8080", now, now))
+        conn.commit()
+        conn.close()
+
+    def _run(self, args):
+        return subprocess.run(
+            [sys.executable, "-X", "utf8", str(STORE_PY)] + args,
+            capture_output=True, text=True, encoding="utf-8",
+            env=self.env, cwd=str(REPO))
+
+    def test_entity_list_masks_whitespace_shapes_both_modes(self):
+        for args in (["entity-list", "--json"], ["entity-list"]):
+            p = self._run(args)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertNotIn(ASSIGN_SPACED, p.stdout)
+            self.assertNotIn("12345", p.stdout.replace(
+                "[REDACTED_SECRET]", ""), args)
+            self.assertIn(MASK, p.stdout)
+
+    def test_entity_list_keeps_legal_spaced_name(self):
+        p = self._run(["entity-list"])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("server :8080", p.stdout)
+
+    def test_entity_merge_masks_whitespace_name(self):
+        p = self._run(["entity-merge", "--from", self.ws,
+                       "--to", self.legal])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertNotIn(ASSIGN_SPACED, p.stdout)
+        self.assertIn(MASK, p.stdout)
 
 
 if __name__ == "__main__":

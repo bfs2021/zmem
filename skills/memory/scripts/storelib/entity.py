@@ -409,7 +409,7 @@ _DISPLAY_SECRET_HEADS = frozenset({
     "password", "passwd", "secret", "token", "api-key", "api_key",
     "apikey", "credential", "auth",
 })
-_DISPLAY_SPLIT_RE = re.compile(r"[:_=-]+")
+_DISPLAY_SPLIT_RE = re.compile(r"\s*[:_=-]+\s*")
 
 
 class _DisplayRedactionUnavailable(RuntimeError):
@@ -422,16 +422,20 @@ class _DisplayRedactionUnavailable(RuntimeError):
 
 
 def _display_tokens(value: str) -> set[str]:
-    """The [:_=-]-delimited segments of the casefolded value PLUS each
-    adjacent segment pair in both hyphen/underscore joins (so `api-key:prod`
-    yields the pair token `api-key`, and `api_key:x` yields `api_key`).
-    `=` is a segment separator for the same reason `:` is: the write path
-    mints attribute-assignment tags (`DB_PASSWORD=12345` — implementation
-    review round 1, executed probe) and the shared registry only catches
-    values of 8+ chars, so short `=`-shaped values need the local head rule.
-    Boundary-safe (plan-critic r2 + implementation review): dotted hosts
-    stay one segment; `tokenized`/`authentication`/`author`/`secretariat`
-    never equal a head token."""
+    """The whitespace-trimmed [:_=-]-delimited segments of the casefolded
+    value PLUS each adjacent segment pair in both hyphen/underscore joins
+    (so `api-key:prod` yields the pair token `api-key`, and `api_key:x`
+    yields `api_key`). `=` is a segment separator for the same reason `:`
+    is: the write path mints attribute-assignment tags (`DB_PASSWORD=12345`
+    — implementation review round 1, executed probe), and whitespace is
+    absorbed AROUND an existing separator (`DB_PASSWORD = 12345` —
+    implementation review round 2; bare whitespace alone is NOT a
+    separator, so `password 12345` without punctuation stays unmasked).
+    The shared registry only catches values of 8+ chars, so short
+    `=`-shaped values need the local head rule. Boundary-safe (plan-critic
+    r2 + implementation reviews): dotted hosts stay one segment;
+    `tokenized`/`authentication`/`author`/`secretariat` never equal a head
+    token."""
     v = (value or "").strip().casefold()
     parts = [s for s in _DISPLAY_SPLIT_RE.split(v) if s]
     tokens = set(parts)
@@ -445,7 +449,10 @@ def _shared_registry_masks(value: str) -> bool:
     """True when the shared redaction registry would rewrite the value.
 
     Lazy import per the storelib.write bootstrap precedent (write.py:293-309)
-    — storelib modules never import redaction at module load. On import
+    — the display path keeps the import lazy so a broken registry fails
+    at the masking seam (raising, fail-closed) rather than at an unrelated
+    module-load site (write.py imports it at module load by design and the
+    CLI fails at import there — implementation-review round 1 probe). On import
     failure this RAISES _DisplayRedactionUnavailable (fail closed): the
     head-rule shapes still mask, but a shared-registry-only secret must
     never echo raw because the import broke."""

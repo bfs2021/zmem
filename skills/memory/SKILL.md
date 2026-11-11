@@ -3671,10 +3671,12 @@ records.
 reconcile suffixes with `[REDACTED_SECRET]` at render time — display only;
 stored rows, the classifier, and entity-card construction are untouched, and
 legal `label:port` names (`localhost:8080`) render unmasked. Detection uses
-exact secret-head tokens over `[:_=-]`-delimited segments (colon, underscore,
-hyphen, equals — so attribute-assignment shapes like `DB_PASSWORD=12345`
-mask) plus the shared redaction registry; prefix-shaped words
-(`tokenized-service`, `author`) stay unmasked. Masking is fail-closed: the
+exact secret-head tokens over whitespace-trimmed `[:_=-]`-delimited segments
+(colon, underscore, hyphen, equals — so attribute-assignment shapes like
+`DB_PASSWORD=12345` and `DB_PASSWORD = 12345` mask; bare whitespace without
+punctuation does not separate) plus the shared redaction registry;
+prefix-shaped words (`tokenized-service`, `author`) stay unmasked. Masking
+is fail-closed: the
 reports never fall back to raw output — a registry that becomes unavailable
 after startup makes the renderer refuse (dry-run exits 2 with empty stdout;
 apply reports from the committed state), and a registry missing at process

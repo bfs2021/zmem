@@ -14,9 +14,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `reconcile-entity-aliases` dry-run/apply envelopes (orphan names, suffixes,
   `merged_rows` names, owner names) render `[REDACTED_SECRET]` instead of the
   raw value. Detection = exact secret-head tokens (password/passwd/secret/
-  token/api-key/api_key/apikey/credential/auth as `[:_=-]`-delimited segments
-  or adjacent pairs — attribute-assignment shapes like `DB_PASSWORD=12345`
-  mask too) plus the shared redaction registry; legal `label:port`
+  token/api-key/api_key/apikey/credential/auth as whitespace-trimmed
+  `[:_=-]`-delimited segments or adjacent pairs — attribute-assignment
+  shapes like `DB_PASSWORD=12345` and `DB_PASSWORD = 12345` mask too, while
+  bare whitespace without punctuation does not) plus the shared redaction
+  registry; legal `label:port`
   names (`localhost:8080`, `server:8080`) render unmasked, and
   prefix-shaped words (`tokenized-service`, `authentication-service`,
   `author`) are not masked. Masking is display-only — stored entity/alias
