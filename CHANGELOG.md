@@ -5,6 +5,29 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.150.0] - 2026-11-11
+
+### Fixed
+
+- **memory**: entity report surfaces no longer echo credential-shaped
+  names or aliases (issue #455). `entity-list`, `entity-merge` dry-run,
+  `reclassify-entities`, and `reconcile-entity-aliases` mask
+  credential-shaped display values — the legacy pre-v16
+  `secret-word:<short-digits>` shape plus anything the shared
+  secret-redaction patterns catch — keeping the head and replacing the
+  payload with `[REDACTED_SECRET]`; stored rows, ids, kinds, and counts
+  are untouched, and legal `label:port`/service-noun names render raw.
+  If the shared redaction module cannot be imported, the four report
+  commands refuse (exit 2, zero stdout) instead of rendering raw values.
+- **memory**: issue #366 maintainer decisions recorded — the six
+  classifier boundary cases keep spec-literal behavior (hyphenated
+  one-dot basenames → host, slash doc paths → other, bare runner heads →
+  command, service-noun filenames → service, CamelCase identifiers →
+  other; IPv4 already ASCII-strict), each pinned as a `classify.json`
+  fixture row (30 → 36) with the decision rationale in the generator,
+  plus a genuinely timing-free structural guard on the hyphen-anchored
+  host pattern shape.
+
 ## [0.149.0] - 2026-11-10
 ### Added
 - `store.py reconcile-entity-aliases --dry-run|--apply [--json]` (issue #358):

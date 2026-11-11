@@ -118,5 +118,29 @@
   {
     "name": "alpha",
     "expected": "other"
+  },
+  {
+    "name": "my-script.py",
+    "expected": "host"
+  },
+  {
+    "name": "docs/readme.md",
+    "expected": "other"
+  },
+  {
+    "name": "make",
+    "expected": "command"
+  },
+  {
+    "name": "server.log",
+    "expected": "service"
+  },
+  {
+    "name": "UserService",
+    "expected": "other"
+  },
+  {
+    "name": "١٢٧.٠.٠.١",
+    "expected": "other"
   }
 ]

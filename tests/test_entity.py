@@ -940,9 +940,9 @@ class ClassifierAcceptanceTest(_Store):
 
     FIXTURE = REPO_ROOT / "tests" / "fixtures" / "entity" / "classify.json"
 
-    def test_thirty_fixture_strings_map_to_expected_kinds(self):
+    def test_classifier_fixture_rows_map_to_expected_kinds(self):
         rows = json.loads(self.FIXTURE.read_text(encoding="utf-8"))
-        self.assertEqual(len(rows), 30, "classify.json must hold exactly 30 rows")
+        self.assertEqual(len(rows), 36, "classify.json must hold exactly 36 rows")
         from storelib.entity import classify_entity_kind
         for row in rows:
             got = classify_entity_kind(row["name"])
@@ -950,6 +950,38 @@ class ClassifierAcceptanceTest(_Store):
                              f"{row['name']!r} classified {got!r}, "
                              f"expected {row['expected']!r}")
             self.assertIn(got, ENTITY_KINDS)
+
+    def test_issue366_decision_rows_are_pinned(self):
+        """Issue #366 (decisions approved 2026-11-11): keep spec-literal for
+        all six classifier boundary cases — each lands as a classify.json row
+        pinned to CURRENT behavior, with no guard added ahead of
+        host/service/command. Kinds gate more than lane weights (entity-merge
+        eligibility, entity-list --kind filtering, entity-card serialization),
+        so docs/readme.md and UserService keep accepting the default
+        other=0.6 entity-lane weight vs file/service=1.0 with NO reclassify
+        remedy under unchanged rules."""
+        rows = json.loads(self.FIXTURE.read_text(encoding="utf-8"))
+        self.assertEqual(len(rows), 36,
+                         "classify.json must hold exactly 36 rows")
+        by_name = {row["name"]: row for row in rows}
+        decisions = (
+            ("my-script.py", "host"),
+            ("docs/readme.md", "other"),
+            ("make", "command"),
+            ("server.log", "service"),
+            ("UserService", "other"),
+            ("١٢٧.٠.٠.١", "other"),
+        )
+        for name, expected in decisions:
+            self.assertEqual(
+                by_name.get(name), {"name": name, "expected": expected},
+                f"#366 decision row {name!r} missing or altered")
+        from storelib.entity import classify_entity_kind
+        for row in rows:
+            got = classify_entity_kind(row["name"])
+            self.assertEqual(got, row["expected"],
+                             f"{row['name']!r} classified {got!r}, "
+                             f"expected {row['expected']!r}")
 
     def test_precedence_is_deterministic(self):
         from storelib.entity import classify_entity_kind
@@ -1238,6 +1270,24 @@ class ReDosRegressionTest(unittest.TestCase):
         self.assertLess(t_large / max(t_small, 1e-6), 4.0,
                         f"doubling input more than quadrupled the time "
                         f"({t_small:.4f}s -> {t_large:.4f}s)")
+
+    def test_host_pattern_hyphen_anchored_shape_is_pinned(self):
+        """Issue #366 timing-free pin: the one-dot host pattern is written in
+        the hyphen-anchored form `(?:-[a-z0-9]*)+` — every repetition MUST
+        begin with a literal hyphen, so a hyphen-dense non-matching input
+        cannot backtrack quadratically. This is a STRUCTURAL guard on the
+        pattern source: reverting to the legacy overlapping-classes form
+        `[a-z0-9-]*-[a-z0-9-]*` fails here even on machines where the
+        wall-clock test's generous ceilings would still pass."""
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        from storelib.entity import _CLASSIFIER_HOST_ONEDOT_RE
+        src = _CLASSIFIER_HOST_ONEDOT_RE.pattern
+        self.assertIn("(?:-[a-z0-9]*)+", src,
+                      "the hyphen-anchored repetition is missing from the "
+                      "one-dot host pattern — the quadratic form may be back")
+        self.assertNotIn("[a-z0-9-]*-[a-z0-9-]*", src,
+                         "the legacy overlapping-classes (quadratic) shape "
+                         "is present in the host pattern")
 
     def test_rewrite_is_semantically_identical_on_edge_cases(self):
         """The rewrite changes SPEED only, never the accepted language.

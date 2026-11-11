@@ -3548,6 +3548,13 @@ over live, undeclared, or outcome-selected inputs are not baselines.
 Lists the entities the deterministic extractor minted: id, kind, canonical
 name, all normalized aliases, and how many memories link to each. `--kind`
 filters to one kind; `--json` emits `[{id, kind, name, aliases, links}]`.
+Issue #455 display masking: credential-shaped canonical names and aliases
+(the legacy pre-v16 `secret-word:<short-digits>` shape, plus anything the
+shared secret-redaction patterns catch) render masked — the head is kept
+and the payload becomes `[REDACTED_SECRET]`; stored rows are untouched and
+legal `label:port`/service-noun names render raw. If the shared redaction
+module cannot be imported at all, every entity REPORT command refuses
+(exit 2, a stderr note, zero stdout) rather than render raw values.
 Entity identities are GLOBAL: this listing (and every other entity surface)
 spans ALL namespaces — the entity tables carry no namespace column, and
 `entity_alias.alias_norm` is globally unique — so an alias resolves to
@@ -3606,6 +3613,9 @@ network, no DNS, no filesystem; precedence host → service → model → repo �
 file → command → error_class → other over the case-folded name) over every
 entity row currently kinded `other` and proposes or applies new kinds.
 Exactly one of `--dry-run`/`--apply` is required (both or neither exits 2).
+Issue #455 display masking: change-row names render masked when
+credential-shaped (display copies only — stored rows keep the raw bytes);
+the same shared-redaction refusal contract as entity-list applies.
 Non-`other` rows are never touched; entity ids, aliases, and memory links
 are preserved; `--apply` writes in ONE transaction under the writer lease
 and rolls back completely on error. Like every entity surface, the scan
@@ -3684,7 +3694,10 @@ zero links (the 0.101.0 CHANGELOG discloses the behavior — only the entity
 lane's grouping changes; content and FTS recall are unaffected). This
 command reports — and, behind `--apply`, merges — those orphans back onto
 the entity that now owns the suffix alias, so BOTH alias forms resolve to
-one identity. (Dry-run's `mergeable` counts every orphan that HAS an owner;
+one identity. Issue #455 display masking: orphan names, suffixes, owner
+names, and merged-row names render masked when credential-shaped (display
+copies only — stored rows keep the raw bytes); the same shared-redaction
+refusal contract as entity-list applies. (Dry-run's `mergeable` counts every orphan that HAS an owner;
 apply additionally refuses cyclic chains, so `merged` can be smaller than
 `mergeable` by exactly the `skipped_cycle` count.) Run it AFTER upgrading past a widening and BEFORE the next
 `purge` (a purge reaps linkless entities and would delete the old alias form

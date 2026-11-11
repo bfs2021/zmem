@@ -5,7 +5,7 @@ Writes, from the FIXED values in issue #176 Design step 7 (no randomness,
 no network; `--emit-store` additionally builds a real seeded store at the
 path it is given):
 
-  tests/fixtures/entity/classify.json          30 classifier strings + kinds
+  tests/fixtures/entity/classify.json          36 classifier strings + kinds
   tests/fixtures/entity/reclassify.json        fixed other-rows seed store
   tests/fixtures/entity/operator-snapshot.json fixed operator-metrics block
 
@@ -111,7 +111,8 @@ def emit_store(path, *, extra_tool: bool = False, env=None) -> None:
     finally:
         conn.close()
 
-# Issue #176 Design step 7 — the exact 30 strings, in this exact order.
+# Issue #176 Design step 7 — the exact 30 strings, in this exact order,
+# PLUS the six issue #366 maintainer-decision rows appended below.
 CLASSIFY_ROWS = [
     {"name": "localhost", "expected": "host"},
     {"name": "127.0.0.1", "expected": "host"},
@@ -143,6 +144,21 @@ CLASSIFY_ROWS = [
     {"name": "DatabaseException", "expected": "error_class"},
     {"name": "Brett", "expected": "other"},
     {"name": "alpha", "expected": "other"},
+    # Issue #366 maintainer decisions (user-approved 2026-11-11): keep
+    # spec-literal for all six classifier boundary cases — each row pins
+    # CURRENT verified behavior; NO guard is added ahead of
+    # host/service/command. Kinds are not lane weights only: they also gate
+    # entity-merge eligibility (a kind mismatch refuses the merge),
+    # entity-list --kind filtering, and entity-card serialization. The
+    # docs/readme.md and UserService rows therefore accept the default
+    # other=0.6 entity-lane weight vs file/service=1.0 with NO reclassify
+    # remedy under unchanged rules.
+    {"name": "my-script.py", "expected": "host"},
+    {"name": "docs/readme.md", "expected": "other"},
+    {"name": "make", "expected": "command"},
+    {"name": "server.log", "expected": "service"},
+    {"name": "UserService", "expected": "other"},
+    {"name": "١٢٧.٠.٠.١", "expected": "other"},
 ]
 
 # Issue #176 Fixtures-to-add section — the fixed seed rows.

@@ -949,10 +949,15 @@ def cmd_entity_list(
 
     The issue ships this command so doctor-style inspection and humans can
     see what the extractor minted (kind, canonical name, aliases, link
-    counts) without raw SQL.
+    counts) without raw SQL. Issue #455: canonical names and aliases are
+    MASKED at display time when credential-shaped (stored rows untouched);
+    legal label:port/service-noun names render raw.
     """
     import json as _json
 
+    redact = _preflight_shared_redaction("entity-list")
+    if redact is None:
+        return 2
     where = "WHERE e.kind=?" if kind else ""
     params: list = [kind] if kind else []
     rows = conn.execute(
@@ -965,14 +970,15 @@ def cmd_entity_list(
     items = []
     for r in rows:
         aliases = [
-            a[0] for a in conn.execute(
+            _mask_credential_shaped_name(a[0], redact) for a in conn.execute(
                 "SELECT alias_norm FROM entity_alias WHERE entity_id=? "
                 "ORDER BY alias_norm",
                 (r["id"],),
             ).fetchall()
         ]
         items.append({
-            "id": r["id"], "kind": r["kind"], "name": r["name"],
+            "id": r["id"], "kind": r["kind"],
+            "name": _mask_credential_shaped_name(r["name"], redact),
             "aliases": aliases, "links": r["n_links"],
         })
     if as_json:
@@ -1007,7 +1013,14 @@ def cmd_entity_merge(
     or a kind mismatch (merging a `person` into a `tool` would silently
     re-classify history). Manual person→person merges ARE allowed with
     ``--confirm`` — the issue forbids AUTO-merging people, not the operator.
+    Issue #455: the dry-run plan MASKS credential-shaped canonical names and
+    alias-collision values at display time (stored rows untouched); if the
+    shared redaction module is unimportable the command refuses before
+    printing anything.
     """
+    redact = _preflight_shared_redaction("entity-merge")
+    if redact is None:
+        return 2
     frm = conn.execute("SELECT * FROM entity WHERE id=?", (from_id,)).fetchone()
     if frm is None:
         print(f"[zmem] entity-merge: no entity with id {from_id}", file=sys.stderr)
@@ -1050,12 +1063,19 @@ def cmd_entity_merge(
         # NOTE: runtime prints stay ASCII-only (unlike docstrings): stdout may
         # be a legacy codepage console (cp1252/cp932), and an unencodable
         # char here would crash the command after the work is done.
+        # Issue #455: names and collision aliases render MASKED when
+        # credential-shaped (display only — the merge logic above read the
+        # raw rows and is untouched).
         print("[zmem] entity-merge DRY RUN (no writes - pass --confirm to apply)")
-        print(f"[zmem]   from: {from_id} kind={frm['kind']} name={frm['canonical_name']!r}")
-        print(f"[zmem]   to:   {to_id} kind={to['kind']} name={to['canonical_name']!r}")
+        print(f"[zmem]   from: {from_id} kind={frm['kind']} "
+              f"name={_mask_credential_shaped_name(frm['canonical_name'], redact)!r}")
+        print(f"[zmem]   to:   {to_id} kind={to['kind']} "
+              f"name={_mask_credential_shaped_name(to['canonical_name'], redact)!r}")
+        masked_collisions = ", ".join(
+            _mask_credential_shaped_name(a, redact) for a in alias_collisions)
         print(f"[zmem]   aliases to move: {len(from_aliases) - len(alias_collisions)} "
               f"({len(alias_collisions)} already on target"
-              + (f": {', '.join(alias_collisions)}" if alias_collisions else "") + ")")
+              + (f": {masked_collisions}" if alias_collisions else "") + ")")
         print(f"[zmem]   links to move: {len(from_links) - len(link_collisions)} "
               f"({len(link_collisions)} memories already linked to target)")
         print(f"[zmem]   result: from-entity deleted; target keeps kind "
@@ -1125,23 +1145,34 @@ def cmd_reclassify_entities(
 
     Apply rendering is guarded by ``_guard_committed_rendering`` (issue #367
     apply-path B): once the apply has committed, ANY rendering failure — a
-    closed stdout, a broken pipe, a legacy-codepage encode error — reports
-    success from the committed state (exit 0 + a stderr note) instead of
-    masquerading as a failed apply.
+    closed stdout, a broken pipe, a legacy-codepage encode error, a masking
+    failure — reports success from the committed state (exit 0 + a stderr
+    note) instead of masquerading as a failed apply. Issue #455: change-row
+    names render MASKED when credential-shaped (display copies built inside
+    the guarded render; stored rows untouched); an unimportable shared
+    redaction module refuses the command before any work.
     """
+    redact = _preflight_shared_redaction("reclassify-entities")
+    if redact is None:
+        return 2
     result = reclassify_entities(conn, dry_run=not apply_mode)
     envelope = {k: v for k, v in result.items() if k != "dry_run"}
 
     def _render() -> None:
+        display = dict(envelope)
+        display["changes"] = [
+            {**c, "name": _mask_credential_shaped_name(c["name"], redact)}
+            for c in envelope["changes"]
+        ]
         if as_json:
-            payload = json.dumps(envelope, indent=2, sort_keys=True) + "\n"
+            payload = json.dumps(display, indent=2, sort_keys=True) + "\n"
             sys.stdout.buffer.write(payload.encode("utf-8"))
             sys.stdout.buffer.flush()
             return
-        for c in envelope["changes"]:
+        for c in display["changes"]:
             print(f"[zmem] reclassify: {c['id']} {c['name']!r} "
                   f"other -> {c['new_kind']}")
-        print(f"scanned={envelope['scanned']} changed={envelope['changed']}")
+        print(f"scanned={display['scanned']} changed={display['changed']}")
         sys.stdout.flush()
 
     if apply_mode:
@@ -1180,6 +1211,93 @@ def _guard_committed_rendering(op: str, render) -> int:
         except OSError:
             pass
         return 0
+
+
+# --- Issue #455: display-time masking of credential-shaped names ------------
+#
+# Applied at DISPLAY time only (render paths of entity-list, entity-merge
+# dry-run, reclassify-entities, reconcile-entity-aliases); engines and
+# stored rows are never rewritten. ids, kinds, counts, prefixes are never
+# passed through this helper. The shared redaction module is a RENDER
+# PRECONDITION: if it cannot be imported at all, the report commands REFUSE
+# (read-only arms exit 2 with a stderr note and zero stdout; apply arms
+# refuse before the engine runs) — a failed shared import never falls back
+# to raw output (issue #455 scope line, implemented literally).
+
+_REDACTED_SECRET_DISPLAY = "[REDACTED_SECRET]"
+
+# Local shape: the legacy pre-v16 `<secret-headed>:<short-digits>` entity
+# names the shared redactor's \S{8,} value floor misses. The head grammar
+# takes the seven issue heads as hyphen/underscore-DELIMITED components
+# with REPEATABLE leading and trailing components (plan-critic R3):
+# secret_key:42, password-value:9, db-admin-password:99 all mask; the
+# undelimited 'mytoken:123' stays legal (its >=8-char sibling is the
+# shared helper's, via its deliberately unanchored compound-key pattern).
+_CREDENTIAL_COLON_NUMERIC_RE = re.compile(
+    r"^(?:[a-z0-9]+[-_])*"
+    r"(?:password|passwd|secret|token|api[_-]?key|credential|auth)"
+    r"(?:[-_][a-z0-9]+)*[-_]?:[0-9]{1,9}$"
+)
+
+_UNSET = object()
+
+
+def _load_shared_secret_redactor():
+    """Lazy import of redaction.redact_secret_like_text — the FULL two-step
+    storelib/write.py bootstrap: plain import first, and on ImportError
+    retry once with the scripts dir on sys.path. Returns the callable; if
+    BOTH legs fail the ImportError RAISES (callers treat shared redaction
+    as a render precondition and refuse to render).
+
+    Consulted PER CALL — no module-level cache: the display tests
+    monkeypatch THIS name to simulate a failed shared import, and a cached
+    binding would freeze the first resolution."""
+    try:
+        from redaction import redact_secret_like_text
+        return redact_secret_like_text
+    except ImportError:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+        from redaction import redact_secret_like_text
+        return redact_secret_like_text
+
+
+def _preflight_shared_redaction(op: str):
+    """Render precondition for the entity report commands (issue #455).
+
+    Loads the shared redactor at command entry — BEFORE any stdout and
+    before the engine runs. Returns the callable on success; on ImportError
+    prints the refusal note to stderr and returns None (the caller returns
+    exit 2 immediately, writing nothing to stdout)."""
+    try:
+        return _load_shared_secret_redactor()
+    except ImportError:
+        print(f"[zmem] {op}: shared redaction unavailable; refusing to "
+              "render the entity report", file=sys.stderr)
+        return None
+
+
+def _mask_credential_shaped_name(value, _redactor=_UNSET):
+    """Mask a credential-shaped DISPLAY string (issue #455).
+
+    Credential-shaped iff EITHER (a) the shared redactor returns a CHANGED
+    string (embedded spans, compound keys >=8, pwd/private_key heads, token
+    families — its own output is reused verbatim), OR (b) the casefolded
+    strip matches ``_CREDENTIAL_COLON_NUMERIC_RE`` (keeps the original-case
+    head, replaces the payload after the first ':' with the literal
+    marker). Anything else — localhost:8080, postgres:5432, api-service,
+    server.log, my-script.py, build-box, host:build-box, mytoken:123 —
+    returns the input unchanged. Raises ImportError when the shared
+    redactor is unimportable and no explicit redactor was passed."""
+    text = value if isinstance(value, str) else str(value)
+    redact = _load_shared_secret_redactor() if _redactor is _UNSET \
+        else _redactor
+    masked, _count = redact(text)
+    if masked != text:
+        return masked
+    if _CREDENTIAL_COLON_NUMERIC_RE.fullmatch(text.strip().casefold()):
+        head, _, _payload = text.partition(":")
+        return head + ":" + _REDACTED_SECRET_DISPLAY
+    return text
 
 
 # --- Issue #358: reconcile-entity-aliases ------------------------------------
@@ -1439,28 +1557,51 @@ def cmd_reconcile_entity_aliases(
     The CLI dispatch owns the connection policy (dry-run strict read-only,
     apply rw under the writer lease with the migration-stamp refusal). JSON is
     LF-only bytes through ``sys.stdout.buffer``; apply rendering is guarded by
-    ``_guard_committed_rendering`` exactly like reclassify.
+    ``_guard_committed_rendering`` exactly like reclassify. Issue #455: orphan
+    names, suffixes, owner names, and merged-row names render MASKED when
+    credential-shaped (display copies built inside the guarded render; stored
+    rows untouched); an unimportable shared redaction module refuses the
+    command before any work.
     """
+    redact = _preflight_shared_redaction("reconcile-entity-aliases")
+    if redact is None:
+        return 2
     result = reconcile_entity_aliases(conn, dry_run=not apply_mode)
     envelope = {k: v for k, v in result.items() if k != "dry_run"}
 
+    def _mask_orphan(row: dict) -> dict:
+        return {**row,
+                "name": _mask_credential_shaped_name(row.get("name"), redact),
+                "suffix": _mask_credential_shaped_name(row.get("suffix"),
+                                                       redact),
+                "owner_name": _mask_credential_shaped_name(
+                    row.get("owner_name"), redact)
+                if row.get("owner_name") is not None else None}
+
     def _render() -> None:
+        display = dict(envelope)
+        display["orphans"] = [_mask_orphan(o) for o in envelope["orphans"]]
+        if "merged_rows" in display:
+            display["merged_rows"] = [
+                {**m, "name": _mask_credential_shaped_name(m["name"], redact)}
+                for m in display["merged_rows"]
+            ]
         if as_json:
-            payload = json.dumps(envelope, indent=2, sort_keys=True) + "\n"
+            payload = json.dumps(display, indent=2, sort_keys=True) + "\n"
             sys.stdout.buffer.write(payload.encode("utf-8"))
             sys.stdout.buffer.flush()
             return
-        for row in envelope["orphans"]:
+        for row in display["orphans"]:
             owner = row.get("owner_id") or "-"
             print(f"[zmem] reconcile: {row['id']} {row['name']!r} "
                   f"({row['prefix']}) owner={owner}")
         if apply_mode:
-            print(f"scanned={envelope['scanned']} merged={envelope['merged']} "
-                  f"skipped_no_owner={envelope['skipped_no_owner']} "
-                  f"skipped_cycle={envelope['skipped_cycle']}")
+            print(f"scanned={display['scanned']} merged={display['merged']} "
+                  f"skipped_no_owner={display['skipped_no_owner']} "
+                  f"skipped_cycle={display['skipped_cycle']}")
         else:
-            print(f"scanned={envelope['scanned']} "
-                  f"mergeable={envelope['mergeable']}")
+            print(f"scanned={display['scanned']} "
+                  f"mergeable={display['mergeable']}")
         sys.stdout.flush()
 
     if apply_mode:
