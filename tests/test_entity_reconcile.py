@@ -230,6 +230,26 @@ class ReconcileApplyMergeTest(_ReconcileStore):
                  "entity_card", "Entity: host:acme-prod\nMentions:\n- x",
                  "entity_card_sha256=" + "a" * 64, "card:e-old-host",
                  0.9, "none", now))
+            # Final-critic round pin (PR #454): the tombstone must carry the
+            # v15 side-table law — any expiry/occurrence side rows on the
+            # card go with it in the same transaction.
+            try:
+                conn.execute(
+                    "INSERT INTO memory_expiry(memory_id, expiry_class, "
+                    "inject_until) VALUES"
+                    "('card-0000-0000-0000-000000000001','state',?)",
+                    (now,))
+                conn.execute(
+                    "INSERT INTO memory_occurrence(memory_id, occurred_start,"
+                    " occurred_end, mentioned_at) VALUES"
+                    "('card-0000-0000-0000-000000000001',?,?,?)",
+                    (now, now, now))
+                self._card_had_side_rows = True
+            except sqlite3.OperationalError:
+                # Side tables absent on this store shape (schema skew in the
+                # fixture); the clears are no-ops there — skip those legs.
+                self._card_had_side_rows = False
+                conn.rollback()
             conn.commit()
         finally:
             conn.close()
@@ -249,6 +269,13 @@ class ReconcileApplyMergeTest(_ReconcileStore):
                 "SELECT superseded_at, valid_until, supersede_reason FROM "
                 "memory WHERE id='card-0000-0000-0000-000000000001'"
             ).fetchone()
+            if getattr(self, "_card_had_side_rows", False):
+                expiry_left = conn.execute(
+                    "SELECT COUNT(*) FROM memory_expiry WHERE memory_id="
+                    "'card-0000-0000-0000-000000000001'").fetchone()[0]
+                occurrence_left = conn.execute(
+                    "SELECT COUNT(*) FROM memory_occurrence WHERE memory_id="
+                    "'card-0000-0000-0000-000000000001'").fetchone()[0]
             orphan_alive = conn.execute(
                 "SELECT COUNT(*) FROM entity WHERE id='e-old-host'"
             ).fetchone()[0]
@@ -259,6 +286,12 @@ class ReconcileApplyMergeTest(_ReconcileStore):
         self.assertIsNotNone(tomb[0], "card must be superseded")
         self.assertIsNotNone(tomb[1], "card valid_until must be set")
         self.assertEqual(tomb[2], "entity_reconcile_merge")
+        if getattr(self, "_card_had_side_rows", False):
+            self.assertEqual(expiry_left, 0,
+                             "the card's memory_expiry row must be cleared")
+            self.assertEqual(occurrence_left, 0,
+                             "the card's memory_occurrence row must be "
+                             "cleared")
 
     def test_apply_moves_aliases_and_links_and_deletes_orphan(self):
         self._seed()
