@@ -60,7 +60,9 @@ def _base_env(store_path: str) -> dict:
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     for k in ("ZMEM_BACKUP_DIR", "ZMEM_MMR_LAMBDA", "ZMEM_ENTITY_KIND_WEIGHTS",
-              "ZMEM_ALLOW_NEWER_SCHEMA"):
+              "ZMEM_ALLOW_NEWER_SCHEMA", "ZMEM_REMOTE_URL", "ZMEM_NAMESPACE",
+              "ZMEM_SESSION", "ZMEM_SESSION_ID", "ZMEM_CONSUME_AGENT_ID",
+              "ZMEM_DELEGATION_AGENT_ID", "ZMEM_ALLOW_REAL_STORE"):
         env.pop(k, None)
     return env
 
@@ -268,21 +270,37 @@ class BoundaryPinsTest(unittest.TestCase):
         for legal in ("secretkey=abcdefgh", "tokenkey=abcdefgh",
                       "credentialkey=abcdefgh", "passphrase=abcdefgh",
                       "pgpassword=abc123", "tokenized-service",
-                      "authentication-service", "author", "secretariat"):
+                      "authentication-service", "author", "secretariat",
+                      "password 12345", "server :8080"):
             self.assertEqual(m(legal), legal, legal)
+
+    def test_space_in_key_and_trailing_separator_mask(self):
+        # delta-review round 1 Important: the round-2 linearization must
+        # keep whitespace as a soft separator INSIDE key material (with a
+        # real assignment separator present) and must count a trailing
+        # separator's key — without re-introducing the quadratic prefix
+        # loop (DisplayMaskPerfTest guards that).
+        from storelib import entity as ent
+        m = ent._mask_entity_display
+        for shaped in ("db password=12345", "--config password=12345",
+                       "redis:db password=12345", "db.password=",
+                       "spring.datasource.password:", "db. password=\u2026"):
+            self.assertEqual(m(shaped), MASK, shaped)
 
     def test_unicode_and_quote_families_mask(self):
         # review PRR-003 + PRR-005 (executed-probe families from the
         # swarm-pr-review round, fixed by the NFKC fold + quote
         # separators): fullwidth separators, zero-width-joiner glue, and
         # quoted keys all mask; a fullwidth-bearing ordinary name stays
-        # legal.
+        # legal. Delta-review round 1: soft hyphen / word joiner (the
+        # rest of the Cf family) glue forms mask too.
         from storelib import entity as ent
         m = ent._mask_entity_display
         for shaped in ("password\uff1a12345", "password\uff1d12345",
                        "pass\u200dword:12345", '{"password": "value"}',
                        '{"password": "supersecretvalue"}',
-                       "'password=x'", '"password":"supersecretvalue"'):
+                       "'password=x'", '"password":"supersecretvalue"',
+                       "pass\u00adword:12345", "pass\u2060word:12345"):
             self.assertEqual(m(shaped), MASK, shaped)
         for legal in ("api.example.com", "localhost:8080"):
             self.assertEqual(m(legal), legal, legal)
@@ -395,12 +413,18 @@ class DisplayMaskPerfTest(unittest.TestCase):
         import time
         small = "aa:" * 2000      # 2K separators
         large = "aa:" * 8000      # 8K separators (4x the work)
-        t0 = time.perf_counter()
-        ent._mask_entity_display(small)
-        t_small = time.perf_counter() - t0
-        t0 = time.perf_counter()
-        ent._mask_entity_display(large)
-        t_large = time.perf_counter() - t0
+        # min-of-3 per size (delta-review nit: a single shot is
+        # noise-sensitive on a loaded runner)
+        def _timed(value):
+            best = None
+            for _ in range(3):
+                t0 = time.perf_counter()
+                ent._mask_entity_display(value)
+                dt = time.perf_counter() - t0
+                best = dt if best is None else min(best, dt)
+            return best
+        t_small = _timed(small)
+        t_large = _timed(large)
         self.assertLess(t_large, 2.0,
                         f"mask is super-linear at 8K separators: "
                         f"{t_large:.3f}s (quadratic form measured ~50s)")

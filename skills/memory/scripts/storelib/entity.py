@@ -433,17 +433,24 @@ _DISPLAY_SPLIT_RE = re.compile(r"[ \t]*[:_=\"'-]+[ \t]*")
 # value without one is a hostname (`api.example.com`, `auth.example.com`,
 # `acme.corp:8080`'s key `acme.corp`) and never hits this rule.
 _DISPLAY_ASSIGN_SEP_RE = re.compile(r"[ \t]*[:=][ \t]*")
-# Zero-width joiners/format characters glue onto a head and defeat
-# exact-token equality (`pass\u200dword:12345` — review PRR-003, executed
-# probe); NFKC normalization maps fullwidth separators (`password：12345`,
+# Zero-width / format characters (Unicode category Cf: ZWSP/ZWNJ/ZWJ,
+# soft hyphen, LRM/RLM, word joiner, BOM …) glue onto a head and defeat
+# exact-token equality (`pass\u200dword:12345`, `pass\u00adword:12345` —
+# review PRR-003 + delta-review round 2, executed probes); NFKC
+# normalization maps fullwidth separators (`password：12345`,
 # `password＝12345` — same probe) onto their ASCII forms before the
-# separator classes see them.
-_DISPLAY_ZERO_WIDTH_RE = re.compile("[\u200b\u200c\u200d\ufeff]")
+# separator classes see them. The fold strips the WHOLE Cf category —
+# a four-code-point whitelist left the rest of the family bypassable
+# (delta-review round 2).
+_DISPLAY_CF_CHARS = frozenset(
+    chr(cp) for cp in range(0x110000)
+    if unicodedata.category(chr(cp)) == "Cf"
+)
 
 
 def _display_fold(value: str) -> str:
     """The masking predicate's input normalization: NFKC, trim, casefold,
-    zero-width strip, and whitespace-RUN collapse to one space.
+    format-character (Cf) strip, and whitespace-RUN collapse to one space.
 
     The collapse is load-bearing for complexity (review PRR-006, executed
     probe): a long interior whitespace run otherwise forces O(n^2)
@@ -454,7 +461,9 @@ def _display_fold(value: str) -> str:
     preserves that because a lone space never satisfies
     ``[:_="'-]+``."""
     v = unicodedata.normalize("NFKC", value or "").strip().casefold()
-    v = _DISPLAY_ZERO_WIDTH_RE.sub("", v)
+    if v.isascii():
+        return re.sub(r"\s+", " ", v)
+    v = "".join(ch for ch in v if ch not in _DISPLAY_CF_CHARS)
     return re.sub(r"\s+", " ", v)
 
 
@@ -539,33 +548,38 @@ def _is_credential_shaped(value: str) -> bool:
     # the previous form re-split the whole PREFIX once per assignment
     # separator — quadratic in the separator count; a 16K-separator name
     # cost ~46s per mask call and one stored entity stalled `entity-list`
-    # for 42s end-to-end vs 0.87s at base). The key material of every
-    # ':='/'=' occurrence is exactly the assignment-separated segments
-    # BEFORE the last one (the final segment is the VALUE), so one split
-    # on the assignment separator yields every key piece exactly once.
-    # Bare whitespace is NOT an assignment separator ('password 12345'
-    # stays unmasked — the whitespace-around-separator rule absorbs space
-    # only AROUND an existing ':'/'='), so the split below uses the
-    # assignment separator class, never a bare '\s' run. Each key piece
-    # is stripped of leading/trailing '-_' (flag prefixes `--api.key`)
-    # and dot-split with adjacent-pair joins in both hyphen/underscore
-    # forms (`api.key` yields `api-key`); '-' and '_' stay HARD joins
-    # inside a segment (`db.password-prod` never yields a bare
-    # `password`).
-    pieces = [p for p in _DISPLAY_ASSIGN_SEP_RE.split(v) if p]
+    # for 42s end-to-end vs 0.87s at base). Semantics (delta-review round
+    # 2 corrected): with NO assignment separator the key rule never fires
+    # ('password 12345' stays unmasked — bare whitespace is not a
+    # key/value boundary). WITH one or more ':='/'=' separators, the key
+    # material is every assignment-separated segment BEFORE the last (the
+    # final segment is the value — kept even when empty, so a trailing
+    # separator's key still counts: `db.password=` masks), and each key
+    # segment is then soft-split on whitespace/':'/'=' (spaces INSIDE key
+    # material are soft separators: `db password=12345` and
+    # `--config password=12345` mask — the original round-3 rule; the
+    # round-2 linearization wrongly dropped this and leaked 839 corpus
+    # shapes). Each soft piece is stripped of leading/trailing '-_'
+    # (flag prefixes `--api.key`) and dot-split with per-dot-segment
+    # space strip (`db. password` yields `password`) plus adjacent-pair
+    # joins in both hyphen/underscore forms (`api.key` yields `api-key`);
+    # '-' and '_' stay HARD joins inside a segment (`db.password-prod`
+    # never yields a bare `password`).
+    pieces = _DISPLAY_ASSIGN_SEP_RE.split(v)
+    if len(pieces) < 2:
+        return _shared_registry_masks(value)
     for piece in pieces[:-1]:
-        # The fold already collapsed whitespace runs to single spaces;
-        # strip them per dot-segment (the original form split dots with
-        # `\s*\.\s*`, absorbing space AROUND the dot: `db. password`
-        # yields the `password` segment).
-        parts = [s.strip(" ") for s in piece.strip("-_").split(".")]
-        parts = [s for s in parts if s]
-        segs: set[str] = set(parts)
-        for a, b in zip(parts, parts[1:]):
-            segs.add(a + "-" + b)
-            segs.add(a + "_" + b)
-        if segs & _DISPLAY_SECRET_HEADS:
-            return True
+        for soft in re.split(r"[\s:=]+", piece):
+            if not soft:
+                continue
+            parts = [s.strip(" ") for s in soft.strip("-_").split(".")]
+            parts = [s for s in parts if s]
+            segs: set[str] = set(parts)
+            for a, b in zip(parts, parts[1:]):
+                segs.add(a + "-" + b)
+                segs.add(a + "_" + b)
+            if segs & _DISPLAY_SECRET_HEADS:
+                return True
     return _shared_registry_masks(value)
 
 
