@@ -8,9 +8,11 @@ Every apply test seeds its OWN scratch store (apply legs are stateful and
 idempotent re-runs render empty change sets, so shared state would be
 vacuous)."""
 
+import atexit
 import io
 import json
 import os
+import shutil
 import contextlib
 import sqlite3
 import subprocess
@@ -45,9 +47,13 @@ AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
 def _seed():
     """Fresh scratch store: one real add + the probe fixture rows."""
     td = tempfile.mkdtemp(prefix="zmem455apply_")
+    atexit.register(shutil.rmtree, td, True)
     env = dict(os.environ)
     for k in ("ZMEM_HOME", "ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODELS_DIR",
-              "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_ALLOW_REAL_STORE"):
+              "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_ALLOW_REAL_STORE",
+              "ZMEM_REMOTE_URL", "ZMEM_NAMESPACE", "ZMEM_SESSION",
+              "ZMEM_SESSION_ID", "ZMEM_CONSUME_AGENT_ID",
+              "ZMEM_DELEGATION_AGENT_ID"):
         env.pop(k, None)
     env["ZMEM_STORE"] = str(Path(td) / "store.sqlite")
     env["ZMEM_DATA"] = td
@@ -60,7 +66,7 @@ def _seed():
          "--tags", "entity:host:localhost:8080", "--namespace",
          "user:probe455b"],
         capture_output=True, text=True, encoding="utf-8", env=env,
-        cwd=str(REPO))
+        cwd=str(REPO), timeout=120)
     assert p.returncode == 0, p.stderr
     sfx = uuid.uuid4().hex[:8]
     conn = sqlite3.connect(env["ZMEM_STORE"])
@@ -92,7 +98,7 @@ def _run(args, env):
     return subprocess.run(
         [sys.executable, "-X", "utf8", str(STORE_PY)] + args,
         capture_output=True, text=True, encoding="utf-8", env=env,
-        cwd=str(REPO))
+        cwd=str(REPO), timeout=120)
 
 
 class ReclassifyApplyMaskingTest(unittest.TestCase):

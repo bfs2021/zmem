@@ -38,7 +38,10 @@ class EntityDisplayRedactionTest(unittest.TestCase):
         scratch = Path(cls._td.name)
         cls.env = dict(os.environ)
         for var in ("ZMEM_HOME", "ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODELS_DIR",
-                    "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_ALLOW_REAL_STORE"):
+                    "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_ALLOW_REAL_STORE",
+                    "ZMEM_REMOTE_URL", "ZMEM_NAMESPACE", "ZMEM_SESSION",
+                    "ZMEM_SESSION_ID", "ZMEM_CONSUME_AGENT_ID",
+                    "ZMEM_DELEGATION_AGENT_ID"):
             cls.env.pop(var, None)
         cls.env["ZMEM_STORE"] = str(scratch / "store.sqlite")
         cls.env["ZMEM_DATA"] = str(scratch)
@@ -52,7 +55,7 @@ class EntityDisplayRedactionTest(unittest.TestCase):
              "--tags", "entity:host:localhost:8080",
              "--namespace", "user:probe455"],
             capture_output=True, text=True, encoding="utf-8",
-            env=cls.env, cwd=str(REPO))
+            env=cls.env, cwd=str(REPO), timeout=120)
         assert seed.returncode == 0, f"seed add failed: {seed.stderr}"
         suffix = uuid.uuid4().hex[:8]
         cls.cred_other = f"e-cred-other-{suffix}"  # other   password:12345
@@ -88,7 +91,7 @@ class EntityDisplayRedactionTest(unittest.TestCase):
         p = subprocess.run(
             [sys.executable, "-X", "utf8", str(STORE_PY)] + args,
             capture_output=True, text=True, encoding="utf-8",
-            env=self.env, cwd=str(REPO))
+            env=self.env, cwd=str(REPO), timeout=120)
         self.assertEqual(p.returncode, 0,
                          f"{label}: exit {p.returncode}: {p.stderr}")
         leaked = [r for r in raws if r in p.stdout]

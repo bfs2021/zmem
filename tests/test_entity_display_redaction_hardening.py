@@ -21,6 +21,7 @@ import _store_guard  # noqa: F401  (issue #244 isolation guard)
 
 import contextlib
 import io
+import json
 import os
 import shutil
 import sqlite3
@@ -153,38 +154,48 @@ class FailClosedEveryEntryTest(_PortStore):
 
     def test_registry_failure_apply_arms_report_committed_success(self):
         from storelib import entity as ent
-        # Arm 1 (own store copy): reclassify apply — the api.example.com
-        # change row (other -> host) consults the registry at render time;
-        # the kind change COMMITS, the report is refused.
-        conn = self._open("copy-rc.sqlite")
-        out, err = io.StringIO(), io.StringIO()
-        with mock.patch("builtins.__import__",
-                        side_effect=_blocked_redaction_import), \
-                contextlib.redirect_stdout(out), \
-                contextlib.redirect_stderr(err):
-            rc = ent.cmd_reclassify_entities(conn, apply_mode=True)
-        self.assertEqual(rc, 0, "apply must report committed success when "
-                         "only the render fails")
-        self.assertIn("could not be printed", err.getvalue())
-        kind = conn.execute("SELECT kind FROM entity WHERE id=?",
-                            (ID_HOSTY,)).fetchone()[0]
-        self.assertEqual(kind, "host",
-                         "the kind change must have committed")
-        # Arm 2 (fresh store copy): reconcile apply — the benign orphan
-        # (host:build-box -> owner build-box) merge COMMITS, the report
-        # is refused.
-        conn2 = self._open("copy-rec.sqlite")
-        out2, err2 = io.StringIO(), io.StringIO()
-        with mock.patch("builtins.__import__",
-                        side_effect=_blocked_redaction_import), \
-                contextlib.redirect_stdout(out2), \
-                contextlib.redirect_stderr(err2):
-            rc2 = ent.cmd_reconcile_entity_aliases(conn2, apply_mode=True)
-        self.assertEqual(rc2, 0)
-        self.assertIn("could not be printed", err2.getvalue())
-        still = conn2.execute("SELECT COUNT(*) FROM entity WHERE id=?",
-                              (ID_BENIGN_ORPHAN,)).fetchone()[0]
-        self.assertEqual(still, 0, "the orphan merge must have committed")
+        # fd 1 save/restore (cubic batch-2 P3 / review PRR-013): the apply
+        # arms reach _guard_committed_rendering, whose failure path dup2s
+        # os.devnull onto PROCESS fd 1 — without the save/restore the rest
+        # of the pytest process loses stdout under -s/--capture=sys.
+        saved_fd = os.dup(1)
+        try:
+            # Arm 1 (own store copy): reclassify apply — the
+            # api.example.com change row consults the registry at render
+            # time; the kind change COMMITS, the report is refused.
+            conn = self._open("copy-rc.sqlite")
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch("builtins.__import__",
+                            side_effect=_blocked_redaction_import), \
+                    contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(err):
+                rc = ent.cmd_reclassify_entities(conn, apply_mode=True)
+            self.assertEqual(rc, 0, "apply must report committed success "
+                             "when only the render fails")
+            self.assertIn("could not be printed", err.getvalue())
+            kind = conn.execute("SELECT kind FROM entity WHERE id=?",
+                                (ID_HOSTY,)).fetchone()[0]
+            self.assertEqual(kind, "host",
+                             "the kind change must have committed")
+            # Arm 2 (fresh store copy): reconcile apply — the benign
+            # orphan merge COMMITS, the report is refused.
+            conn2 = self._open("copy-rec.sqlite")
+            out2, err2 = io.StringIO(), io.StringIO()
+            with mock.patch("builtins.__import__",
+                            side_effect=_blocked_redaction_import), \
+                    contextlib.redirect_stdout(out2), \
+                    contextlib.redirect_stderr(err2):
+                rc2 = ent.cmd_reconcile_entity_aliases(conn2,
+                                                       apply_mode=True)
+            self.assertEqual(rc2, 0)
+            self.assertIn("could not be printed", err2.getvalue())
+            still = conn2.execute("SELECT COUNT(*) FROM entity WHERE id=?",
+                                  (ID_BENIGN_ORPHAN,)).fetchone()[0]
+            self.assertEqual(still, 0,
+                             "the orphan merge must have committed")
+        finally:
+            os.dup2(saved_fd, 1)
+            os.close(saved_fd)
 
 
 class ApplyGuardBothArmsTest(_PortStore):
@@ -234,19 +245,169 @@ class ApplyGuardBothArmsTest(_PortStore):
 
 
 class BoundaryPinsTest(unittest.TestCase):
-    """pwd/private_key short-digit pins (PR #456 round-3): 'pwd' and
-    'private_key' are shared-REGISTRY heads (their >=8-char values mask via
-    the shared delegation) but are NOT in the local exact-token head set —
-    their short-digit forms are the intentional boundary. Pinned so the
-    boundary is a documented decision, not an oversight."""
+    """Registry-parity head pins (feedback round: cubic batch-1 P1 +
+    review PRR-004): the local exact-token head set now carries EVERY
+    key-head family of redaction.py's credential pattern (pwd,
+    private-key/private_key added to the pre-existing password/passwd/
+    secret/token/api-key/api_key/apikey/credential/auth), so a SHORT value
+    below the registry's 8-char floor still masks. Glued non-registry
+    spellings and undotted suffix-compound keys stay the documented
+    unmasked boundary (pinned here as controls)."""
 
-    def test_pwd_private_key_boundary(self):
+    def test_registry_parity_heads_mask_even_short(self):
         from storelib import entity as ent
         m = ent._mask_entity_display
-        for legal in ("pwd:123", "private_key:9", "private-key:4242"):
-            self.assertEqual(m(legal), legal, legal)
-        for shaped in ("pwd:supersecret99", "private_key:supersecret99"):
+        for shaped in ("pwd:123", "pwd:12345", "private_key:9",
+                       "private-key:4242", "private_key:supersecret99",
+                       "pwd=abc", "db.private-key:1"):
             self.assertEqual(m(shaped), MASK, shaped)
+
+    def test_non_registry_boundary_stays_legal(self):
+        from storelib import entity as ent
+        m = ent._mask_entity_display
+        for legal in ("secretkey=abcdefgh", "tokenkey=abcdefgh",
+                      "credentialkey=abcdefgh", "passphrase=abcdefgh",
+                      "pgpassword=abc123", "tokenized-service",
+                      "authentication-service", "author", "secretariat"):
+            self.assertEqual(m(legal), legal, legal)
+
+    def test_unicode_and_quote_families_mask(self):
+        # review PRR-003 + PRR-005 (executed-probe families from the
+        # swarm-pr-review round, fixed by the NFKC fold + quote
+        # separators): fullwidth separators, zero-width-joiner glue, and
+        # quoted keys all mask; a fullwidth-bearing ordinary name stays
+        # legal.
+        from storelib import entity as ent
+        m = ent._mask_entity_display
+        for shaped in ("password\uff1a12345", "password\uff1d12345",
+                       "pass\u200dword:12345", '{"password": "value"}',
+                       '{"password": "supersecretvalue"}',
+                       "'password=x'", '"password":"supersecretvalue"'):
+            self.assertEqual(m(shaped), MASK, shaped)
+        for legal in ("api.example.com", "localhost:8080"):
+            self.assertEqual(m(legal), legal, legal)
+
+
+class OwnerNameMaskingTest(_PortStore):
+    """PRR-002: the reconcile orphans[].owner_name masking key has a
+    DEDICATED credential-bearing assertion — dropping that one key from
+    the renderer's masked-key list must turn this test RED (the reviewer's
+    mutation left five of six suites green because only a coincidental
+    substring assert caught it)."""
+
+    def test_reconcile_dry_json_masks_credential_owner_name(self):
+        from storelib import entity as ent
+        # Seed a credential-shaped OWNER canonical name; the orphan's
+        # suffix alias resolves to it.
+        conn = sqlite3.connect(self.store)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute(
+            "INSERT INTO entity VALUES (?,?,?,?,?)",
+            ("33333333-0000-4000-8000-000000000030", "host",
+             "private_key:4242", FIXED_TS, FIXED_TS))
+        conn.execute(
+            "INSERT INTO entity_alias VALUES (?,?)",
+            ("33333333-0000-4000-8000-000000000030", "private_key:4242"))
+        conn.execute(
+            "INSERT INTO entity VALUES (?,?,?,?,?)",
+            ("33333333-0000-4000-8000-000000000031", "other",
+             "host:private_key:4242", FIXED_TS, FIXED_TS))
+        conn.commit()
+        conn.close()
+        # The dry-run JSON arm writes LF-only bytes via sys.stdout.buffer,
+        # so this leg drives the REAL CLI via subprocess (an in-process
+        # redirect_stdout(StringIO) cannot capture a .buffer write).
+        p = subprocess.run(
+            [PYTHON, "-X", "utf8", str(STORE_PY),
+             "reconcile-entity-aliases", "--dry-run", "--json"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=self.env, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        payload = json.loads(p.stdout)
+        row = next(o for o in payload["orphans"]
+                   if o["id"] == "33333333-0000-4000-8000-000000000031")
+        self.assertEqual(row["owner_name"], MASK,
+                         "owner_name must be masked whole when "
+                         "credential-shaped (dedicated PRR-002 assertion)")
+        self.assertEqual(row["suffix"], MASK,
+                         "the credential-shaped suffix must mask too")
+
+
+class WholeValueCliContractTest(_PortStore):
+    """PRR-008: the CLI-seam oracles must distinguish WHOLE-value masking
+    from partial masking — structural equality (parsed field == MASK),
+    not substring presence, so a label-preserving mutant
+    ('password:[REDACTED_SECRET]') or a label-dropping mutant
+    ('[REDACTED_SECRET]:12345') fails here even though substring legs
+    stay green."""
+
+    def test_entity_list_json_whole_value_equality(self):
+        p = subprocess.run(
+            [PYTHON, "-X", "utf8", str(STORE_PY), "entity-list", "--json"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=self.env, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        items = {e["id"]: e for e in json.loads(p.stdout)}
+        self.assertEqual(items[ID_CRED]["name"], MASK)
+        self.assertEqual(items[ID_CRED]["aliases"], [],
+                         "the seed's credential entity has no alias rows")
+        self.assertEqual(items[ID_OWNER]["name"], MASK)
+        self.assertEqual(items[ID_OWNER]["aliases"], [MASK])
+        self.assertEqual(items[ID_BENIGN_OWNER]["name"], "build-box")
+
+    def test_reclassify_dry_json_whole_value_equality(self):
+        p = subprocess.run(
+            [PYTHON, "-X", "utf8", str(STORE_PY), "reclassify-entities",
+             "--dry-run", "--json"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=self.env, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        payload = json.loads(p.stdout)
+        by_id = {c["id"]: c["name"] for c in payload["changes"]}
+        self.assertEqual(by_id[ID_CRED], MASK)
+        self.assertNotIn("password", (c["name"] for c in payload["changes"]))
+
+    def test_reconcile_dry_json_suffix_whole_value_equality(self):
+        p = subprocess.run(
+            [PYTHON, "-X", "utf8", str(STORE_PY),
+             "reconcile-entity-aliases", "--dry-run", "--json"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=self.env, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        payload = json.loads(p.stdout)
+        row = next(o for o in payload["orphans"]
+                   if o["id"] == ID_ORPHAN)
+        self.assertEqual(row["suffix"], MASK)
+
+
+class DisplayMaskPerfTest(unittest.TestCase):
+    """PRR-001 regression pin: the mask predicate must stay LINEAR in the
+    input — the pre-fix assignment loop re-split the whole prefix once per
+    ':'/'=' separator (quadratic; 16K separators cost ~46s per mask call).
+    Machine-independent scaling-ratio assertion (the
+    ReDosRegressionTest pattern): doubling the input must not more than
+    double the time, with a generous absolute backstop. Bounded sizes so
+    the pin itself stays cheap."""
+
+    def test_mask_scales_linearly_on_separator_dense_input(self):
+        from storelib import entity as ent
+        import time
+        small = "aa:" * 2000      # 2K separators
+        large = "aa:" * 8000      # 8K separators (4x the work)
+        t0 = time.perf_counter()
+        ent._mask_entity_display(small)
+        t_small = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        ent._mask_entity_display(large)
+        t_large = time.perf_counter() - t0
+        self.assertLess(t_large, 2.0,
+                        f"mask is super-linear at 8K separators: "
+                        f"{t_large:.3f}s (quadratic form measured ~50s)")
+        self.assertLess(t_large / max(t_small, 1e-6), 8.0,
+                        f"4x the input more than 8x the time "
+                        f"({t_small:.4f}s -> {t_large:.4f}s): quadratic "
+                        "amplification is back")
 
 
 if __name__ == "__main__":

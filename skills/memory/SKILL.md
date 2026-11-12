@@ -3556,7 +3556,9 @@ PR #454: uniqueness is per ALIAS; canonical names are not unique-keyed —
 `resolve_entity` refuses with exit 2 when a name matches several entities).
 This is the inspection
 surface for humans and doctor — use it to see what the entity lane actually
-matches.
+matches. Issue #455 display masking: credential-shaped canonical names and
+aliases render as the whole-value marker `[REDACTED_SECRET]` (full contract
+under the classifier decision record below).
 
 ### entity-merge — reconcile duplicate entities (v10, issue #60)
 ```
@@ -3583,6 +3585,10 @@ entities for the same thing (e.g. `rg` and `ripgrep`); find both ids with
 `entity-list`, dry-run the merge, then apply with `--confirm`. Afterwards
 the alias `rg` resolves to the surviving entity and recall's third list
 returns all its linked memories.
+
+Issue #455 display masking: the dry-run plan masks credential-shaped
+from/to canonical names and the alias-collision join (full contract
+under the classifier decision record below).
 
 ### entity-card — build or refresh one entity's card (issue #179)
 ```
@@ -3620,14 +3626,16 @@ sidecars), and prints the same canonical JSON as apply: `{"scanned",
 for `--apply` the scanned/before numbers describe the locked pre-update
 snapshot inside the write transaction.
 
+Issue #455 display masking: change-row `name` fields render as the
+whole-value marker `[REDACTED_SECRET]` when credential-shaped (full
+contract under the classifier decision record below).
+
 **Writer lease and concurrent applies.** The writer lease is advisory — it
 marks a live writer so `restore` observes it; it is NOT mutual exclusion. A
 second apply run after the first commits harmlessly reports `changed=0`
 (idempotent re-run); an apply whose targets were re-kinded by a writer
 between its scan and its transaction fails closed with a ValueError and zero
 changes.
-
-### entity-kind classifier decision record (issue #366)
 
 Owner-confirmed 2026-11-11 (verbatim directive: "confirmed on 366",
 transcribed with provenance in the issue comment; proposed record
@@ -3656,8 +3664,10 @@ The IPv4 fixture sub-decision: classify.json keeps its frozen 30 rows — the
 ASCII-strict behavior (Arabic-Indic/fullwidth quads classify `other`) stays
 pinned by the direct test `test_ipv4_octets_are_ascii_strict`, and no
 fixture row is added. The hardening items that motivated #366 landed via
-PR #365 (squash `a3e75178`, review-round fix `d2eb2d3d`): the linear host
-one-dot rewrite and the ASCII-strict IPv4 octet class.
+PR #365 (squash `a3e75178`, which carries the review-round fixes): the
+linear host one-dot rewrite and the ASCII-strict IPv4 octet class.
+
+### entity-kind classifier decision record (issue #366)
 
 Companion record from the PR #454 feedback ledger (F-30 / PRR-013): recall
 `--json`/`--explain` carry no LF-only byte contract (PRR-013: an
@@ -3665,29 +3675,43 @@ LF-normalized golden exists only for the `--for-injection` arm and is
 unaffected) — recorded here so the decision line lives with the other dated
 records.
 
-**Display masking (issue #455).** All four entity report surfaces
-(`entity-list`, `entity-merge` dry-run, `reclassify-entities`,
-`reconcile-entity-aliases`) mask credential-shaped names, aliases, and
-reconcile suffixes with `[REDACTED_SECRET]` at render time — display only;
+**Display masking (issue #455).** Each entity report surface masks
+credential-shaped display values (its own names/aliases; the merge
+dry-run also the alias-collision join; reclassify the change-row names;
+reconcile the orphan name/suffix/owner_name and merged-row names) with
+the whole-value marker `[REDACTED_SECRET]` at render time — display only;
 stored rows, the classifier, and entity-card construction are untouched, and
 legal `label:port` names (`localhost:8080`) render unmasked. Detection uses
-exact secret-head tokens over whitespace-trimmed `[:_=-]`-delimited segments
-(colon, underscore, hyphen, equals — so attribute-assignment shapes like
-`DB_PASSWORD=12345` and `DB_PASSWORD = 12345` mask; bare whitespace without
-punctuation does not separate) and, for EVERY assignment-separator
-occurrence, over the DOT-segments of its key prefix (`db.password=12345`,
+NFKC-normalized exact secret-head tokens over whitespace-trimmed
+`[:_="'-]`-delimited segments (colon, underscore, hyphen, equals, quote —
+so attribute-assignment shapes like `DB_PASSWORD=12345` and
+`DB_PASSWORD = 12345` mask, as do quoted-key shapes like
+`{"password": "value"}`; bare whitespace without punctuation does not
+separate; fullwidth `：`/`＝` fold to ASCII, zero-width joiners are
+stripped) and, for EVERY assignment-separator occurrence, over the
+DOT-segments of its key prefix (`db.password=12345`,
 `spring.datasource.password:5432`, earlier-separator forms
 `redis:db.password=12345` / `--config=db.password=12345`, the dot-joined
 head spelling `api.key=12345`, and whitespace-trimmed `db. password=…`;
 never a global dot split — `api.example.com` and `acme.corp:8080` stay
 unmasked; `-`/`_` are hard joins, so `db.password-prod=1` stays unmasked
-like `tokenized-service`) plus the shared
-redaction registry; prefix-shaped words (`tokenized-service`, `author`)
-stay unmasked. Masking is fail-closed: the
-reports never fall back to raw output — a registry that becomes unavailable
-after startup makes the renderer refuse (dry-run exits 2 with empty stdout;
-apply reports from the committed state), and a registry missing at process
-start fails the CLI at import before any report runs.
+like `tokenized-service`) plus the shared redaction registry. The local
+head list is REGISTRY-PARITY: every key-head family of
+redaction.py's credential pattern — `password`, `passwd`, `pwd`,
+`secret`, `token`, `api-key`/`api_key`/`apikey`,
+`private-key`/`private_key`, `credential`, `auth` — is an exact local
+token, so short values below the registry's 8-character value floor
+(`pwd:12345`, `private_key:9`) mask locally too. Still unmasked by the
+exact-token boundary: prefix-shaped words (`tokenized-service`,
+`author`, `secretariat`) and glued NON-registry spellings
+(`secretkey=…`, `passphrase=…`, `pgpassword=…`). Masking is fail-closed:
+the reports never fall back to raw output — a registry that becomes
+unavailable after startup (or whose call fails at render time) makes the
+renderer refuse (dry-run exits 2 with empty stdout; apply reports from
+the committed state), and a registry missing at process start fails the
+CLI at import before any report runs. The masking predicate is LINEAR in
+the input — pinned by DisplayMaskPerfTest's scaling-ratio assertion
+(the pre-feedback form was quadratic in the separator count).
 
 **Backup before `--apply`.** `--apply` re-kinds rows in one transaction but
 takes no snapshot of its own (unlike `rekey-namespace`). Take a verified
@@ -3746,7 +3770,10 @@ zero links (the 0.101.0 CHANGELOG discloses the behavior — only the entity
 lane's grouping changes; content and FTS recall are unaffected). This
 command reports — and, behind `--apply`, merges — those orphans back onto
 the entity that now owns the suffix alias, so BOTH alias forms resolve to
-one identity. (Dry-run's `mergeable` counts every orphan that HAS an owner;
+one identity. Issue #455 display masking: orphan `name`/`suffix`/`owner_name` and
+merged-row `name` render as the whole-value marker `[REDACTED_SECRET]`
+when credential-shaped (full contract under the classifier decision
+record below). (Dry-run's `mergeable` counts every orphan that HAS an owner;
 apply additionally refuses cyclic chains, so `merged` can be smaller than
 `mergeable` by exactly the `skipped_cycle` count.) Run it AFTER upgrading past a widening and BEFORE the next
 `purge` (a purge reaps linkless entities and would delete the old alias form

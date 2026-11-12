@@ -59,6 +59,7 @@ import os
 import re
 import sqlite3
 import sys
+import unicodedata
 import uuid
 
 from schema_meta import (
@@ -402,21 +403,59 @@ def classify_entity_kind(name: str) -> str:
 # legal `label:port` entity names on every redaction consumer).
 
 _DISPLAY_MASK = "[REDACTED_SECRET]"
-# Exact-match head tokens (casefolded). A segment equal to one of these is a
-# credential head; `tokenized`/`authentication`/`author`/`secretariat` are NOT
-# (the boundary is equality, not prefix — plan-critic blocker 2).
+# Exact-match head tokens (NFKC-folded). Registry parity (cubic P1 +
+# review PRR-004/PRR-014): every key-head family of redaction.py's
+# credential pattern (api[_-]?key, secret, token, password, passwd, pwd,
+# private[_-]?key) carries its local spellings here, so a SHORT value
+# below the shared registry's 8-character floor still masks — the local
+# rule and the registry now agree on WHICH names are credential-shaped.
+# The boundary is exact-token equality, not prefix/suffix containment:
+# `tokenized`/`authentication`/`author`/`secretariat`/`pgpassword` never
+# equal a head, and the glued non-registry spellings (`secretkey`,
+# `tokenkey`, `credentialkey`, `passphrase`) stay unmasked — pinned as
+# unmasked controls in tests/test_entity_display_redaction_hardening.py.
 _DISPLAY_SECRET_HEADS = frozenset({
-    "password", "passwd", "secret", "token", "api-key", "api_key",
-    "apikey", "credential", "auth",
+    "password", "passwd", "pwd", "secret", "token",
+    "api-key", "api_key", "apikey",
+    "private-key", "private_key",
+    "credential", "auth",
 })
-_DISPLAY_SPLIT_RE = re.compile(r"\s*[:_=-]+\s*")
+# Quotes join ':'/'='/'-/'_'/'=' as segment separators (feedback cubic
+# batch-1 P2 / review PRR-005): the write path mints JSON-shaped
+# attribute names (`{"password": "value"}` — executed extractor probe),
+# and the quote chars otherwise glue onto the head and defeat exact-token
+# equality.
+_DISPLAY_SPLIT_RE = re.compile(r"[ \t]*[:_=\"'-]+[ \t]*")
 # Assignment separator for the dot-key rule (round 3): a dot-joined
 # assignment KEY (`db.password=12345`, `spring.datasource.password:5432`) is
 # credential-shaped when any DOT-segment of the key equals a head. The dot
 # split runs ONLY on the key side of an assignment separator — a bare dotted
 # value without one is a hostname (`api.example.com`, `auth.example.com`,
 # `acme.corp:8080`'s key `acme.corp`) and never hits this rule.
-_DISPLAY_ASSIGN_SEP_RE = re.compile(r"\s*[:=]\s*")
+_DISPLAY_ASSIGN_SEP_RE = re.compile(r"[ \t]*[:=][ \t]*")
+# Zero-width joiners/format characters glue onto a head and defeat
+# exact-token equality (`pass\u200dword:12345` — review PRR-003, executed
+# probe); NFKC normalization maps fullwidth separators (`password：12345`,
+# `password＝12345` — same probe) onto their ASCII forms before the
+# separator classes see them.
+_DISPLAY_ZERO_WIDTH_RE = re.compile("[\u200b\u200c\u200d\ufeff]")
+
+
+def _display_fold(value: str) -> str:
+    """The masking predicate's input normalization: NFKC, trim, casefold,
+    zero-width strip, and whitespace-RUN collapse to one space.
+
+    The collapse is load-bearing for complexity (review PRR-006, executed
+    probe): a long interior whitespace run otherwise forces O(n^2)
+    backtracking out of the leading ``[ \\t]*`` of every separator
+    pattern. After the collapse each separator class matches at most one
+    space, so every split below is linear. Bare whitespace alone is still
+    NOT a separator (`password 12345` stays unmasked) — the collapse
+    preserves that because a lone space never satisfies
+    ``[:_="'-]+``."""
+    v = unicodedata.normalize("NFKC", value or "").strip().casefold()
+    v = _DISPLAY_ZERO_WIDTH_RE.sub("", v)
+    return re.sub(r"\s+", " ", v)
 
 
 class _DisplayRedactionUnavailable(RuntimeError):
@@ -429,11 +468,11 @@ class _DisplayRedactionUnavailable(RuntimeError):
 
 
 def _display_tokens(value: str) -> set[str]:
-    """The whitespace-trimmed [:_=-]-delimited segments of the casefolded
-    value PLUS each adjacent segment pair in both hyphen/underscore joins
-    (so `api-key:prod` yields the pair token `api-key`, and `api_key:x`
-    yields `api_key`). `=` is a segment separator for the same reason `:`
-    is: the write path mints attribute-assignment tags (`DB_PASSWORD=12345`
+    """The folded ``[:_="'-]``-delimited segments of the value PLUS each
+    adjacent segment pair in both hyphen/underscore joins (so
+    `api-key:prod` yields the pair token `api-key`, and `api_key:x` yields
+    `api_key`). ``=`` is a segment separator for the same reason ``:`` is:
+    the write path mints attribute-assignment tags (`DB_PASSWORD=12345`
     — implementation review round 1, executed probe), and whitespace is
     absorbed AROUND an existing separator (`DB_PASSWORD = 12345` —
     implementation review round 2; bare whitespace alone is NOT a
@@ -442,9 +481,8 @@ def _display_tokens(value: str) -> set[str]:
     `=`-shaped values need the local head rule. Boundary-safe (plan-critic
     r2 + implementation reviews): dotted hosts stay one segment;
     `tokenized`/`authentication`/`author`/`secretariat` never equal a head
-    token."""
-    v = (value or "").strip().casefold()
-    parts = [s for s in _DISPLAY_SPLIT_RE.split(v) if s]
+    token. Callers pass an ALREADY-FOLDED value (_display_fold)."""
+    parts = [s for s in _DISPLAY_SPLIT_RE.split(value) if s]
     tokens = set(parts)
     for a, b in zip(parts, parts[1:]):
         tokens.add(a + "-" + b)
@@ -459,52 +497,73 @@ def _shared_registry_masks(value: str) -> bool:
     — the display path keeps the import lazy so a broken registry fails
     at the masking seam (raising, fail-closed) rather than at an unrelated
     module-load site (write.py imports it at module load by design and the
-    CLI fails at import there — implementation-review round 1 probe). On import
-    failure this RAISES _DisplayRedactionUnavailable (fail closed): the
-    head-rule shapes still mask, but a shared-registry-only secret must
-    never echo raw because the import broke."""
+    CLI fails at import there — implementation-review round 1 probe). On
+    import failure — OR a redactor RUNTIME failure (feedback cubic
+    batch-1 P2 / review PRR-007: only the import was wrapped, so a
+    raising redactor escaped the renderers' refusal handlers as a bare
+    traceback) — this RAISES _DisplayRedactionUnavailable (fail closed):
+    the head-rule shapes still mask, but a shared-registry-only secret
+    must never echo raw because the registry broke."""
     try:
         from redaction import redact_secret_like_text
     except Exception as exc:  # noqa: BLE001 - any import failure fails closed
         raise _DisplayRedactionUnavailable(
             "display masking could not import the shared redaction "
             f"registry ({type(exc).__name__})") from exc
-    redacted, count = redact_secret_like_text(value)
+    try:
+        redacted, count = redact_secret_like_text(value)
+    except Exception as exc:  # noqa: BLE001 - runtime failure fails closed too
+        raise _DisplayRedactionUnavailable(
+            "display masking shared registry call failed "
+            f"({type(exc).__name__})") from exc
     return count > 0 or redacted != value
 
 
 def _is_credential_shaped(value: str) -> bool:
-    if _display_tokens(value) & _DISPLAY_SECRET_HEADS:
+    v = _display_fold(value)
+    if _display_tokens(v) & _DISPLAY_SECRET_HEADS:
         return True
     # Dot-joined assignment keys (implementation review round 3, executed
     # probe: `db.password=12345` minted raw by the write path; round 4: an
     # EARLIER separator must not hide the key — `redis:db.password=12345`,
-    # `--config=db.password=12345`): decompose the KEY PREFIX of EVERY
-    # assignment-separator occurrence on dots. Never a global dot split —
-    # `api.example.com` has no assignment separator, and a dotted key
-    # without a secret dot-segment (`acme.corp:8080`) stays unmasked. A
-    # dotted key that DOES contain a head (`password.corp:8080`) masks —
-    # conservative by design, same posture as `auth-service`. Exact-token
-    # equality still governs: `db.password-prod=1` (segment `password-prod`)
-    # stays unmasked, like `tokenized-service`.
-    v = (value or "").strip().casefold()
-    for m in _DISPLAY_ASSIGN_SEP_RE.finditer(v):
-        # Key prefix tokenization (rounds 3-5 + final critic): split the
-        # prefix on soft separators (whitespace, ':', and '=' — earlier
-        # assignments and CLI flags glue onto later keys,
-        # `--config=api.key=…` / `redis:api.key=…`), strip LEADING/TRAILING
-        # '-_' from each piece (flag prefixes `--api.key`), then dot-split
-        # with whitespace-trimmed segments and adjacent-pair joins in both
-        # hyphen/underscore forms (`api.key` yields `api-key`). '-' and '_'
-        # stay HARD joins INSIDE a segment: `db.password-prod` never yields
-        # a bare `password` segment, preserving the exact-token boundary.
-        segs: set[str] = set()
-        for piece in re.split(r"[\s:=]+", v[:m.start()]):
-            parts = [s for s in re.split(r"\s*\.\s*", piece.strip("-_")) if s]
-            segs.update(parts)
-            for a, b in zip(parts, parts[1:]):
-                segs.add(a + "-" + b)
-                segs.add(a + "_" + b)
+    # `--config=db.password=12345`): decompose the KEY material on dots.
+    # Never a global dot split — `api.example.com` has no assignment
+    # separator, and a dotted key without a secret dot-segment
+    # (`acme.corp:8080`) stays unmasked. A dotted key that DOES contain a
+    # head (`password.corp:8080`) masks — conservative by design, same
+    # posture as `auth-service`. Exact-token equality still governs:
+    # `db.password-prod=1` (segment `password-prod`) stays unmasked, like
+    # `tokenized-service`.
+    #
+    # LINEAR single pass (review PRR-001 / cubic batch-1, executed probe:
+    # the previous form re-split the whole PREFIX once per assignment
+    # separator — quadratic in the separator count; a 16K-separator name
+    # cost ~46s per mask call and one stored entity stalled `entity-list`
+    # for 42s end-to-end vs 0.87s at base). The key material of every
+    # ':='/'=' occurrence is exactly the assignment-separated segments
+    # BEFORE the last one (the final segment is the VALUE), so one split
+    # on the assignment separator yields every key piece exactly once.
+    # Bare whitespace is NOT an assignment separator ('password 12345'
+    # stays unmasked — the whitespace-around-separator rule absorbs space
+    # only AROUND an existing ':'/'='), so the split below uses the
+    # assignment separator class, never a bare '\s' run. Each key piece
+    # is stripped of leading/trailing '-_' (flag prefixes `--api.key`)
+    # and dot-split with adjacent-pair joins in both hyphen/underscore
+    # forms (`api.key` yields `api-key`); '-' and '_' stay HARD joins
+    # inside a segment (`db.password-prod` never yields a bare
+    # `password`).
+    pieces = [p for p in _DISPLAY_ASSIGN_SEP_RE.split(v) if p]
+    for piece in pieces[:-1]:
+        # The fold already collapsed whitespace runs to single spaces;
+        # strip them per dot-segment (the original form split dots with
+        # `\s*\.\s*`, absorbing space AROUND the dot: `db. password`
+        # yields the `password` segment).
+        parts = [s.strip(" ") for s in piece.strip("-_").split(".")]
+        parts = [s for s in parts if s]
+        segs: set[str] = set(parts)
+        for a, b in zip(parts, parts[1:]):
+            segs.add(a + "-" + b)
+            segs.add(a + "_" + b)
         if segs & _DISPLAY_SECRET_HEADS:
             return True
     return _shared_registry_masks(value)

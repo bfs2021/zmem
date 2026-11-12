@@ -40,7 +40,10 @@ class LegalNamesStayUnmaskedTest(unittest.TestCase):
         scratch = Path(cls._td.name)
         cls.env = dict(os.environ)
         for var in ("ZMEM_HOME", "ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODELS_DIR",
-                    "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_ALLOW_REAL_STORE"):
+                    "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_ALLOW_REAL_STORE",
+                    "ZMEM_REMOTE_URL", "ZMEM_NAMESPACE", "ZMEM_SESSION",
+                    "ZMEM_SESSION_ID", "ZMEM_CONSUME_AGENT_ID",
+                    "ZMEM_DELEGATION_AGENT_ID"):
             cls.env.pop(var, None)
         cls.env["ZMEM_STORE"] = str(scratch / "store.sqlite")
         cls.env["ZMEM_DATA"] = str(scratch)
@@ -54,7 +57,7 @@ class LegalNamesStayUnmaskedTest(unittest.TestCase):
              "--tags", "entity:host:localhost:8080",
              "--namespace", "user:probe455"],
             capture_output=True, text=True, encoding="utf-8",
-            env=cls.env, cwd=str(REPO))
+            env=cls.env, cwd=str(REPO), timeout=120)
         assert seed.returncode == 0, f"seed add failed: {seed.stderr}"
         suffix = uuid.uuid4().hex[:8]
         cls.cred_other = f"e-cred-other-{suffix}"  # other   password:12345
@@ -62,6 +65,7 @@ class LegalNamesStayUnmaskedTest(unittest.TestCase):
         cls.legal = f"e-legal-{suffix}"            # service localhost:8080
         cls.legal2 = f"e-legal2-{suffix}"          # host    server:8080
         cls.orphan = f"e-orphan-{suffix}"          # other   host:token-acme
+        cls.legal_other = f"e-legal-oth-{suffix}"  # other   cron:9100 (legal label:port)
         conn = sqlite3.connect(cls.env["ZMEM_STORE"])
         now = "2026-11-11T00:00:00Z"
         for eid, kind, name in (
@@ -69,7 +73,8 @@ class LegalNamesStayUnmaskedTest(unittest.TestCase):
                 (cls.cred_svc, "service", "token:98765"),
                 (cls.legal, "service", "localhost:8080"),
                 (cls.legal2, "host", "server:8080"),
-                (cls.orphan, "other", "host:token-acme")):
+                (cls.orphan, "other", "host:token-acme"),
+                (cls.legal_other, "other", "cron:9100")):
             conn.execute(
                 "INSERT INTO entity(id, kind, canonical_name, created_at, "
                 "updated_at) VALUES (?,?,?,?,?)", (eid, kind, name, now, now))
@@ -90,7 +95,7 @@ class LegalNamesStayUnmaskedTest(unittest.TestCase):
         p = subprocess.run(
             [sys.executable, "-X", "utf8", str(STORE_PY)] + args,
             capture_output=True, text=True, encoding="utf-8",
-            env=self.env, cwd=str(REPO))
+            env=self.env, cwd=str(REPO), timeout=120)
         self.assertEqual(p.returncode, 0,
                          f"{label}: exit {p.returncode}: {p.stderr}")
         leaked = [r for r in raws if r in p.stdout]
@@ -125,6 +130,20 @@ class LegalNamesStayUnmaskedTest(unittest.TestCase):
                           "--to", self.legal],
                          ["token:98765"],
                          ["localhost:8080"])
+
+    def test_reclassify_dry_run_keeps_legal_other_name_unmasked(self):
+        """cubic batch-1 P3: the legal fixture must exercise
+        reclassify-entities (only `other` rows are scanned)."""
+        p = self.run_surface(
+            "reclassify dry json",
+            ["reclassify-entities", "--dry-run", "--json"],
+            raws=[], legal=["cron:9100"])
+        import json as _json
+        payload = _json.loads(p)
+        names = {c["name"] for c in payload["changes"]}
+        self.assertIn("cron:9100", names,
+                      "the legal other-kind row must appear UNMASKED "
+                      "in the reclassify change set")
 
     def test_reconcile_dry_run_json_keeps_owner_legal_name_unmasked(self):
         # The orphan's credential-shaped name must be masked while the owner's

@@ -6,6 +6,7 @@ mask them — only the local head rule can."""
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -42,9 +43,13 @@ class AssignmentShapeCliTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.td = tempfile.mkdtemp(prefix="zmem455assign_")
+        cls.addClassCleanup(shutil.rmtree, cls.td, True)
         env = dict(os.environ)
         for k in ("ZMEM_HOME", "ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODELS_DIR",
-                  "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_ALLOW_REAL_STORE"):
+                  "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_ALLOW_REAL_STORE",
+                  "ZMEM_REMOTE_URL", "ZMEM_NAMESPACE", "ZMEM_SESSION",
+                  "ZMEM_SESSION_ID", "ZMEM_CONSUME_AGENT_ID",
+                  "ZMEM_DELEGATION_AGENT_ID"):
             env.pop(k, None)
         env["ZMEM_STORE"] = str(Path(cls.td) / "store.sqlite")
         env["ZMEM_DATA"] = cls.td
@@ -59,7 +64,7 @@ class AssignmentShapeCliTest(unittest.TestCase):
                  "fact", "--content", f"env probe mentions {LEGAL}",
                  "--tags", tags, "--namespace", "user:probe455c"],
                 capture_output=True, text=True, encoding="utf-8", env=env,
-                cwd=str(REPO))
+                cwd=str(REPO), timeout=120)
             assert p.returncode == 0, p.stderr
         cls.svc = "e-svc-" + uuid.uuid4().hex[:8]
         cls.legal = "e-legal-" + uuid.uuid4().hex[:8]
@@ -69,6 +74,15 @@ class AssignmentShapeCliTest(unittest.TestCase):
             "INSERT INTO entity(id, kind, canonical_name, created_at, "
             "updated_at) VALUES (?,?,?,?,?)",
             (cls.svc, "service", ASSIGN_RAW2, now, now))
+        # cubic batch-1 P2: the `entity:` tag parser truncates the
+        # name at "=", so the tag-adds above may not store the FULL
+        # assignment shape; insert the exact legacy row so the CLI
+        # assertions genuinely cover "DB_PASSWORD=12345".
+        conn.execute(
+            "INSERT INTO entity(id, kind, canonical_name, created_at, "
+            "updated_at) VALUES (?,?,?,?,?)",
+            ("e-assign-full-" + uuid.uuid4().hex[:8], "other",
+             ASSIGN_RAW, now, now))
         conn.execute(
             "INSERT INTO entity(id, kind, canonical_name, created_at, "
             "updated_at) VALUES (?,?,?,?,?)",
@@ -80,7 +94,7 @@ class AssignmentShapeCliTest(unittest.TestCase):
         return subprocess.run(
             [sys.executable, "-X", "utf8", str(STORE_PY)] + args,
             capture_output=True, text=True, encoding="utf-8",
-            env=self.env, cwd=str(REPO))
+            env=self.env, cwd=str(REPO), timeout=120)
 
     def test_entity_list_json_masks_assignment_names(self):
         p = self._run(["entity-list", "--json"])
@@ -175,9 +189,13 @@ class WhitespaceShapeCliTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.td = tempfile.mkdtemp(prefix="zmem455ws_")
+        cls.addClassCleanup(shutil.rmtree, cls.td, True)
         env = dict(os.environ)
         for k in ("ZMEM_HOME", "ZMEM_STORE", "ZMEM_DATA", "ZMEM_MODELS_DIR",
-                  "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_ALLOW_REAL_STORE"):
+                  "ZMEM_MODEL_AUTODOWNLOAD", "ZMEM_ALLOW_REAL_STORE",
+                  "ZMEM_REMOTE_URL", "ZMEM_NAMESPACE", "ZMEM_SESSION",
+                  "ZMEM_SESSION_ID", "ZMEM_CONSUME_AGENT_ID",
+                  "ZMEM_DELEGATION_AGENT_ID"):
             env.pop(k, None)
         env["ZMEM_STORE"] = str(Path(cls.td) / "store.sqlite")
         env["ZMEM_DATA"] = cls.td
@@ -192,7 +210,7 @@ class WhitespaceShapeCliTest(unittest.TestCase):
              "--tags", "entity:host:localhost:8080", "--namespace",
              "user:probe455d"],
             capture_output=True, text=True, encoding="utf-8", env=env,
-            cwd=str(REPO))
+            cwd=str(REPO), timeout=120)
         assert p.returncode == 0, p.stderr
         # legacy direct-INSERT copy of the same shape on a second entity
         cls.ws = "e-ws-" + uuid.uuid4().hex[:8]
@@ -214,7 +232,7 @@ class WhitespaceShapeCliTest(unittest.TestCase):
         return subprocess.run(
             [sys.executable, "-X", "utf8", str(STORE_PY)] + args,
             capture_output=True, text=True, encoding="utf-8",
-            env=self.env, cwd=str(REPO))
+            env=self.env, cwd=str(REPO), timeout=120)
 
     def test_entity_list_masks_whitespace_shapes_both_modes(self):
         for args in (["entity-list", "--json"], ["entity-list"]):
@@ -249,7 +267,7 @@ class WhitespaceShapeCliTest(unittest.TestCase):
              "config note: set `" + "` and `".join(raws) + "` here",
              "--namespace", "user:probe455e"],
             capture_output=True, text=True, encoding="utf-8", env=env,
-            cwd=str(REPO))
+            cwd=str(REPO), timeout=120)
         self.assertEqual(p.returncode, 0, p.stderr)
         for args in (["entity-list", "--json"], ["entity-list"]):
             q = self._run(args)
