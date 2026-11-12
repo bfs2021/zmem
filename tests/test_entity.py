@@ -1239,6 +1239,34 @@ class ReDosRegressionTest(unittest.TestCase):
                         f"doubling input more than quadrupled the time "
                         f"({t_small:.4f}s -> {t_large:.4f}s)")
 
+    def test_host_pattern_hyphen_anchored_shape_is_pinned(self):
+        """Issue #366 timing-free pin (ported from PR #456): the one-dot
+        host pattern is written in the hyphen-anchored form
+        `(?:-[a-z0-9]*)+` - every repetition MUST begin with a literal
+        hyphen, so a hyphen-dense non-matching input cannot backtrack
+        quadratically. This is a STRUCTURAL guard on the pattern source:
+        reverting to the legacy overlapping-classes form
+        `[a-z0-9-]*-[a-z0-9-]*` fails here even on machines where the
+        wall-clock test's generous ceilings would still pass."""
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        from storelib.entity import _CLASSIFIER_HOST_ONEDOT_RE
+        src = _CLASSIFIER_HOST_ONEDOT_RE.pattern
+        # cubic batch-2 P2: pin the FULL pattern shape, anchored from ^ —
+        # a bare substring check passes even if a loose leading
+        # [a-z0-9-]* head is reintroduced (measured quadratic). An
+        # equivalent linear rewrite (e.g. {1,} for +) must update this
+        # pin deliberately; the wall-clock sibling above remains the
+        # machine-independent performance guard.
+        self.assertRegex(
+            src,
+            r"\^\[a-z0-9\]\*\(\?:-\[a-z0-9\]\*\)\+\\\.\[a-z\]\[a-z0-9-\]\*\$",
+            "the one-dot host pattern shape drifted from the linear "
+            "hyphen-anchored form — the quadratic form may be back; "
+            "update this pin deliberately with measured evidence")
+        self.assertNotIn("[a-z0-9-]*-[a-z0-9-]*", src,
+                          "the legacy overlapping-classes (quadratic) shape "
+                          "is present in the host pattern")
+
     def test_rewrite_is_semantically_identical_on_edge_cases(self):
         """The rewrite changes SPEED only, never the accepted language.
 

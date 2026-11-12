@@ -59,6 +59,7 @@ import os
 import re
 import sqlite3
 import sys
+import unicodedata
 import uuid
 
 from schema_meta import (
@@ -385,6 +386,231 @@ def classify_entity_kind(name: str) -> str:
     if _CLASSIFIER_ERROR_RE.fullmatch(v):
         return "error_class"
     return "other"
+
+
+# --- Issue #455: display-side masking of credential-shaped entity names ------
+#
+# The four entity REPORT surfaces (entity-list, entity-merge dry-run,
+# reclassify-entities, reconcile-entity-aliases) render stored identity
+# values — entity.canonical_name, entity_alias.alias_norm, and the reconcile
+# suffix — verbatim. A legacy pre-v16 store keeps credential-shaped rows
+# (issue #358's `<word>:<digits>` class) that predate write-time capture
+# redaction, so the DISPLAY path masks them itself. Stored rows, the
+# classifier, resolve/write paths, and entity-card construction are never
+# touched: masking is a rendering concern only, and this helper deliberately
+# does NOT live in redaction.py (the shared pattern registry's families are
+# global — widening them for bare `word:digits` names would false-positive
+# legal `label:port` entity names on every redaction consumer).
+
+_DISPLAY_MASK = "[REDACTED_SECRET]"
+# Exact-match head tokens (NFKC-folded). Registry parity (cubic P1 +
+# review PRR-004/PRR-014): every key-head family of redaction.py's
+# credential pattern (api[_-]?key, secret, token, password, passwd, pwd,
+# private[_-]?key) carries its local spellings here, so a SHORT value
+# below the shared registry's 8-character floor still masks — the local
+# rule and the registry now agree on WHICH names are credential-shaped.
+# The boundary is exact-token equality, not prefix/suffix containment:
+# `tokenized`/`authentication`/`author`/`secretariat`/`pgpassword` never
+# equal a head, and the glued non-registry spellings (`secretkey`,
+# `tokenkey`, `credentialkey`, `passphrase`) stay unmasked — pinned as
+# unmasked controls in tests/test_entity_display_redaction_hardening.py.
+_DISPLAY_SECRET_HEADS = frozenset({
+    "password", "passwd", "pwd", "secret", "token",
+    "api-key", "api_key", "apikey",
+    "private-key", "private_key",
+    "credential", "auth",
+})
+# Quotes join ':'/'='/'-/'_'/'=' as segment separators (feedback cubic
+# batch-1 P2 / review PRR-005): the write path mints JSON-shaped
+# attribute names (`{"password": "value"}` — executed extractor probe),
+# and the quote chars otherwise glue onto the head and defeat exact-token
+# equality.
+_DISPLAY_SPLIT_RE = re.compile(r"[ \t]*[:_=\"'-]+[ \t]*")
+# Assignment separator for the dot-key rule (round 3): a dot-joined
+# assignment KEY (`db.password=12345`, `spring.datasource.password:5432`) is
+# credential-shaped when any DOT-segment of the key equals a head. The dot
+# split runs ONLY on the key side of an assignment separator — a bare dotted
+# value without one is a hostname (`api.example.com`, `auth.example.com`,
+# `acme.corp:8080`'s key `acme.corp`) and never hits this rule.
+_DISPLAY_ASSIGN_SEP_RE = re.compile(r"[ \t]*[:=][ \t]*")
+# Zero-width / format characters (Unicode category Cf: ZWSP/ZWNJ/ZWJ,
+# soft hyphen, LRM/RLM, word joiner, BOM …) glue onto a head and defeat
+# exact-token equality (`pass\u200dword:12345`, `pass\u00adword:12345` —
+# review PRR-003 + delta-review round 2, executed probes); NFKC
+# normalization maps fullwidth separators (`password：12345`,
+# `password＝12345` — same probe) onto their ASCII forms before the
+# separator classes see them. The fold strips the WHOLE Cf category —
+# a four-code-point whitelist left the rest of the family bypassable
+# (delta-review round 2).
+_DISPLAY_CF_CHARS = frozenset(
+    chr(cp) for cp in range(0x110000)
+    if unicodedata.category(chr(cp)) == "Cf"
+)
+
+
+def _display_fold(value: str) -> str:
+    """The masking predicate's input normalization: NFKC, trim, casefold,
+    format-character (Cf) strip, and whitespace-RUN collapse to one space.
+
+    The collapse is load-bearing for complexity (review PRR-006, executed
+    probe): a long interior whitespace run otherwise forces O(n^2)
+    backtracking out of the leading ``[ \\t]*`` of every separator
+    pattern. After the collapse each separator class matches at most one
+    space, so every split below is linear. Bare whitespace alone is still
+    NOT a separator (`password 12345` stays unmasked) — the collapse
+    preserves that because a lone space never satisfies
+    ``[:_="'-]+``."""
+    v = unicodedata.normalize("NFKC", value or "").strip().casefold()
+    if v.isascii():
+        return re.sub(r"\s+", " ", v)
+    v = "".join(ch for ch in v if ch not in _DISPLAY_CF_CHARS)
+    return re.sub(r"\s+", " ", v)
+
+
+class _DisplayRedactionUnavailable(RuntimeError):
+    """The shared redaction registry could not be imported for display
+    masking (issue #455). Rendering refuses rather than echoing raw values:
+    the report renderers catch this BEFORE any stdout write (dry-run legs
+    exit 2 with empty stdout; apply legs flow into the existing
+    _guard_committed_rendering boundary). A failed shared import must never
+    fall back to raw output."""
+
+
+def _display_tokens(value: str) -> set[str]:
+    """The folded ``[:_="'-]``-delimited segments of the value PLUS each
+    adjacent segment pair in both hyphen/underscore joins (so
+    `api-key:prod` yields the pair token `api-key`, and `api_key:x` yields
+    `api_key`). ``=`` is a segment separator for the same reason ``:`` is:
+    the write path mints attribute-assignment tags (`DB_PASSWORD=12345`
+    — implementation review round 1, executed probe), and whitespace is
+    absorbed AROUND an existing separator (`DB_PASSWORD = 12345` —
+    implementation review round 2; bare whitespace alone is NOT a
+    separator, so `password 12345` without punctuation stays unmasked).
+    The shared registry only catches values of 8+ chars, so short
+    `=`-shaped values need the local head rule. Boundary-safe (plan-critic
+    r2 + implementation reviews): dotted hosts stay one segment;
+    `tokenized`/`authentication`/`author`/`secretariat` never equal a head
+    token. Callers pass an ALREADY-FOLDED value (_display_fold)."""
+    parts = [s for s in _DISPLAY_SPLIT_RE.split(value) if s]
+    tokens = set(parts)
+    for a, b in zip(parts, parts[1:]):
+        tokens.add(a + "-" + b)
+        tokens.add(a + "_" + b)
+    return tokens
+
+
+def _shared_registry_masks(value: str) -> bool:
+    """True when the shared redaction registry would rewrite the value.
+
+    Lazy import per the storelib.write bootstrap precedent (write.py:293-309)
+    — the display path keeps the import lazy so a broken registry fails
+    at the masking seam (raising, fail-closed) rather than at an unrelated
+    module-load site (write.py imports it at module load by design and the
+    CLI fails at import there — implementation-review round 1 probe). On
+    import failure — OR a redactor RUNTIME failure (feedback cubic
+    batch-1 P2 / review PRR-007: only the import was wrapped, so a
+    raising redactor escaped the renderers' refusal handlers as a bare
+    traceback) — this RAISES _DisplayRedactionUnavailable (fail closed):
+    the head-rule shapes still mask, but a shared-registry-only secret
+    must never echo raw because the registry broke."""
+    try:
+        from redaction import redact_secret_like_text
+    except Exception as exc:  # noqa: BLE001 - any import failure fails closed
+        raise _DisplayRedactionUnavailable(
+            "display masking could not import the shared redaction "
+            f"registry ({type(exc).__name__})") from exc
+    try:
+        redacted, count = redact_secret_like_text(value)
+    except Exception as exc:  # noqa: BLE001 - runtime failure fails closed too
+        raise _DisplayRedactionUnavailable(
+            "display masking shared registry call failed "
+            f"({type(exc).__name__})") from exc
+    return count > 0 or redacted != value
+
+
+def _is_credential_shaped(value: str) -> bool:
+    v = _display_fold(value)
+    if _display_tokens(v) & _DISPLAY_SECRET_HEADS:
+        return True
+    # Dot-joined assignment keys (implementation review round 3, executed
+    # probe: `db.password=12345` minted raw by the write path; round 4: an
+    # EARLIER separator must not hide the key — `redis:db.password=12345`,
+    # `--config=db.password=12345`): decompose the KEY material on dots.
+    # Never a global dot split — `api.example.com` has no assignment
+    # separator, and a dotted key without a secret dot-segment
+    # (`acme.corp:8080`) stays unmasked. A dotted key that DOES contain a
+    # head (`password.corp:8080`) masks — conservative by design, same
+    # posture as `auth-service`. Exact-token equality still governs:
+    # `db.password-prod=1` (segment `password-prod`) stays unmasked, like
+    # `tokenized-service`.
+    #
+    # LINEAR single pass (review PRR-001 / cubic batch-1, executed probe:
+    # the previous form re-split the whole PREFIX once per assignment
+    # separator — quadratic in the separator count; a 16K-separator name
+    # cost ~46s per mask call and one stored entity stalled `entity-list`
+    # for 42s end-to-end vs 0.87s at base). Semantics (delta-review round
+    # 2 corrected): with NO assignment separator the key rule never fires
+    # ('password 12345' stays unmasked — bare whitespace is not a
+    # key/value boundary). WITH one or more ':='/'=' separators, the key
+    # material is every assignment-separated segment BEFORE the last (the
+    # final segment is the value — kept even when empty, so a trailing
+    # separator's key still counts: `db.password=` masks), and each key
+    # segment is then soft-split on whitespace/':'/'=' (spaces INSIDE key
+    # material are soft separators: `db password=12345` and
+    # `--config password=12345` mask — the original round-3 rule; the
+    # round-2 linearization wrongly dropped this and leaked 839 corpus
+    # shapes). Each soft piece is stripped of leading/trailing '-_'
+    # (flag prefixes `--api.key`) and dot-split with per-dot-segment
+    # space strip (`db. password` yields `password`) plus adjacent-pair
+    # joins in both hyphen/underscore forms (`api.key` yields `api-key`);
+    # '-' and '_' stay HARD joins inside a segment (`db.password-prod`
+    # never yields a bare `password`).
+    pieces = _DISPLAY_ASSIGN_SEP_RE.split(v)
+    if len(pieces) < 2:
+        return _shared_registry_masks(value)
+    for piece in pieces[:-1]:
+        for soft in re.split(r"[\s:=]+", piece):
+            if not soft:
+                continue
+            parts = [s.strip(" ") for s in soft.strip("-_").split(".")]
+            parts = [s for s in parts if s]
+            segs: set[str] = set(parts)
+            for a, b in zip(parts, parts[1:]):
+                segs.add(a + "-" + b)
+                segs.add(a + "_" + b)
+            if segs & _DISPLAY_SECRET_HEADS:
+                return True
+    return _shared_registry_masks(value)
+
+
+def _mask_entity_display(value):
+    """Mask one entity display value (canonical name, alias, suffix, or
+    owner_name). Returns _DISPLAY_MASK for credential-shaped values, the
+    value unchanged otherwise; None passes through (owner_name nulls).
+    Raises _DisplayRedactionUnavailable when the shared registry cannot be
+    imported — callers must catch it before any stdout write."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    if _is_credential_shaped(value):
+        return _DISPLAY_MASK
+    return value
+
+
+def _masked_display_rows(rows, *name_keys):
+    """Mask the given display keys across a list of report payload rows.
+
+    Raises _DisplayRedactionUnavailable out (fail closed) BEFORE any caller
+    writes a byte to stdout — construct all masked values first."""
+    out = []
+    for row in rows:
+        new = dict(row)
+        for key in name_keys:
+            if key in new:
+                new[key] = _mask_entity_display(new[key])
+        out.append(new)
+    return out
 
 
 def _default_entity_kind_weights() -> dict[str, float]:
@@ -975,6 +1201,18 @@ def cmd_entity_list(
             "id": r["id"], "kind": r["kind"], "name": r["name"],
             "aliases": aliases, "links": r["n_links"],
         })
+    # Issue #455: mask credential-shaped names/aliases for DISPLAY only,
+    # before any stdout write (fail closed if the shared registry is broken).
+    try:
+        items = [{
+            **it,
+            "name": _mask_entity_display(it["name"]),
+            "aliases": [_mask_entity_display(a) for a in it["aliases"]],
+        } for it in items]
+    except _DisplayRedactionUnavailable as exc:
+        print(f"[zmem] entity-list: {exc}; refusing to print raw entity "
+              "names", file=sys.stderr)
+        return 2
     if as_json:
         print(_json.dumps(items, indent=2))
         return 0
@@ -1050,12 +1288,22 @@ def cmd_entity_merge(
         # NOTE: runtime prints stay ASCII-only (unlike docstrings): stdout may
         # be a legacy codepage console (cp1252/cp932), and an unencodable
         # char here would crash the command after the work is done.
+        # Issue #455: mask credential-shaped names + collision aliases for
+        # DISPLAY only, before any stdout write (fail closed).
+        try:
+            from_name = _mask_entity_display(frm["canonical_name"])
+            to_name = _mask_entity_display(to["canonical_name"])
+            collisions = [_mask_entity_display(a) for a in alias_collisions]
+        except _DisplayRedactionUnavailable as exc:
+            print(f"[zmem] entity-merge: {exc}; refusing to print raw "
+                  "entity names", file=sys.stderr)
+            return 2
         print("[zmem] entity-merge DRY RUN (no writes - pass --confirm to apply)")
-        print(f"[zmem]   from: {from_id} kind={frm['kind']} name={frm['canonical_name']!r}")
-        print(f"[zmem]   to:   {to_id} kind={to['kind']} name={to['canonical_name']!r}")
+        print(f"[zmem]   from: {from_id} kind={frm['kind']} name={from_name!r}")
+        print(f"[zmem]   to:   {to_id} kind={to['kind']} name={to_name!r}")
         print(f"[zmem]   aliases to move: {len(from_aliases) - len(alias_collisions)} "
               f"({len(alias_collisions)} already on target"
-              + (f": {', '.join(alias_collisions)}" if alias_collisions else "") + ")")
+              + (f": {', '.join(collisions)}" if collisions else "") + ")")
         print(f"[zmem]   links to move: {len(from_links) - len(link_collisions)} "
               f"({len(link_collisions)} memories already linked to target)")
         print(f"[zmem]   result: from-entity deleted; target keeps kind "
@@ -1133,20 +1381,33 @@ def cmd_reclassify_entities(
     envelope = {k: v for k, v in result.items() if k != "dry_run"}
 
     def _render() -> None:
+        # Issue #455: mask credential-shaped names in the DISPLAY payload
+        # before any stdout write. Constructed FIRST inside this render so
+        # apply-mode flows through _guard_committed_rendering when the
+        # shared registry is broken (no raw echo, committed-state exit 0).
+        display = dict(envelope)
+        display["changes"] = _masked_display_rows(
+            envelope.get("changes") or [], "name")
+        envelope_out = display
         if as_json:
-            payload = json.dumps(envelope, indent=2, sort_keys=True) + "\n"
+            payload = json.dumps(envelope_out, indent=2, sort_keys=True) + "\n"
             sys.stdout.buffer.write(payload.encode("utf-8"))
             sys.stdout.buffer.flush()
             return
-        for c in envelope["changes"]:
+        for c in envelope_out["changes"]:
             print(f"[zmem] reclassify: {c['id']} {c['name']!r} "
                   f"other -> {c['new_kind']}")
-        print(f"scanned={envelope['scanned']} changed={envelope['changed']}")
+        print(f"scanned={envelope_out['scanned']} changed={envelope_out['changed']}")
         sys.stdout.flush()
 
     if apply_mode:
         return _guard_committed_rendering("reclassify-entities", _render)
-    _render()
+    try:
+        _render()
+    except _DisplayRedactionUnavailable as exc:
+        print(f"[zmem] reclassify-entities: {exc}; refusing to print raw "
+              "entity names", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -1445,27 +1706,45 @@ def cmd_reconcile_entity_aliases(
     envelope = {k: v for k, v in result.items() if k != "dry_run"}
 
     def _render() -> None:
+        # Issue #455: mask credential-shaped names/suffixes/owner names in
+        # the DISPLAY payload before any stdout write (same construction
+        # placement rule as reclassify: inside the guarded render).
+        display = dict(envelope)
+        display["orphans"] = _masked_display_rows(
+            envelope.get("orphans") or [], "name", "suffix", "owner_name")
+        if "merged_rows" in envelope:
+            # apply-mode only: never ADD the key to the dry-run envelope
+            # (implementation-review nit: base dry-run shape has no
+            # merged_rows key)
+            display["merged_rows"] = _masked_display_rows(
+                envelope.get("merged_rows") or [], "name")
+        envelope_out = display
         if as_json:
-            payload = json.dumps(envelope, indent=2, sort_keys=True) + "\n"
+            payload = json.dumps(envelope_out, indent=2, sort_keys=True) + "\n"
             sys.stdout.buffer.write(payload.encode("utf-8"))
             sys.stdout.buffer.flush()
             return
-        for row in envelope["orphans"]:
+        for row in envelope_out["orphans"]:
             owner = row.get("owner_id") or "-"
             print(f"[zmem] reconcile: {row['id']} {row['name']!r} "
                   f"({row['prefix']}) owner={owner}")
         if apply_mode:
-            print(f"scanned={envelope['scanned']} merged={envelope['merged']} "
-                  f"skipped_no_owner={envelope['skipped_no_owner']} "
-                  f"skipped_cycle={envelope['skipped_cycle']}")
+            print(f"scanned={envelope_out['scanned']} merged={envelope_out['merged']} "
+                  f"skipped_no_owner={envelope_out['skipped_no_owner']} "
+                  f"skipped_cycle={envelope_out['skipped_cycle']}")
         else:
-            print(f"scanned={envelope['scanned']} "
-                  f"mergeable={envelope['mergeable']}")
+            print(f"scanned={envelope_out['scanned']} "
+                  f"mergeable={envelope_out['mergeable']}")
         sys.stdout.flush()
 
     if apply_mode:
         return _guard_committed_rendering("reconcile-entity-aliases", _render)
-    _render()
+    try:
+        _render()
+    except _DisplayRedactionUnavailable as exc:
+        print(f"[zmem] reconcile-entity-aliases: {exc}; refusing to print "
+              "raw entity names", file=sys.stderr)
+        return 2
     return 0
 
 
