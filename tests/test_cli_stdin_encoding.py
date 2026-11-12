@@ -109,10 +109,11 @@ class StdinEncodingTest(unittest.TestCase):
         mid = self._add_argv(PAYLOAD)
         self.assertEqual(_stored_content(self.env, mid), PAYLOAD)
 
-    def test_add_stdin_stores_crlf_verbatim(self):
-        # Behavior delta pinned by issue #460: the text layer translated
-        # \r\n to \n; the buffer read stores CRLF verbatim. Frozen so the
-        # delta stays intentional.
+    def test_add_stdin_normalizes_crlf_to_lf(self):
+        # PR #461 review F-002: the TextIOWrapper read (default newline=None)
+        # restores base's universal newlines — the \r\n a text-mode parent
+        # (Hermes/MCP on Windows) emits is translated back to \n, matching
+        # the argv path, so the stored length equals the logical length.
         r = _run_bytes(self.env, "add", "--json", "--no-dedup", "--namespace", NS,
                        "--type", "lesson", "--confidence", "0.5",
                        "--source-ref", "probe:encoding",
@@ -121,8 +122,40 @@ class StdinEncodingTest(unittest.TestCase):
         mid = _added_id(r.stdout)
         self.assertEqual(
             _stored_content(self.env, mid),
-            PAYLOAD_CRLF_BYTES.decode("utf-8"),
+            PAYLOAD.replace(" ", "\n", 1),
         )
+
+    def test_add_stdin_near_cap_multiline_from_text_mode_parent(self):
+        # PR #461 review F-002: Hermes/MCP spawn store.py with text=True
+        # and pipe LF payloads; on Windows the text-mode pipe layer turns
+        # every \n into \r\n, so a 63,999-char payload with 1,999 breaks
+        # arrives as 65,998 chars — over the 65,536 cap unless the child
+        # translates back before the cap check. The add must succeed
+        # (rc 0) and store the logical LF text.
+        payload = "\n".join(["a" * 31] * 2000)
+        self.assertEqual(len(payload), 63999)
+        self.assertEqual(payload.count("\n"), 1999)
+        r = subprocess.run(
+            [PYTHON, STORE_PY, "add", "--json", "--no-dedup", "--namespace", NS,
+             "--type", "lesson", "--confidence", "0.5",
+             "--source-ref", "probe:encoding", "--content", "-"],
+            env=self.env, input=payload, capture_output=True,
+            text=True, encoding="utf-8", timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        mid = _added_id(r.stdout.encode("utf-8"))
+        self.assertEqual(_stored_content(self.env, mid), payload)
+
+    def test_add_stdin_invalid_utf8_bytes_stored_as_replacement_chars(self):
+        # PR #461 review F-004: pin the disclosed errors="replace" policy —
+        # invalid UTF-8 bytes store as U+FFFD with rc 0 (a strict-decode
+        # mutant must fail this leg).
+        r = _run_bytes(self.env, "add", "--json", "--no-dedup", "--namespace", NS,
+                       "--type", "lesson", "--confidence", "0.5",
+                       "--source-ref", "probe:encoding",
+                       "--content", "-", stdin=b"ab\xffcd")
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+        mid = _added_id(r.stdout)
+        self.assertEqual(_stored_content(self.env, mid), "ab\ufffdcd")
 
 
 if __name__ == "__main__":

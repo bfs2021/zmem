@@ -5,6 +5,7 @@ import calendar
 import contextlib
 from collections.abc import Mapping
 import hashlib
+import io
 import json
 import math
 import os
@@ -5508,10 +5509,16 @@ def main():
     # UTF-8 explicitly: a bare sys.stdin.read() decodes with the process
     # locale codec — cp1252 on a default Windows install — mojibake-ing
     # non-ASCII content (issue #460). Same rationale as _cmd_apply_ops and
-    # the retain readers. Unlike the text layer, the buffer read stores
-    # CRLF verbatim instead of translating it to \n.
+    # the retain readers. Wrap the buffer in a TextIOWrapper (default
+    # newline=None) rather than reading the text layer: the UTF-8 decode
+    # stays independent of the stdio codec, while universal newlines still
+    # translate the \r\n a text-mode parent (Hermes/MCP on Windows) emits
+    # back to \n — matching base behavior and the argv path, so near-cap
+    # multi-line writes are measured on the logical length.
     if getattr(args, "content", None) == "-":
-        args.content = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+        args.content = io.TextIOWrapper(
+            sys.stdin.buffer, encoding="utf-8", errors="replace"
+        ).read()
 
     if args.cmd in {"add", "update"}:
         try:

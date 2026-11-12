@@ -286,7 +286,13 @@ def _refuse_read_flags(cmd: str, args: Any) -> None:
 def _resolve_content(args: Any) -> str:
     content = args.content
     if content == "-":
-        content = sys.stdin.read()
+        # Read the raw buffer and decode UTF-8 explicitly (issue #460, PR
+        # #461 review F-003): a bare sys.stdin.read() decodes with the
+        # process locale codec — cp1252 on a default Windows install —
+        # mojibake-ing non-ASCII content and, for cp1252's undefined bytes,
+        # producing lone surrogates that cannot be re-encoded for the hub
+        # transport. Same policy as the local dispatch site in cli.py.
+        content = sys.stdin.buffer.read().decode("utf-8", errors="replace")
     return content
 
 
