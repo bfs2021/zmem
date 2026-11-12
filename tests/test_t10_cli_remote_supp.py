@@ -773,10 +773,14 @@ def test_remote_add_content_dash_stdin_decodes_utf8_on_cp1252_stdio():
     bare sys.stdin.read() queued mojibake ("café — naïve" ->
     cafÃ© â€” naÃ¯ve) and cp1252's undefined bytes even produced lone
     surrogates that cannot be re-encoded for the hub transport; the raw
-    buffer read + explicit UTF-8 decode queues the exact codepoints."""
+    buffer read + explicit UTF-8 decode queues the exact codepoints.
+    The piped bytes carry a CRLF break: the reader keeps base's universal
+    newlines (TextIOWrapper, newline=None), so the queued text is LF — the
+    same text the local dispatch site stores."""
     tmp = _pinned_scratch("p7b")
     try:
-        piped = "café — naïve"
+        piped = "café —\r\nnaïve"
+        expected = "café —\nnaïve"
         env = _remote_subproc_env(tmp, _dead_port_url())
         env["PYTHONIOENCODING"] = "cp1252"  # the defect-host stdio codec
         proc = subprocess.run(
@@ -790,9 +794,9 @@ def test_remote_add_content_dash_stdin_decodes_utf8_on_cp1252_stdio():
         entries = _queue_entries(tmp)
         assert len(entries) == 1, (
             f"exactly one queued op expected, got {len(entries)}")
-        assert entries[0].get("args", {}).get("content") == piped, (
+        assert entries[0].get("args", {}).get("content") == expected, (
             f"the queued op's content must be the exact UTF-8 codepoints "
-            f"independent of the stdio codec; got "
+            f"independent of the stdio codec, with CRLF normalized to LF; got "
             f"{entries[0].get('args', {}).get('content')!r}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1727,6 +1731,7 @@ _ALL_TESTS = (
     test_read_flag_refusals_and_positive_remote_search,
     test_remote_add_content_dash_reads_stdin_into_queued_op,
     test_remote_update_content_dash_reads_stdin_into_queued_op,
+    test_remote_add_content_dash_stdin_decodes_utf8_on_cp1252_stdio,
     test_remote_capture_mode_resolved_from_env_intent,
     test_overlay_ordering_pending_then_flushed_recall,
     test_unreachable_hub_error_contract,

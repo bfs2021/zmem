@@ -27,9 +27,21 @@ PAYLOAD_BYTES = PAYLOAD.encode("utf-8")
 PAYLOAD_CRLF_BYTES = PAYLOAD.replace(" ", "\r\n", 1).encode("utf-8")
 
 
+# Ambient env that would reroute or re-scope the child (an operator shell or
+# a live host session): ZMEM_REMOTE_URL + ZMEM_STORE is a config error (rc 2),
+# and the rest change which store/namespace/session the child resolves.
+_AMBIENT_STRIP = (
+    "ZMEM_REMOTE_URL", "ZMEM_DATA", "ZMEM_HOME", "ZMEM_NAMESPACE",
+    "ZMEM_SESSION", "ZMEM_SESSION_ID", "ZMEM_MCP_URL", "ZMEM_MCP_TOKEN",
+    "ZMEM_MCP_TOKENS_FILE", "ZMEM_INJECT",
+)
+
+
 def _pinned_env(tmp: str) -> dict:
     """Store isolation + stdio codec pinned to cp1252 (the defect host)."""
     env = {**os.environ}
+    for key in _AMBIENT_STRIP:
+        env.pop(key, None)
     env["ZMEM_STORE"] = os.path.join(tmp, "store.sqlite")
     env["ZMEM_MODELS_DIR"] = os.path.join(tmp, "no-such-models")
     env["ZMEM_MODEL_AUTODOWNLOAD"] = "0"
@@ -122,6 +134,20 @@ class StdinEncodingTest(unittest.TestCase):
         mid = _added_id(r.stdout)
         self.assertEqual(
             _stored_content(self.env, mid),
+            PAYLOAD.replace(" ", "\n", 1),
+        )
+
+    def test_update_stdin_normalizes_crlf_to_lf(self):
+        # The update path shares the sentinel read; pin its newline
+        # translation too so a regression on update cannot slip through.
+        mid = self._add_argv("placeholder row")
+        r = _run_bytes(self.env, "update", "--id", mid, "--content", "-",
+                       "--json", stdin=PAYLOAD_CRLF_BYTES)
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+        raw = r.stdout.decode("utf-8", "replace")
+        new_mid = json.loads(raw[raw.find("{"):])["id"]
+        self.assertEqual(
+            _stored_content(self.env, new_mid),
             PAYLOAD.replace(" ", "\n", 1),
         )
 
