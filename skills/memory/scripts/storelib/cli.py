@@ -5504,9 +5504,14 @@ def main():
     # from stdin. Windows argv caps near 32k chars while the content cap is
     # MAX_CONTENT_CHARS (65536), so large-but-valid content cannot always be
     # delivered as an argv element; the Hermes/MCP surfaces pipe oversize
-    # payloads through this path instead.
+    # payloads through this path instead. Read the raw buffer and decode
+    # UTF-8 explicitly: a bare sys.stdin.read() decodes with the process
+    # locale codec — cp1252 on a default Windows install — mojibake-ing
+    # non-ASCII content (issue #460). Same rationale as _cmd_apply_ops and
+    # the retain readers. Unlike the text layer, the buffer read stores
+    # CRLF verbatim instead of translating it to \n.
     if getattr(args, "content", None) == "-":
-        args.content = sys.stdin.read()
+        args.content = sys.stdin.buffer.read().decode("utf-8", errors="replace")
 
     if args.cmd in {"add", "update"}:
         try:
