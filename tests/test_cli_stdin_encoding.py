@@ -43,11 +43,21 @@ def _run_bytes(env: dict, *args: str, stdin: bytes | None = None):
 
 
 def _added_id(out: bytes) -> str:
+    """Prefer the structured `add --json` envelope ({"ok", "id", ...}) over
+    scraping the human "added memory <id>" receipt line."""
     text = out.decode("utf-8", "replace")
+    brace = text.find("{")
+    if brace != -1:
+        try:
+            envelope = json.loads(text[brace:])
+            if envelope.get("id"):
+                return str(envelope["id"])
+        except ValueError:
+            pass  # human-receipt output; fall through to the line scrape
     for line in text.splitlines():
         if "added memory" in line:
             return line.split("memory ")[1].split(" ")[0]
-    raise AssertionError(f"no 'added memory' line: {text[-400:]}")
+    raise AssertionError(f"no add result: {text[-400:]}")
 
 
 def _stored_content(env: dict, mid: str) -> str:
@@ -64,7 +74,7 @@ class StdinEncodingTest(unittest.TestCase):
         self.env = _pinned_env(self.tmp)
 
     def _add_argv(self, content: str) -> str:
-        r = _run_bytes(self.env, "add", "--no-dedup", "--namespace", NS,
+        r = _run_bytes(self.env, "add", "--json", "--no-dedup", "--namespace", NS,
                        "--type", "lesson", "--confidence", "0.5",
                        "--source-ref", "probe:encoding",
                        "--content", content)
@@ -74,7 +84,7 @@ class StdinEncodingTest(unittest.TestCase):
     def test_add_stdin_roundtrip_is_utf8_on_cp1252_host(self):
         # Issue #460 AC1: the `--content -` sentinel must store the exact
         # UTF-8 codepoints regardless of the stdio codec.
-        r = _run_bytes(self.env, "add", "--no-dedup", "--namespace", NS,
+        r = _run_bytes(self.env, "add", "--json", "--no-dedup", "--namespace", NS,
                        "--type", "lesson", "--confidence", "0.5",
                        "--source-ref", "probe:encoding",
                        "--content", "-", stdin=PAYLOAD_BYTES)
@@ -103,7 +113,7 @@ class StdinEncodingTest(unittest.TestCase):
         # Behavior delta pinned by issue #460: the text layer translated
         # \r\n to \n; the buffer read stores CRLF verbatim. Frozen so the
         # delta stays intentional.
-        r = _run_bytes(self.env, "add", "--no-dedup", "--namespace", NS,
+        r = _run_bytes(self.env, "add", "--json", "--no-dedup", "--namespace", NS,
                        "--type", "lesson", "--confidence", "0.5",
                        "--source-ref", "probe:encoding",
                        "--content", "-", stdin=PAYLOAD_CRLF_BYTES)
