@@ -5,6 +5,21 @@ All notable changes to the **zmem** plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.151.0] - 2026-11-13
+### Fixed
+- `--content -` stdin reads now decode UTF-8 explicitly regardless of the
+  stdio codec, locally and in remote mode (issue #460, PR #461 review
+  F-002/F-003): the local dispatch site wraps the raw buffer in an
+  `io.TextIOWrapper` (`encoding="utf-8"`, `errors="replace"`, default
+  universal newlines), and the remote-mode `_resolve_content` reader decodes
+  the raw buffer with the same policy, so a cp1252-stdio Windows host can no
+  longer mojibake non-ASCII content (or mint lone surrogates in remote mode).
+- The stdin path restores base's newline translation (review F-002): the
+  CRLF a text-mode parent (Hermes/MCP on Windows) emits is normalized back
+  to `\n`, so near-cap multi-line writes are measured on the logical length
+  and stored identically to the argv path. Invalid UTF-8 bytes store as
+  U+FFFD under the disclosed `errors="replace"` policy, now pinned by tests.
+
 ## [0.150.0] - 2026-11-11
 ### Security
 - Entity report surfaces now mask credential-shaped names at display time
