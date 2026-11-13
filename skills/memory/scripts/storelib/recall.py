@@ -1198,7 +1198,14 @@ def _normalize_as_of(as_of: str | None) -> str | None:
     except ValueError:
         return as_of
     if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc)
+        # PR #458 review CS-1: offset boundary instants (e.g.
+        # 0001-01-01T00:00:00+05:00) overflow astimezone — degrade to the
+        # unchanged input (same fail-open contract as unparseable input)
+        # instead of raising on the hot path.
+        try:
+            dt = dt.astimezone(timezone.utc)
+        except OverflowError:
+            return as_of
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
 
 # Issue #397: closed state-hazard lexicon + bump helpers (see the bump site in _recall_one_tier).
@@ -1466,6 +1473,11 @@ def _recall_one_tier(
     temporal_pre = 0
     temporal_ids: list[str] = []
     temporal_fused: list[str] = []
+    # v17 (#178) + issue #389 item 2: the occurrence triple travels with the
+    # candidate so recalled event rows can carry WHEN IT HAPPENED — not just
+    # valid_from (when it was written). Keyed by memory_id; attached to the
+    # row dicts below for exactly the ids the temporal arm contributed.
+    temporal_occ: dict[str, tuple[str, str, str]] = {}
     try:
         t_start, t_end = _temporal_window(query, prompt_timestamp)
         if t_start and t_end:
@@ -1476,6 +1488,8 @@ def _recall_one_tier(
                        MIN(julianday(mo.occurred_end), julianday(?))
                        - MAX(julianday(mo.occurred_start), julianday(?))
                        AS overlap_days,
+                       mo.occurred_start,
+                       mo.occurred_end,
                        mo.mentioned_at
                 FROM memory_occurrence mo
                 JOIN memory m ON m.id = mo.memory_id
@@ -1492,13 +1506,17 @@ def _recall_one_tier(
             ).fetchall()
             temporal_pre = len(temporal_rows)
             temporal_ids = [r[0] for r in temporal_rows]
+            temporal_occ = {
+                r[0]: (r[2], r[3], r[4]) for r in temporal_rows}
     except sqlite3.OperationalError:
         # Pre-v17 store (no memory_occurrence) — the arm is empty.
         temporal_pre = 0
         temporal_ids = []
+        temporal_occ = {}
     except Exception:
         temporal_pre = 0
         temporal_ids = []
+        temporal_occ = {}
     if entity_ids and os.environ.get("ZMEM_GRAPH_SEED", "1").strip() != "0":
         graph_ids, graph_rel_map = graph_seed_ids(
             conn, entity_ids[:caps["entity"]],
@@ -1735,6 +1753,21 @@ def _recall_one_tier(
             # from _fetch_by_ids/_recent_one_tier carry it the same way).
             "trust_score": trust,
         }))
+        # Issue #389 item 2: temporal-arm rows carry the occurrence triple —
+        # WHEN the event happened, distinct from valid_from (when it was
+        # written). Additive tail keys on exactly the rows the CAPPED
+        # temporal arm contributed (PR #458 review CS-4: keyed on the
+        # pre-cap match set before — a beyond-cap row arriving via another
+        # lane wrongly carried the keys; the graph lane's attribution is
+        # capped the same way). Never on non-temporal rows, never
+        # overwriting; stripping the three keys reproduces the pre-change
+        # envelope bytes exactly.
+        if r["id"] in set(temporal_fused):
+            occ_triple = temporal_occ.get(r["id"])
+            if occ_triple is not None:
+                row_dict = scored[-1][1]
+                (row_dict["occurred_start"], row_dict["occurred_end"],
+                 row_dict["mentioned_at"]) = occ_triple
         if collect_lanes:
             scored[-1][1]["_lanes"] = {
                 "bm25_rank": fts_r,

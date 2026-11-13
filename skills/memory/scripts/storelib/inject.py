@@ -1029,6 +1029,7 @@ def select_and_budget_for_injection(
     state_hint: str | None = None,
     consume_tasktext: bool = False,
     consume_agent_id: str = "",
+    prompt_timestamp: str | None = None,
 ) -> dict:
     """Select, render, account, and record one passive injection event.
 
@@ -1067,6 +1068,18 @@ def select_and_budget_for_injection(
     every delivery-ledger write (reserve/record alike).  Offline serves
     are advisory by contract: a row served offline may be re-delivered
     live after reconnect.
+
+    prompt_timestamp (issue #389, AC8): the prompt's own clock for the
+    temporal arm — threaded verbatim into BOTH dispatch branches
+    (``recall_memory``/``recent_memory``).  PR #458 review UIB-1 (honest
+    contract): an UNPARSEABLE value is NOT replaced by the
+    ZMEM_TEST_NOW/now seam — ``_normalize_as_of`` returns it unchanged, so
+    ``_temporal_window`` treats it as truthy, skips the seam, and the
+    temporal arm silently answers empty.  ``None`` and empty-string keep
+    the seam exactly; every production boundary (hook body, fleet
+    transport, hermes, MCP server) drops unparseable values before
+    threading, so in-process callers must do the same (or pass
+    ``None``/``""`` for the seam).
     """
     if moment not in INJECTION_MOMENTS:
         raise ValueError("invalid injection moment: {!r}".format(moment))
@@ -1420,6 +1433,12 @@ def select_and_budget_for_injection(
             # fail-open class, pinned by tests/test_user_global_floor.py.
             _user_global_floor=effective_user_global_floor,
             _authorized_namespaces=authorized_namespaces,
+            # Issue #389 (AC8): the prompt's own clock, threaded from the
+            # CLI prefetch flag / MCP prefetch tool / offline snapshot
+            # serve. Both dispatch branches accept it (recall_memory and
+            # recent_memory normalize an invalid value to the env seam —
+            # never an error); None keeps the ZMEM_TEST_NOW/now seam.
+            prompt_timestamp=prompt_timestamp,
         )
         if effective_query.strip():
             kwargs["query"] = effective_query
