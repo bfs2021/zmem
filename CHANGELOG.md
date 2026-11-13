@@ -19,6 +19,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   to `\n`, so near-cap multi-line writes are measured on the logical length
   and stored identically to the argv path. Invalid UTF-8 bytes store as
   U+FFFD under the disclosed `errors="replace"` policy, now pinned by tests.
+- `SKILL.md` (Large content) and the `add`/`update` `--content` help text now
+  state the stdin contract: UTF-8 decode regardless of the stdio codec, and
+  CRLF normalized to LF.
 
 ## [0.150.0] - 2026-11-11
 ### Security

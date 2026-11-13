@@ -1,6 +1,6 @@
 {
   "algorithm": "sha256-crlf-norm",
-  "digest": "f0b57f231a28981a2fb54f410155d5aa133e6b7ba4d83585328e12eb14676805",
+  "digest": "2b4fe73d344a9c77cc5bcf59fa901a5ec8380c26690ad1a31ec0096c74235f72",
   "files": {
     ".agents/plugins/marketplace.json": "0d61d432c7a08c5df9511627d8164a258ce29a4742a34786c305d6af86578339",
     ".claude-plugin/marketplace.json": "091f641e3c3c4080938597e9e76b9944b103b86aac8500cf957959f9edada345",
@@ -83,7 +83,7 @@
     "scripts/release_gate.py": "0cfa3efc35fb665373776aa146d010582bfabda5170a84b25848e86676485f31",
     "skills/closeout-remote/SKILL.md": "72ef37990a67c16fb1e9b12bd1f5bd0d39d0499036e15a3fd7c77cc40456fdf9",
     "skills/closeout/SKILL.md": "6c4a72fecc39f2b37da7b09365a3c7a5b8cfbe6e20514f905dcaa0a43c48496f",
-    "skills/memory/SKILL.md": "7d2e46c48f5b668fb3229120cd4e540b870d0a994f88eff05ccae834fbfec57b",
+    "skills/memory/SKILL.md": "10ead245a7c3dc40474b7f4c8e6bfda8c0feaef99ed2dfde0235d329ed3f18b2",
     "skills/memory/scripts/capture_quality.py": "144952fd06464e4164c6e0ea80cc32a90eb77a3d632934528a5b04842cefe19c",
     "skills/memory/scripts/correction_queue.py": "cfeed1f228488fa926eefc7ad4b9c48ac8370f5ceb29340ed02921ef94c9dbfb",
     "skills/memory/scripts/corrections.py": "cf6ac131d092bb319cf9cfcf762b8384105588c8adb968349c804efb50bbaf7a",
@@ -110,7 +110,7 @@
     "skills/memory/scripts/storelib/__init__.py": "a0935a47debc89e06f9b8f82c830870ed8ba3c898503b8759757aab9a47aa99a",
     "skills/memory/scripts/storelib/backup.py": "2284e7552f2bdb31752e2414f8e4546510a70b888e0a41a7890a67a85dfdd300",
     "skills/memory/scripts/storelib/beliefs.py": "def5a93b159814c7bba47af67561f785dc9558ca5f90ce503e6eb5c6b840cfa8",
-    "skills/memory/scripts/storelib/cli.py": "5eee61b360b2328f322b3de6d2995f586299856243d58bf36af72050ef3738db",
+    "skills/memory/scripts/storelib/cli.py": "23328f6dd2c7510db1d3b0c8ba076946e08770d72b77171e81f8941c1c5945bb",
     "skills/memory/scripts/storelib/config.py": "36448a1f80cdfc60b5ddd101a679a166f1522ad1e2eb3555139bac351ec7fc38",
     "skills/memory/scripts/storelib/consolidate.py": "f4f30c9d7dcf69cdc17a01235af56f87918000f630c53cc377d28979f72fae82",
     "skills/memory/scripts/storelib/cross_encoder.py": "175a3cc3cb7241ecc317f1d138863e437ae0585b5112062caf97c94125ba8ed4",

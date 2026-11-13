@@ -2459,7 +2459,8 @@ def main():
     p_add.add_argument("--type", required=True, choices=list(_ADD_TYPE_CHOICES))
     p_add.add_argument("--content", required=True,
                        help="the memory text; the literal '-' reads content from "
-                            "stdin (use for payloads near the content cap — "
+                            "stdin, decoded as UTF-8 with CRLF normalized to LF "
+                            "(use for payloads near the content cap — "
                             "Windows argv caps far below MAX_CONTENT_CHARS)")
     p_add.add_argument("--tags", default="")
     p_add.add_argument("--source-ref", default="")
@@ -3006,7 +3007,8 @@ def main():
     p_upd.add_argument("--id", required=True, help="id of the live memory to update")
     p_upd.add_argument("--content", required=True,
                        help="the new content; the literal '-' reads content from "
-                            "stdin (use for payloads near the content cap — "
+                            "stdin, decoded as UTF-8 with CRLF normalized to LF "
+                            "(use for payloads near the content cap — "
                             "Windows argv caps far below MAX_CONTENT_CHARS)")
     p_upd.add_argument("--namespace", default=None)
     p_upd.add_argument("--expected-old-namespace", default=None,
