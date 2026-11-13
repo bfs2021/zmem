@@ -14,9 +14,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   universal newlines), and the remote-mode `_resolve_content` reader decodes
   the raw buffer through the same `io.TextIOWrapper` policy, so a cp1252-stdio Windows host can no
   longer mojibake non-ASCII content (or mint lone surrogates in remote mode).
-- The stdin path restores base's newline translation (review F-002): the
-  CRLF a text-mode parent (Hermes/MCP on Windows) emits is normalized back
-  to `\n`, so near-cap multi-line writes are measured on the logical length
+- The stdin path normalizes newlines (review F-002): on Windows this
+  restores the base text layer's translation; on POSIX, where the base stdin
+  read stored `\r`/`\r\n` verbatim, it is new behavior. The CRLF a text-mode
+  parent (Hermes/MCP on Windows) emits is normalized back to `\n`, so near-cap multi-line writes are measured on the logical length
   and stored as the LF text the caller sent (the argv path stores its
   argument verbatim and performs no newline translation). Invalid UTF-8 bytes store as
   U+FFFD under the disclosed `errors="replace"` policy, now pinned by tests.

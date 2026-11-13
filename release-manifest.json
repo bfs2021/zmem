@@ -1,6 +1,6 @@
 {
   "algorithm": "sha256-crlf-norm",
-  "digest": "0889e7a4e9df4f821b25f616bcf9b124513ef8f01f8e688fda2e020a04427133",
+  "digest": "2024e0c7b9a2f581fac92084a87089ad73ed733b3e3adeaf2751d9d6c0257a50",
   "files": {
     ".agents/plugins/marketplace.json": "bf3d585650027b2bc01f13f8c4813ff89949c35b6c253b73d2eaa7d0c592b94a",
     ".claude-plugin/marketplace.json": "1f415c698cc1e1b9bd9f5eb10904d34bca81895130460d35ead6c08bc85b944c",
@@ -110,7 +110,7 @@
     "skills/memory/scripts/storelib/__init__.py": "a0935a47debc89e06f9b8f82c830870ed8ba3c898503b8759757aab9a47aa99a",
     "skills/memory/scripts/storelib/backup.py": "2284e7552f2bdb31752e2414f8e4546510a70b888e0a41a7890a67a85dfdd300",
     "skills/memory/scripts/storelib/beliefs.py": "4c28a91a82e585c0955b63442b33bde53da6902e87c6d5131b7a0f12cfcbb827",
-    "skills/memory/scripts/storelib/cli.py": "cfe3e5ef87476c6c91c779c49746924bacb5f60bc52f2a67084204798053da85",
+    "skills/memory/scripts/storelib/cli.py": "39b94a6dc94ef09b49ef517e6f1d9a8a2fbc514fbc111e2d4a0bc56f7766ff40",
     "skills/memory/scripts/storelib/config.py": "36448a1f80cdfc60b5ddd101a679a166f1522ad1e2eb3555139bac351ec7fc38",
     "skills/memory/scripts/storelib/consolidate.py": "1f16cefe762aa20554c6ce8eb54edfbffbb2ed1e4cc24924bae9704e92fb3b49",
     "skills/memory/scripts/storelib/cross_encoder.py": "175a3cc3cb7241ecc317f1d138863e437ae0585b5112062caf97c94125ba8ed4",
@@ -141,7 +141,7 @@
     "skills/memory/scripts/storelib/readonly.py": "ec43ca8f432cccda68374abfd359426da0ab41997becb0add49056476ff425c3",
     "skills/memory/scripts/storelib/recall.py": "9e5b1e2cc0b2576f1dbfdd29a865eb0e97b51ad7ea742be703a42193209235a3",
     "skills/memory/scripts/storelib/rekey.py": "ed7e38f9660c2aa3aa6b2251e133f06d574bd87f3bd23c714fd585472ec6dfb3",
-    "skills/memory/scripts/storelib/remote_gate.py": "f0271ffbc02af5b56f63a1aedeedf04d67470032385889b27404a2c8bad6b87c",
+    "skills/memory/scripts/storelib/remote_gate.py": "6a5b8b7ea8f9e0c4998fdf59305702492a7e4bcbb57793d3fc5e5d3d54eae031",
     "skills/memory/scripts/storelib/retain.py": "f711bdf28a501af0d24a55bc04e97cbe3c568951d8d4ccbda39f6ebffd1aad36",
     "skills/memory/scripts/storelib/schema.py": "70a56105c96e195bca9a86b128f06423c0fc3a5b1f9a5f1b1fb313bde88d11d8",
     "skills/memory/scripts/storelib/source.py": "72050fcc2ed63c3f99089ece204022038ccfeff13017cf2505ea3c288df5c3a2",

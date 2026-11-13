@@ -123,9 +123,10 @@ class StdinEncodingTest(unittest.TestCase):
 
     def test_add_stdin_normalizes_crlf_to_lf(self):
         # PR #461 review F-002: the TextIOWrapper read (default newline=None)
-        # restores base's universal newlines — the \r\n a text-mode parent
-        # (Hermes/MCP on Windows) emits is translated back to \n, matching
-        # the argv path, so the stored length equals the logical length.
+        # applies universal newlines — the \r\n a text-mode parent
+        # (Hermes/MCP on Windows) emits is translated back to \n (the LF
+        # text the parent sent), so the stored length equals the logical
+        # length. The argv path stores its argument verbatim.
         r = _run_bytes(self.env, "add", "--json", "--no-dedup", "--namespace", NS,
                        "--type", "lesson", "--confidence", "0.5",
                        "--source-ref", "probe:encoding",

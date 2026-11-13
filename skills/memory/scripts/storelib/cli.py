@@ -5530,9 +5530,10 @@ def main():
     # newline=None) rather than reading the text layer: the UTF-8 decode
     # stays independent of the stdio codec, while universal newlines still
     # translate the \r\n a text-mode parent (Hermes/MCP on Windows) emits
-    # back to \n — matching base behavior (and the LF text the parent sent),
-    # so near-cap multi-line writes are measured on the logical length. The
-    # argv path does no newline translation; this is stdin-only.
+    # back to \n (the LF text the parent sent; on Windows this matches the
+    # base text layer, on POSIX the base read did not translate), so near-cap
+    # multi-line writes are measured on the logical length. The argv path
+    # does no newline translation; this is stdin-only.
     if getattr(args, "content", None) == "-":
         args.content = io.TextIOWrapper(
             sys.stdin.buffer, encoding="utf-8", errors="replace"

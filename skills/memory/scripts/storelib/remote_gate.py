@@ -294,9 +294,10 @@ def _resolve_content(args: Any) -> str:
         # producing lone surrogates that cannot be re-encoded for the hub
         # transport. Same policy as the local dispatch site in cli.py,
         # including its default universal newlines (newline=None): the \r\n
-        # a text-mode parent emits on Windows is normalized back to \n, as
-        # the text-layer read did at base, so remote and local writes of the
-        # same piped content queue identical text.
+        # a text-mode parent emits on Windows is normalized back to \n (on
+        # Windows the base text-layer read did the same; on POSIX it did not
+        # translate), so remote and local writes of the same piped content
+        # queue identical text.
         content = io.TextIOWrapper(
             sys.stdin.buffer, encoding="utf-8", errors="replace"
         ).read()
