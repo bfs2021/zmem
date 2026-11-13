@@ -53,16 +53,21 @@ _SNAPSHOT_COLUMNS = (
 
 def _data_dir(env: dict[str, str]) -> Path:
     import host  # noqa: PLC0415 - lazy: reads env at call time
-    sync = {k: env.get(k) for k in (
-        "ZMEM_STORE", "ZMEM_DATA", "CLAUDE_PLUGIN_DATA",
-        "ZCODE_PLUGIN_DATA") if env.get(k)}
-    saved = {k: os.environ.get(k) for k in sync}
+    _keys = ("ZMEM_STORE", "ZMEM_DATA", "CLAUDE_PLUGIN_DATA",
+             "ZCODE_PLUGIN_DATA")
+    sync = {k: env.get(k) for k in _keys if env.get(k)}
+    # Issue #389 AC9 exposure (one-process isolation canary): save EVERY
+    # key this dance may mutate (the opqueue.queue_dir discipline) — the
+    # clear step below pops keys the caller's env leaves unset (e.g. an
+    # ambient ZMEM_STORE under a broker env that pins only ZMEM_DATA), so
+    # a save limited to ``sync``'s keys leaked that pop past the finally
+    # and deleted the caller's ZMEM_STORE for the rest of the process.
+    saved = {k: os.environ.get(k) for k in _keys}
     try:
         for k, v in sync.items():
             os.environ[k] = v
         for k in set(os.environ) - set(sync):
-            if k in ("ZMEM_STORE", "ZMEM_DATA", "CLAUDE_PLUGIN_DATA",
-                     "ZCODE_PLUGIN_DATA") and k not in sync:
+            if k in _keys and k not in sync:
                 os.environ.pop(k, None)
         return Path(host.resolve_store_path()).expanduser().parent
     finally:
@@ -895,13 +900,17 @@ def _serve_offline_recent(env: dict[str, str], namespace: str | None,
 def _serve_offline_read(env: dict[str, str], *, query: str,
                         namespace: str, moment: str, session_id: str,
                         lane: str | None = None,
+                        prompt_timestamp: str | None = None,
                         limit: int = 5) -> tuple[dict | None, str]:
     """Serve one read moment from the snapshot via the SAME selector.
 
     Returns (envelope, state): envelope None when the state is none or
     expired.  Zero-write: the selector runs with ``reserve=False`` and
     ``no_telemetry=True``; the label is prepended to the rendered fence
-    as a broker-emitted header line.
+    as a broker-emitted header line.  ``prompt_timestamp`` (issue #389,
+    AC8) threads the submitter's prompt clock into the selector — the
+    serve resolves relative temporal phrases at serve time, so it must
+    not silently fall back to the serving process's wall clock.
     """
     try:
         conn, meta = _load(env)
@@ -933,7 +942,8 @@ def _serve_offline_read(env: dict[str, str], *, query: str,
             conn, query=query, namespace=namespace, moment=moment,
             session_id=session_id, lane=lane, limit=limit,
             budget_tokens=inject_token_budget(),
-            authorized_namespaces=None, reserve=False, no_telemetry=True)
+            authorized_namespaces=None, reserve=False, no_telemetry=True,
+            prompt_timestamp=prompt_timestamp)
     except Exception:  # noqa: BLE001 - the offline serve fails open
         return None, state
     finally:

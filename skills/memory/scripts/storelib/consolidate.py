@@ -23,7 +23,7 @@ from pathlib import Path
 from storelib.entity import relink_memory
 from storelib.schema import _commit, _embeddings, _env_float, _normalize_content, now_iso, worse_taint
 from storelib.sync import INGEST_MAX_CONTENT_CHARS
-from storelib.write import _clear_expiry, _clear_occurrence, _merge_on_dedup, supersede_memory
+from storelib.write import _clear_expiry, _merge_on_dedup, supersede_memory
 
 CONSOLIDATE_DEFAULT_THRESHOLD = _env_float("ZMEM_CONSOLIDATE_THRESHOLD", 0.80)
 
@@ -495,13 +495,17 @@ def _absorb_into_keeper(
         conn.execute("DELETE FROM memory_vec WHERE memory_id=?", (absorbed["id"],))
     except sqlite3.OperationalError:
         pass
-    # v15 (#173): the absorbed row's side-table record is removed in the SAME
-    # transaction as its tombstone — one of the cleanup sites (update,
-    # supersede, consolidate absorb, organize stale-summary, sync tombstone,
-    # plus the hard-DELETE paths in purge/import-store, which reach it through
+    # v15 (#173): the absorbed row's memory_expiry record is removed in the
+    # SAME transaction as its tombstone (PR #458 review CUBIC-4: scoped to
+    # expiry only since #389's two-tier law — occurrence is RETAINED here;
+    # the generated-row cleanup sites are organize stale-summary and entity
+    # reconcile, plus the hard-DELETE paths in purge/import-store through
     # purge._ID_SIDE_TABLES).
     _clear_expiry(conn, absorbed["id"])
-    _clear_occurrence(conn, absorbed["id"])
+    # Issue #389: the absorbed row's occurrence row is intentionally
+    # RETAINED on this soft tombstone — as-of recall surfaces it inside
+    # the tombstoned row's validity window; hard delete via
+    # purge/_ID_SIDE_TABLES still removes it.
 
     # v10 (issue #60): the keeper's content/tags may have grown above, so its
     # entity links are re-derived from the stored row. The ABSORBED row keeps

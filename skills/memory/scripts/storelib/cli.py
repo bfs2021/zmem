@@ -963,7 +963,8 @@ def evidence_association_page_limit(value: str) -> int:
     return parsed
 
 def _iso8601(value: str) -> str:
-    """argparse type= for --as-of (issue #58, 3.6): accept an ISO-8601
+    """argparse type= for every ISO-8601 timestamp flag (--as-of per issue
+    #58 3.6; --prompt-timestamp per issue #389): accept an ISO-8601
     timestamp, validate strictly (garbage → argparse error), and return the
     canonical Z-suffixed UTC form the store's lexicographic predicate
     compares against. PRR-022 fix: normalization now covers ANY zone offset
@@ -971,19 +972,26 @@ def _iso8601(value: str) -> str:
     'Z' vs '+' ASCII ordering silently mis-filters otherwise. The same
     normalization is applied at recall_memory/recent_memory entry for
     programmatic callers; this type= additionally enforces argparse-level
-    validation.
+    validation. PR #458 review CS-1: offset boundary instants overflow
+    ``astimezone`` — reported as a clean argparse error instead of an
+    uncaught OverflowError traceback.
     """
     from datetime import datetime
     if not value:
-        raise argparse.ArgumentTypeError("--as-of requires a non-empty ISO-8601 timestamp")
+        raise argparse.ArgumentTypeError(
+            "requires a non-empty ISO-8601 timestamp")
     normalized = value.strip()
     try:
         dt = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"invalid ISO-8601 for --as-of: {exc}")
+        raise argparse.ArgumentTypeError(f"invalid ISO-8601 timestamp: {exc}")
     if dt.tzinfo is not None:
         from datetime import timezone
-        dt = dt.astimezone(timezone.utc)
+        try:
+            dt = dt.astimezone(timezone.utc)
+        except OverflowError as exc:
+            raise argparse.ArgumentTypeError(
+                f"timestamp out of range for UTC conversion: {exc}")
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
 
 
@@ -2833,6 +2841,13 @@ def main():
              "--consume-tasktext consume (see recall --consume-agent-id). "
              "Local stores only: remote mode refuses it (the fleet lane "
              "never parks, so a remote id would have nothing to match).")
+    p_prefetch.add_argument("--prompt-timestamp", dest="prompt_timestamp",
+                            action="store", type=_iso8601, default=None,
+                            required=False,
+                            help="timestamp used to resolve relative temporal "
+                                 "phrases; default is the injected test seam "
+                                 "(issue #389 AC8: the hook/broker thread "
+                                 "the payload's prompt clock here)")
     p_prefetch.add_argument("--ops-token", dest="ops_tokens", type=str,
                             action="append", default=[],
                             help="Operation token from the pretool ring "
@@ -5515,8 +5530,9 @@ def main():
     # newline=None) rather than reading the text layer: the UTF-8 decode
     # stays independent of the stdio codec, while universal newlines still
     # translate the \r\n a text-mode parent (Hermes/MCP on Windows) emits
-    # back to \n — matching base behavior and the argv path, so near-cap
-    # multi-line writes are measured on the logical length.
+    # back to \n — matching base behavior (and the LF text the parent sent),
+    # so near-cap multi-line writes are measured on the logical length. The
+    # argv path does no newline translation; this is stdin-only.
     if getattr(args, "content", None) == "-":
         args.content = io.TextIOWrapper(
             sys.stdin.buffer, encoding="utf-8", errors="replace"
@@ -6235,6 +6251,11 @@ def main():
                             getattr(args, "consume_tasktext", False)),
                         consume_agent_id=getattr(
                             args, "consume_agent_id", "") or "",
+                        # Issue #389 AC8: the hook lane threads the prompt's
+                        # own clock through this exact argv shape — a divergent
+                        # ZMEM_TEST_NOW must not override it.
+                        prompt_timestamp=getattr(
+                            args, "prompt_timestamp", None),
                     )
                 except ValueError as exc:
                     print(f"[zmem] {exc}", file=sys.stderr)
@@ -6440,6 +6461,11 @@ def main():
                         getattr(args, "consume_tasktext", False)),
                     consume_agent_id=getattr(
                         args, "consume_agent_id", "") or "",
+                    # Issue #389 (AC8): the prompt's own clock, threaded from
+                    # the hook payload / broker / MCP prefetch surface; None
+                    # keeps the ZMEM_TEST_NOW/now seam.
+                    prompt_timestamp=getattr(
+                        args, "prompt_timestamp", None),
                 )
             except ValueError as exc:
                 print(f"[zmem] {exc}", file=sys.stderr)
